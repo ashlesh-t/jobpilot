@@ -1,0 +1,19 @@
+# Secrets & user config (never commit)
+.env
+preferences.json
+profile.json
+
+# Local databases
+*.sqlite
+
+# Generated artifacts
+resumes/tailored/
+reports/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Pipeline temp files
+/tmp/jobpilot_*.json

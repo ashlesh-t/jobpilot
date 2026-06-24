@@ -1,0 +1,48 @@
+# NOTE: Claude Code reads .claude-plugin/plugin.json (and marketplace.json),
+# NOT this .toml. This file is kept only as human-readable reference.
+
+# JobPilot — Claude Code plugin manifest
+name = "jobpilot"
+display_name = "JobPilot"
+version = "0.1.0"
+description = "Automated job-hunt pipeline: scrape -> score -> notify via Telegram"
+author = "Ashlesh"
+license = "MIT"
+
+# Skills bundled with this plugin
+[[skills]]
+name = "job-setup"
+path = "skills/job-setup"
+
+[[skills]]
+name = "job-search"
+path = "skills/job-search"
+
+[[skills]]
+name = "job-tailor"
+path = "skills/job-tailor"
+
+[[skills]]
+name = "jobpilot-clear"
+path = "skills/jobpilot-clear"
+
+[[skills]]
+name = "resume-validate"
+path = "skills/resume-validate"
+
+# Slash command -> skill mapping
+[commands]
+job-setup = "skills/job-setup"
+job-search = "skills/job-search"
+job-tailor = "skills/job-tailor"
+jobpilot-clear = "skills/jobpilot-clear"
+
+[install_instructions]
+# Replace <USERNAME> with your GitHub username before publishing.
+oneliner = "claude plugin install github:<USERNAME>/jobpilot"
+post_install = [
+  "Run ./setup.sh to create ~/.claude/job-hunt-ai and install Python deps",
+  "Fill ~/.claude/job-hunt-ai/.env (copy from .env.example)",
+  "Run /job-setup in Claude Desktop to configure preferences",
+  "Create a scheduled task to run /job-search on your cadence"
+]

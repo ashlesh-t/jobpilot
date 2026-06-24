@@ -1,0 +1,17 @@
+{
+  "name": "",
+  "locations": ["Bengaluru"],
+  "remote_ok": true,
+  "target_ctc_min_lpa": 15,
+  "role_types": ["SWE", "Backend"],
+  "experience_years": 0,
+  "degree": "",
+  "graduation": "",
+  "preferred_stack": [],
+  "resume_path": "",
+  "resume_hash": "",
+  "resume_drive_file_id": "",
+  "score_threshold": 75,
+  "top_n_tailor": 5,
+  "schedule_slots_ist": ["09:30", "14:00"]
+}
