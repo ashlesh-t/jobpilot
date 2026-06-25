@@ -9,7 +9,6 @@ from __future__ import annotations
 import getpass
 import os
 import sys
-import time
 from pathlib import Path
 
 # ── ANSI helpers ─────────────────────────────────────────────────────────────
@@ -21,9 +20,6 @@ YELLOW = "\033[33m"
 RED    = "\033[31m"
 CYAN   = "\033[36m"
 BLUE   = "\033[34m"
-
-def _c(*codes: str) -> str:
-    return "".join(codes)
 
 def bold(t: str)   -> str: return f"{BOLD}{t}{RESET}"
 def dim(t: str)    -> str: return f"{DIM}{t}{RESET}"
