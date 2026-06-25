@@ -17,3 +17,10 @@ __pycache__/
 
 # Pipeline temp files
 /tmp/jobpilot_*.json
+
+# Python virtualenvs
+venv/
+
+# Claude Code personal config (local to each user's machine)
+.claude/
+.claude-plugin/

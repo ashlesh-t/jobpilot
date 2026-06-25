@@ -28,12 +28,12 @@ Three paths, pick one:
 
 **a. Plugin install (recommended)**
 ```bash
-claude plugin install github:<YOUR_GITHUB_USERNAME>/jobpilot
+claude plugin install github:ashlesh-t/jobpilot
 ```
 
 **b. Clone + setup**
 ```bash
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/jobpilot ~/projects/jobpilot
+git clone https://github.com/ashlesh-t/jobpilot ~/projects/jobpilot
 cd ~/projects/jobpilot
 ./setup.sh
 ```
@@ -97,5 +97,5 @@ your Claude Pro subscription.
 ## 10. Contributing / marketplace listing
 
 PRs welcome. To list in a Claude plugin marketplace, publish this repo publicly and share the
-`claude plugin install github:<USERNAME>/jobpilot` one-liner. A `.mcpb` bundle and pip-installable
+`claude plugin install github:ashlesh-t/jobpilot` one-liner. A `.mcpb` bundle and pip-installable
 helper package are on the roadmap.

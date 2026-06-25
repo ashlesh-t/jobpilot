@@ -31,7 +31,7 @@ You also need two free accounts: **Apify** and a **Telegram bot**. Steps 3 and 4
 ```bash
 # put the repo here
 mkdir -p ~/projects && cd ~/projects
-git clone https://github.com/ASHLESHA05/jobpilot
+git clone https://github.com/ashlesh-t/jobpilot
 cd jobpilot
 
 # one-time setup: creates ~/.claude/job-hunt-ai/, installs deps, inits the database
