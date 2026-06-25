@@ -1,5 +1,7 @@
 # JobPilot
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Automated, personal job-hunting pipeline for Claude Code.
 
 ## 1. What it does

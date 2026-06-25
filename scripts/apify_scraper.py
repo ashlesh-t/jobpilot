@@ -153,8 +153,13 @@ def scrape() -> list:
 
     role_types = prefs.get("role_types", []) or ["Software Engineer"]
     keywords = " ".join(role_types)
+    extra = (prefs.get("search_keywords_extra") or "").strip()
+    if extra:
+        keywords = keywords + " " + extra
     locations = prefs.get("locations", []) or ["Bengaluru"]
-    primary_location = locations[0]
+    location_priority = prefs.get("location_priority") or locations
+    primary_location = location_priority[0]
+    secondary_locations = location_priority[1:]
     boards = actors.get("boards", ["linkedin", "indeed", "glassdoor", "google", "naukri"])
     max_results = actors.get("max_results_per_board", 50)
     hours_old = actors.get("hours_old", 24)
@@ -162,7 +167,7 @@ def scrape() -> list:
     all_jobs: list = []
 
     if token:
-        # Actor 1: general job-board scraper
+        # Actor 1: general job-board scraper — primary location at full results
         primary = actors.get("primary_scraper", "openclawai/job-board-scraper")
         primary_input = {
             "keywords": keywords,
@@ -173,6 +178,12 @@ def scrape() -> list:
         }
         for item in run_apify_actor(primary, primary_input, token):
             all_jobs.append(normalize(item, "job-board"))
+
+        # Secondary locations at half results (lower priority = fewer suggestions)
+        for sec_loc in secondary_locations:
+            sec_input = {**primary_input, "location": sec_loc, "maxResults": max_results // 2}
+            for item in run_apify_actor(primary, sec_input, token):
+                all_jobs.append(normalize(item, "job-board"))
 
         # Actor 2: ATS-targeted scraper (Greenhouse/Lever/Ashby/Workday) for real apply URLs
         ats = actors.get("ats_scraper", "orgupdate/job-posting-scraper")

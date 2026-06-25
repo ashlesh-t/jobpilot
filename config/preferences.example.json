@@ -1,7 +1,9 @@
 {
   "name": "",
   "locations": ["Bengaluru"],
+  "location_priority": [],
   "remote_ok": true,
+  "search_keywords_extra": "",
   "target_ctc_min_lpa": 15,
   "role_types": ["SWE", "Backend"],
   "experience_years": 0,

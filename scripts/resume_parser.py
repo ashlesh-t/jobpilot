@@ -133,7 +133,7 @@ def parse(path: Path) -> dict:
     }
 
 
-def update_preferences_hash(resume_hash: str, resume_path: str) -> None:
+def update_preferences_hash(resume_hash: str, resume_path: str, drive_file_id: str = "") -> None:
     prefs_path = jobpilot_dir() / "options" / "preferences.json"
     prefs = {}
     if prefs_path.exists():
@@ -143,24 +143,32 @@ def update_preferences_hash(resume_hash: str, resume_path: str) -> None:
             prefs = {}
     prefs["resume_hash"] = resume_hash
     prefs["resume_path"] = resume_path
+    if drive_file_id:
+        prefs["resume_drive_file_id"] = drive_file_id
     prefs_path.parent.mkdir(parents=True, exist_ok=True)
     prefs_path.write_text(json.dumps(prefs, indent=2))
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("usage: python3 resume_parser.py <path-to-base.tex|base.docx>", file=sys.stderr)
+        print("usage: python3 resume_parser.py <path> [--drive-file-id <id>]", file=sys.stderr)
         sys.exit(1)
     path = Path(os.path.expanduser(sys.argv[1]))
     if not path.is_file():
         print(f"resume not found: {path}", file=sys.stderr)
         sys.exit(1)
 
+    drive_file_id = ""
+    if "--drive-file-id" in sys.argv:
+        idx = sys.argv.index("--drive-file-id")
+        if idx + 1 < len(sys.argv):
+            drive_file_id = sys.argv[idx + 1]
+
     profile = parse(path)
     out = jobpilot_dir() / "cache" / "profile.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(profile, indent=2, ensure_ascii=False))
-    update_preferences_hash(profile["hash"], str(path))
+    update_preferences_hash(profile["hash"], str(path), drive_file_id)
 
     print(json.dumps(profile, indent=2, ensure_ascii=False))
 

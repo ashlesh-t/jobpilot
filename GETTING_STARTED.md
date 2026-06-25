@@ -31,7 +31,7 @@ You also need two free accounts: **Apify** and a **Telegram bot**. Steps 3 and 4
 ```bash
 # put the repo here
 mkdir -p ~/projects && cd ~/projects
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/jobpilot
+git clone https://github.com/ASHLESHA05/jobpilot
 cd jobpilot
 
 # one-time setup: creates ~/.claude/job-hunt-ai/, installs deps, inits the database
@@ -134,7 +134,7 @@ These quick checks confirm everything works end to end:
 cd ~/projects/jobpilot
 
 # 1) Telegram works — sends "JobPilot connected ✅" to your chat
-python3 scripts/telegram_notify.py
+python3 scripts/telegram_notify.py --test
 
 # 2) A real (tiny) scrape + filter dry run
 python3 scripts/apify_scraper.py     # prints how many jobs were scraped
@@ -152,20 +152,11 @@ arrives, you're done.
 
 ## 8. (Optional) Google Drive uploads
 
-Two ways to enable Drive backup of your reports/resumes:
+If you already connected Google Drive in step 6a, Drive uploads are automatic — `/job-search`
+uses the Drive MCP connector to push the CSV and tailored resumes to a folder called
+`JobPilot Reports` in your Drive. Nothing extra to configure.
 
-- **Drive MCP connector** (easiest): connect Google Drive in Claude Desktop; the `/job-search`
-  skill uses it automatically. Leave `GOOGLE_SERVICE_ACCOUNT_JSON` blank.
-- **Service-account fallback** (headless/scheduled): create a Google Cloud service account with
-  the Drive API enabled, download its JSON key, and set
-  `GOOGLE_SERVICE_ACCOUNT_JSON=/full/path/to/key.json` in `.env`. Also run
-  `pip install google-api-python-client google-auth`. Test with:
-  ```bash
-  python3 scripts/drive_upload.py --test
-  ```
-
-If you don't care about Drive, skip this entirely — JobPilot still emails... er, *Telegrams* you
-the CSV.
+If you skipped Drive, that's fine — you'll still get the CSV and reports via Telegram.
 
 ---
 
@@ -194,7 +185,7 @@ One run per day keeps you inside Apify's free tier.
 | `0 raw jobs scraped` | Missing/invalid `APIFY_TOKEN`, exhausted Apify credit, or the actor IDs in `config/actors.json` changed — verify them in the Apify Store. |
 | Scores look low / all keywords missing | `sentence-transformers` not installed (it falls back to a rougher proxy). Run `pip install -r requirements.txt`. |
 | `tectonic: command not found` | Install tectonic, or use `.docx` resumes (the tailor auto-falls back to DOCX). |
-| Drive upload skipped | No connector and no `GOOGLE_SERVICE_ACCOUNT_JSON`. That's fine — it's optional (step 8). |
+| Drive upload skipped | Google Drive not connected in Claude Desktop. Go to Settings → Connections and connect it. |
 | Want to re-see old jobs | Run `/jobpilot-clear` (type CONFIRM) to wipe the seen-job cache. |
 
 ---
@@ -208,7 +199,7 @@ One run per day keeps you inside Apify's free tier.
 ├── options/preferences.json         # your search criteria
 ├── cache/jobs.sqlite                # seen-jobs + score cache
 ├── cache/profile.json               # parsed resume
-├── resumes/base.tex|base.docx       # your master resume
+├── resumes/base.pdf                 # your master resume (cached from Drive)
 ├── resumes/tailored/                # generated tailored resumes
 └── reports/YYYY-MM-DD-<slot>.csv    # generated reports
 ```

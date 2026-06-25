@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
+import re  # used by estimate_ctc
 import sys
 from pathlib import Path
 
@@ -32,19 +32,6 @@ def load_json(path, default):
     except Exception:
         return default
 
-
-def parse_years(text: str):
-    """Extract a representative years-of-experience number from JD text. None if unknown."""
-    if not text:
-        return None
-    t = text.lower()
-    m = re.search(r"(\d+)\s*(?:-|to|–)\s*(\d+)\s*(?:\+)?\s*years?", t)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"(\d+)\s*\+?\s*years?", t)
-    if m:
-        return int(m.group(1))
-    return None
 
 
 def estimate_ctc(job: dict):
@@ -73,12 +60,21 @@ def location_ok(job: dict, prefs: dict) -> bool:
     return not loc
 
 
-def experience_ok(job: dict, prefs: dict) -> bool:
-    user_exp = int(prefs.get("experience_years", 0) or 0)
-    yrs = parse_years((job.get("jd_full") or "") + " " + (job.get("experience_req") or ""))
-    if yrs is None:
-        return True  # unknown -> keep
-    return (user_exp - 1) <= yrs <= (user_exp + 2)
+def location_weight(job: dict, prefs: dict) -> float:
+    """Multiplier based on how well the job location matches the user's priority order."""
+    priority = prefs.get("location_priority") or prefs.get("locations", [])
+    loc = (job.get("location") or "").lower()
+    for i, pref_loc in enumerate(priority):
+        pl = pref_loc.lower()
+        match = ("remote" in loc) if pl == "remote" else (pl in loc)
+        if match:
+            if i == 0:
+                return 1.0
+            elif i == 1:
+                return 0.7
+            else:
+                return 0.4
+    return 0.6  # unknown or not in priority list — neutral
 
 
 def ctc_company_ok(job: dict, prefs: dict):
@@ -107,14 +103,11 @@ def main() -> int:
     profile = load_json(jobpilot_dir() / "cache" / "profile.json", {})
 
     kept = []
-    reasons = {"location": 0, "experience": 0, "ctc_company": 0, "keyword": 0}
+    reasons = {"location": 0, "ctc_company": 0, "keyword": 0}
 
     for job in jobs:
         if not location_ok(job, prefs):
             reasons["location"] += 1
-            continue
-        if not experience_ok(job, prefs):
-            reasons["experience"] += 1
             continue
         keep_ctc, ctc_unknown = ctc_company_ok(job, prefs)
         if not keep_ctc:
@@ -125,12 +118,13 @@ def main() -> int:
             continue
         if ctc_unknown:
             job["ctc_unknown"] = True
+        job["location_weight"] = location_weight(job, prefs)
         kept.append(job)
 
     Path(FILTERED_OUT).write_text(json.dumps(kept, indent=2, ensure_ascii=False))
     print(
         f"Filter: {len(jobs)} in -> {len(kept)} kept | "
-        f"dropped by location={reasons['location']}, experience={reasons['experience']}, "
+        f"dropped by location={reasons['location']}, "
         f"ctc/company={reasons['ctc_company']}, keyword={reasons['keyword']} -> {FILTERED_OUT}"
     )
     return len(kept)

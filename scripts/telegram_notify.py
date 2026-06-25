@@ -98,6 +98,30 @@ def load_jobs_for_digest() -> list:
     return jobs
 
 
+def send_tailored_resumes() -> int:
+    """Send each tailored PDF via sendDocument. Returns count successfully sent."""
+    tailored_dir = jobpilot_dir() / "resumes" / "tailored"
+    if not tailored_dir.exists():
+        return 0
+    pdfs = sorted(tailored_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime)
+    chat_id = get_secret("TELEGRAM_CHAT_ID")
+    count = 0
+    for pdf in pdfs:
+        try:
+            with pdf.open("rb") as fh:
+                resp = requests.post(
+                    api("sendDocument"),
+                    data={"chat_id": chat_id, "caption": f"Tailored resume: {pdf.stem}"},
+                    files={"document": (pdf.name, fh)},
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                count += 1
+        except Exception as exc:
+            print(f"[telegram] failed to send {pdf.name}: {exc}", file=sys.stderr)
+    return count
+
+
 def main_send() -> None:
     csv_path = latest_csv()
     jobs = load_jobs_for_digest()
@@ -106,17 +130,17 @@ def main_send() -> None:
     except Exception:
         raw = len(jobs)
     survived = len(jobs)
-    tailored = len(list((jobpilot_dir() / "resumes" / "tailored").glob("*")))
 
     if csv_path:
         send_document(csv_path)
+    tailored = send_tailored_resumes()
     send_message(build_digest(jobs, raw, survived, tailored))
 
 
 if __name__ == "__main__":
-    if "--send" in sys.argv:
-        main_send()
-        print("Digest sent.")
-    else:
+    if "--test" in sys.argv:
         send_message("JobPilot connected ✅")
         print("Sent test message: JobPilot connected ✅")
+    else:
+        main_send()
+        print("Digest sent.")

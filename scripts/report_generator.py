@@ -22,8 +22,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 COLUMNS = [
     "job_id", "company", "company_blurb", "team_if_known", "role_type", "experience_req",
     "other_req", "jd_full", "jd_summary_points", "application_url", "apply_url_type",
-    "source_board", "posted_date", "match_score", "why_score", "missing_keywords",
-    "resume_additions_suggested", "est_package_range", "package_sources",
+    "source_board", "posted_date", "match_score", "location_weight", "why_score",
+    "missing_keywords", "resume_additions_suggested", "est_package_range", "package_sources",
     "demand_estimate", "contact_for_referral",
 ]
 
@@ -112,6 +112,7 @@ def build_rows(jobs: list) -> list:
             "source_board": job.get("source_board", ""),
             "posted_date": job.get("posted_date", ""),
             "match_score": score,
+            "location_weight": job.get("location_weight", 1.0),
             "why_score": score_data.get("why", ""),
             "missing_keywords": ", ".join(score_data.get("missing_keywords", [])),
             "resume_additions_suggested": "; ".join(score_data.get("suggested_additions", [])),
@@ -120,7 +121,7 @@ def build_rows(jobs: list) -> list:
             "demand_estimate": salary.get("demand_estimate", "") if salary else "",
             "contact_for_referral": job.get("contact_for_referral", ""),
         })
-    rows.sort(key=lambda r: r["match_score"] or 0, reverse=True)
+    rows.sort(key=lambda r: (r.get("match_score") or 0) * (r.get("location_weight") or 1.0), reverse=True)
     return rows
 
 
