@@ -19,3 +19,11 @@ CREATE TABLE IF NOT EXISTS score_cache (
   computed_at TEXT,
   PRIMARY KEY (job_id, resume_hash)
 );
+
+CREATE TABLE IF NOT EXISTS user_feedback (
+  job_id TEXT PRIMARY KEY,
+  status TEXT,
+  notes TEXT,
+  feedback_date TEXT,
+  FOREIGN KEY (job_id) REFERENCES jobs_seen(job_id)
+);
