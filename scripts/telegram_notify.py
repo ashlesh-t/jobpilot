@@ -1,24 +1,22 @@
-"""Telegram notifier.
+"""Telegram notifier — thin HTTP wrapper.
 
-Sends two calls: sendDocument (the CSV) and sendMessage (a formatted digest of the top 3).
-Tokens come from secrets.py. Run directly to send a connectivity test message.
+Claude builds the digest text in the job-search skill and passes it via --digest.
+This script only handles the actual Telegram API calls.
+
+Usage:
+  python3 telegram_notify.py --digest "text" --csv /path/to/report.csv
+  python3 telegram_notify.py --test
 """
 from __future__ import annotations
 
-import glob
-import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from secrets import get_secret  # noqa: E402
 
-IST = timezone(timedelta(hours=5, minutes=30))
-DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
+import requests
 
 
 def jobpilot_dir() -> Path:
@@ -31,116 +29,85 @@ def api(method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
 
 
-def slot_now() -> str:
-    hour = datetime.now(IST).hour
-    return "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
-
-
-def latest_csv() -> Path | None:
-    reports = jobpilot_dir() / "reports"
-    files = sorted(reports.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
-
-
-def send_document(csv_path: Path) -> None:
-    chat_id = get_secret("TELEGRAM_CHAT_ID")
-    with csv_path.open("rb") as fh:
-        requests.post(
-            api("sendDocument"),
-            data={"chat_id": chat_id},
-            files={"document": (csv_path.name, fh)},
-            timeout=60,
-        )
-
-
 def send_message(text: str) -> None:
     chat_id = get_secret("TELEGRAM_CHAT_ID")
     requests.post(
         api("sendMessage"),
         data={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
         timeout=30,
-    )
+    ).raise_for_status()
 
 
-def build_digest(jobs: list, total_found: int, survived_filter: int, tailored_count: int) -> str:
-    date = datetime.now(IST).strftime("%Y-%m-%d")
-    lines = [f"🎯 JobPilot — {date}, {slot_now()}", DIVIDER, "🏆 Top matches:"]
-    top = sorted(jobs, key=lambda j: j.get("match_score", 0) or 0, reverse=True)[:3]
-    for rank, job in enumerate(top, 1):
-        is_gform = str(job.get("apply_url_type", "")).startswith("⚠️") or \
-            job.get("apply_url_type") == "google_form"
-        lines.append(
-            f"{rank}. {job.get('role', '')} @ {job.get('company', '')} "
-            f"(Score: {job.get('match_score', 0)})"
-        )
-        lines.append(
-            f"   💰 {job.get('est_package_range', '?')} LPA | 📍 {job.get('location', '')}"
-        )
-        lines.append(f"   🔗 {job.get('application_url', '')}")
-        if is_gform:
-            lines.append("   ⚠️ Google Form — fill carefully!")
-    lines.append("")
-    lines.append(
-        f"📊 {total_found} found → {survived_filter} matched → "
-        f"{tailored_count} resumes tailored"
-    )
-    lines.append("CSV + tailored resumes uploaded to Drive.")
-    lines.append(DIVIDER)
-    return "\n".join(lines)
-
-
-def load_jobs_for_digest() -> list:
-    """Pull top jobs from the filtered file enriched with scores (best-effort)."""
-    try:
-        jobs = json.loads(Path("/tmp/jobpilot_filtered.json").read_text())
-    except Exception:
-        return []
-    return jobs
+def send_document(file_path: Path, caption: str = "") -> None:
+    chat_id = get_secret("TELEGRAM_CHAT_ID")
+    with file_path.open("rb") as fh:
+        data = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+        requests.post(
+            api("sendDocument"),
+            data=data,
+            files={"document": (file_path.name, fh)},
+            timeout=60,
+        ).raise_for_status()
 
 
 def send_tailored_resumes() -> int:
-    """Send each tailored PDF via sendDocument. Returns count successfully sent."""
     tailored_dir = jobpilot_dir() / "resumes" / "tailored"
     if not tailored_dir.exists():
         return 0
-    pdfs = sorted(tailored_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime)
-    chat_id = get_secret("TELEGRAM_CHAT_ID")
     count = 0
-    for pdf in pdfs:
+    for pdf in sorted(tailored_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime):
         try:
-            with pdf.open("rb") as fh:
-                resp = requests.post(
-                    api("sendDocument"),
-                    data={"chat_id": chat_id, "caption": f"Tailored resume: {pdf.stem}"},
-                    files={"document": (pdf.name, fh)},
-                    timeout=60,
-                )
-                resp.raise_for_status()
-                count += 1
+            send_document(pdf, caption=f"Tailored resume: {pdf.stem}")
+            count += 1
         except Exception as exc:
             print(f"[telegram] failed to send {pdf.name}: {exc}", file=sys.stderr)
     return count
 
 
-def main_send() -> None:
-    csv_path = latest_csv()
-    jobs = load_jobs_for_digest()
-    try:
-        raw = len(json.loads(Path("/tmp/jobpilot_raw.json").read_text()))
-    except Exception:
-        raw = len(jobs)
-    survived = len(jobs)
+def main() -> None:
+    args = sys.argv[1:]
 
-    if csv_path:
-        send_document(csv_path)
+    if "--test" in args:
+        send_message("JobPilot connected ✅")
+        print("Sent test message: JobPilot connected ✅")
+        return
+
+    digest = ""
+    csv_path = None
+
+    if "--digest" in args:
+        idx = args.index("--digest")
+        if idx + 1 < len(args):
+            digest = args[idx + 1]
+
+    if "--csv" in args:
+        idx = args.index("--csv")
+        if idx + 1 < len(args):
+            csv_path = Path(args[idx + 1])
+
+    if csv_path and csv_path.is_file():
+        try:
+            send_document(csv_path)
+            print(f"[telegram] sent CSV: {csv_path.name}")
+        except Exception as exc:
+            print(f"[telegram] CSV send failed: {exc}", file=sys.stderr)
+
     tailored = send_tailored_resumes()
-    send_message(build_digest(jobs, raw, survived, tailored))
+    if tailored:
+        print(f"[telegram] sent {tailored} tailored resume(s)")
+
+    if digest:
+        try:
+            send_message(digest)
+            print("[telegram] digest sent")
+        except Exception as exc:
+            print(f"[telegram] digest send failed: {exc}", file=sys.stderr)
+    elif not csv_path:
+        print("usage: python3 telegram_notify.py --digest 'text' [--csv path]", file=sys.stderr)
+        print("       python3 telegram_notify.py --test", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    if "--test" in sys.argv:
-        send_message("JobPilot connected ✅")
-        print("Sent test message: JobPilot connected ✅")
-    else:
-        main_send()
-        print("Digest sent.")
+    main()

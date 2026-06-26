@@ -1,0 +1,43 @@
+{
+  "actors": {
+    "openclawai/job-board-scraper": {
+      "field_overrides": {
+        "keywords": "searchTerms"
+      },
+      "value_transforms": {
+        "keywords": "split_array"
+      },
+      "confirmed_schema": {
+        "searchTerms": "array of strings — NOT keywords string",
+        "location": "string",
+        "maxResults": "int",
+        "hoursOld": "int",
+        "boards": "array of strings"
+      },
+      "last_success": null,
+      "zero_result_runs": [
+        {
+          "input_keys_used": ["keywords", "location", "hoursOld", "maxResults", "boards"],
+          "date": "2026-06-26",
+          "diagnosis": "Wrong field name: actor expects 'searchTerms' array, not 'keywords' string. Silently returns 0 results with no error when wrong field is used."
+        }
+      ],
+      "notes": "searchTerms[] required. 'keywords' string field silently returns 0 results. Discovered 2026-06-26 via trial-and-error. Split keyword string into array of terms."
+    },
+    "orgupdate/job-posting-scraper": {
+      "field_overrides": {},
+      "value_transforms": {},
+      "confirmed_schema": {},
+      "last_success": null,
+      "zero_result_runs": [],
+      "notes": ""
+    }
+  },
+  "source_quirks": {
+    "linkedin": "JD text is almost always empty from Apify scrapers — LinkedIn aggressively blocks JD extraction. has_jd will be false for most LinkedIn jobs. Use keyword_score only; set semantic_score=30 as neutral baseline. Do NOT tailor resume for no-JD jobs.",
+    "remoteok": "tags field contains tech stack — already appended to jd_full by scraper. has_jd should be true for most Remote OK jobs.",
+    "hackernews": "Free-form comment text, not structured JDs. Parse the full text field. Quality varies widely — treat HN scores with lower confidence.",
+    "weworkremotely": "RSS description is often short HTML. has_jd may be marginal — accept anything > 100 chars."
+  },
+  "last_updated": "2026-06-26"
+}

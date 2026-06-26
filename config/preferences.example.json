@@ -15,5 +15,6 @@
   "resume_drive_file_id": "",
   "score_threshold": 75,
   "top_n_tailor": 5,
+  "top_n_report": 50,
   "schedule_slots_ist": ["09:30", "14:00"]
 }

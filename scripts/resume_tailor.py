@@ -1,29 +1,22 @@
-"""Resume tailor.
+"""Resume tailor — DOCX fallback only.
 
-Generates a JD-tailored resume for a high-scoring job. Two modes:
-  * default (.tex): edit ~/.claude/job-hunt-ai/resumes/base.tex and compile with tectonic -> PDF
-  * --docx: build a clean DOCX from profile.json + JD keywords
+Used when the user has no LaTeX source. Builds a keyword-optimised DOCX from profile.json
+and the job JD. Primary tailoring (LaTeX editing + tectonic compile) is handled directly by
+Claude in the job-tailor skill.
 
 Guards:
-  * only runs if match_score >= score_threshold (default 75)
-  * skips if this job_id already has a tailored_resume_path
-  * self-caps at top_n_tailor (default 5) tailored resumes per calendar run, tracked via a
-    counter file in /tmp.
+  * self-caps at top_n_tailor (default 5) per calendar run via /tmp counter
+  * skips if this job_id already has a tailored_resume_path in SQLite
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import shutil
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ats_scorer  # noqa: E402
 
 FILTERED_IN = "/tmp/jobpilot_filtered.json"
 RUN_COUNTER = "/tmp/jobpilot_tailor_count.txt"
@@ -100,7 +93,7 @@ def safe_company(job: dict) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", (job.get("company") or "company")).strip("-").lower()
 
 
-def build_docx(job: dict, profile: dict, out_path: Path) -> None:
+def build_docx(job: dict, profile: dict, matched_skills: list, out_path: Path) -> None:
     import docx
     from docx.shared import Pt
 
@@ -111,7 +104,6 @@ def build_docx(job: dict, profile: dict, out_path: Path) -> None:
     if contact:
         doc.add_paragraph(contact)
 
-    # Objective tuned to the role
     doc.add_heading("Objective", level=1)
     doc.add_paragraph(
         f"{profile.get('experience_years', 0)}+ yr engineer targeting the "
@@ -119,10 +111,8 @@ def build_docx(job: dict, profile: dict, out_path: Path) -> None:
         f"bringing hands-on strengths in the technologies this team uses."
     )
 
-    # Skills — lead with JD-matched skills
-    score = ats_scorer.score_job(job, profile)
-    matched = score.get("matched_keywords", [])
-    all_skills = matched + [s for s in profile.get("skills", []) if s not in matched]
+    # Lead with JD-matched skills
+    all_skills = matched_skills + [s for s in profile.get("skills", []) if s not in matched_skills]
     doc.add_heading("Skills", level=1)
     doc.add_paragraph(", ".join(all_skills) if all_skills else "See base resume")
 
@@ -134,7 +124,8 @@ def build_docx(job: dict, profile: dict, out_path: Path) -> None:
     if profile.get("projects"):
         doc.add_heading("Projects", level=1)
         for p in profile["projects"]:
-            doc.add_paragraph(str(p), style="List Bullet")
+            text = p if isinstance(p, str) else json.dumps(p)
+            doc.add_paragraph(text, style="List Bullet")
 
     edu = profile.get("education", {})
     if edu:
@@ -148,50 +139,9 @@ def build_docx(job: dict, profile: dict, out_path: Path) -> None:
     doc.save(str(out_path))
 
 
-def build_tex_pdf(job: dict, profile: dict, out_pdf: Path) -> bool:
-    base = jobpilot_dir() / "resumes" / "base.tex"
-    if not base.is_file():
-        print(f"[tailor] base.tex not found at {base}; use --docx mode.", file=sys.stderr)
-        return False
-    tex = base.read_text(errors="ignore")
-
-    score = ats_scorer.score_job(job, profile)
-    matched = score.get("matched_keywords", [])
-    keyword_line = ", ".join(matched) if matched else ""
-
-    # Inject a tailored objective comment + keyword emphasis (non-destructive).
-    banner = (
-        f"% Tailored for {job.get('company','')} - {job.get('role','')}\n"
-        f"% Emphasised keywords: {keyword_line}\n"
-    )
-    tex = banner + tex
-
-    tmp_tex = Path("/tmp") / f"{safe_company(job)}-{job.get('job_id','')}.tex"
-    tmp_tex.write_text(tex)
-
-    if not shutil.which("tectonic"):
-        print("[tailor] tectonic not installed; cannot compile PDF. Saved .tex only.",
-              file=sys.stderr)
-        shutil.copy(tmp_tex, out_pdf.with_suffix(".tex"))
-        return False
-    try:
-        subprocess.run(
-            ["tectonic", str(tmp_tex), "--outdir", str(out_pdf.parent)],
-            check=True, capture_output=True, timeout=180,
-        )
-        compiled = out_pdf.parent / (tmp_tex.stem + ".pdf")
-        if compiled.exists():
-            compiled.rename(out_pdf)
-            return True
-    except Exception as exc:  # noqa: BLE001
-        print(f"[tailor] tectonic compile failed: {exc}", file=sys.stderr)
-    return False
-
-
-def tailor(job_id: str, docx_mode: bool) -> str | None:
+def tailor(job_id: str, matched_skills: list | None = None) -> str | None:
     prefs = load_json(jobpilot_dir() / "options" / "preferences.json", {})
     profile = load_json(jobpilot_dir() / "cache" / "profile.json", {})
-    threshold = float(prefs.get("score_threshold", 75))
     cap = int(prefs.get("top_n_tailor", 5))
 
     job = find_job(job_id)
@@ -205,26 +155,12 @@ def tailor(job_id: str, docx_mode: bool) -> str | None:
         print(f"[tailor] per-run cap of {cap} reached — skipping {job_id}.")
         return None
 
-    score = ats_scorer.score_by_id(job_id).get("score", 0)
-    if score < threshold:
-        print(f"[tailor] score {score} < threshold {threshold} — skipping {job_id}.")
-        return None
-
     tailored_dir = jobpilot_dir() / "resumes" / "tailored"
     tailored_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{safe_company(job)}-{job_id}"
+    out = tailored_dir / f"{stem}.docx"
 
-    if docx_mode:
-        out = tailored_dir / f"{stem}.docx"
-        build_docx(job, profile, out)
-    else:
-        out = tailored_dir / f"{stem}.pdf"
-        ok = build_tex_pdf(job, profile, out)
-        if not ok and not out.exists():
-            # fall back to docx so the run still yields a deliverable
-            out = tailored_dir / f"{stem}.docx"
-            build_docx(job, profile, out)
-
+    build_docx(job, profile, matched_skills or [], out)
     set_tailored_path(job_id, str(out))
     bump_count()
     print(f"[tailor] wrote {out}")
@@ -234,9 +170,17 @@ def tailor(job_id: str, docx_mode: bool) -> str | None:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
-        print("usage: python3 resume_tailor.py <job_id> [--docx]", file=sys.stderr)
+        print("usage: python3 resume_tailor.py <job_id> [--matched-skills skill1,skill2]",
+              file=sys.stderr)
         sys.exit(1)
-    tailor(args[0], docx_mode="--docx" in sys.argv)
+
+    matched_skills = []
+    if "--matched-skills" in sys.argv:
+        idx = sys.argv.index("--matched-skills")
+        if idx + 1 < len(sys.argv):
+            matched_skills = [s.strip() for s in sys.argv[idx + 1].split(",") if s.strip()]
+
+    tailor(args[0], matched_skills)
 
 
 if __name__ == "__main__":

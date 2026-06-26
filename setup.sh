@@ -43,6 +43,26 @@ else
   echo "!!  pip3 not found — install Python 3.11+ then: pip3 install -r requirements.txt"
 fi
 
-# 5. Interactive secrets wizard
+# 5. Seed the lessons cache if not already present
+LESSONS="$JOBPILOT_DIR/cache/apify_lessons.json"
+if [ ! -f "$LESSONS" ]; then
+  cp "$REPO_DIR/config/apify_lessons_seed.json" "$LESSONS"
+  echo "==> Seeded apify_lessons.json with known actor schemas"
+else
+  echo "==> apify_lessons.json already exists — leaving it untouched"
+fi
+
+# 6. Sync slash commands from skills/ to .claude/commands/
+mkdir -p "$REPO_DIR/.claude/commands"
+for skill_dir in "$REPO_DIR/skills"/*/; do
+  skill_name=$(basename "$skill_dir")
+  if [ -f "$skill_dir/SKILL.md" ]; then
+    cp "$skill_dir/SKILL.md" "$REPO_DIR/.claude/commands/${skill_name}.md"
+    echo "    synced: $skill_name"
+  fi
+done
+echo "==> Slash commands synced to .claude/commands/"
+
+# 7. Interactive secrets wizard
 echo "==> Launching secrets wizard..."
 python3 "$REPO_DIR/scripts/setup_wizard.py"

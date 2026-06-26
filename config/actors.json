@@ -1,7 +1,11 @@
 {
   "primary_scraper": "openclawai/job-board-scraper",
   "ats_scraper": "orgupdate/job-posting-scraper",
+  "naukri_scraper": "",
+  "wellfound_scraper": "",
+  "cutshort_scraper": "",
   "boards": ["linkedin", "indeed", "glassdoor", "google", "naukri"],
   "max_results_per_board": 50,
-  "hours_old": 24
+  "hours_old": 24,
+  "free_sources": ["remoteok", "weworkremotely"]
 }
