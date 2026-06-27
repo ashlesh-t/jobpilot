@@ -1,11 +1,16 @@
 {
   "primary_scraper": "openclawai/job-board-scraper",
   "ats_scraper": "orgupdate/job-posting-scraper",
-  "naukri_scraper": "",
-  "wellfound_scraper": "",
-  "cutshort_scraper": "",
-  "boards": ["linkedin", "indeed", "glassdoor", "google", "naukri"],
+  "indeed_india_scraper": "k1ra/indeed-jobs-scraper",
+  "naukri_scraper": "thirdwatch/naukri-jobs-scraper",
+  "cutshort_scraper": "thirdwatch/cutshort-jobs-scraper",
+  "wellfound_scraper": "blackfalcondata/wellfound-scraper",
+  "ambitionbox_scraper": "thirdwatch/ambitionbox-scraper",
+  "boards": ["linkedin", "glassdoor", "indeed", "google"],
   "max_results_per_board": 50,
-  "hours_old": 24,
-  "free_sources": ["remoteok", "weworkremotely"]
+  "hours_old": 48,
+  "_native_sources": [
+    "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy"
+  ],
+  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings."
 }

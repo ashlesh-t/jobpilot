@@ -14,6 +14,13 @@ from pathlib import Path
 FOLDER_NAME = "JobPilot Reports"
 MANIFEST_OUT = "/tmp/jobpilot_drive_manifest.json"
 
+MIME_BY_SUFFIX = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
 
 def jobpilot_dir() -> Path:
     raw = os.environ.get("JOBPILOT_DIR", "~/.claude/job-hunt-ai")
@@ -22,8 +29,10 @@ def jobpilot_dir() -> Path:
 
 def collect_files() -> list:
     files = []
+    # Newest report — prefer .xlsx, fall back to .csv.
     reports = sorted(
-        (jobpilot_dir() / "reports").glob("*.csv"),
+        [*(jobpilot_dir() / "reports").glob("*.xlsx"),
+         *(jobpilot_dir() / "reports").glob("*.csv")],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -31,7 +40,8 @@ def collect_files() -> list:
         files.append(reports[0])
     tailored = jobpilot_dir() / "resumes" / "tailored"
     if tailored.exists():
-        files.extend(tailored.glob("*.pdf"))
+        files.extend(sorted(tailored.glob("*.pdf")))
+        files.extend(sorted(tailored.glob("*.docx")))
     return files
 
 
@@ -43,7 +53,7 @@ def upload_run() -> None:
             {
                 "path": str(p.resolve()),
                 "name": p.name,
-                "mime": "text/csv" if p.suffix == ".csv" else "application/pdf",
+                "mime": MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream"),
             }
             for p in files
         ],

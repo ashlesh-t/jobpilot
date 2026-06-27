@@ -27,3 +27,16 @@ CREATE TABLE IF NOT EXISTS user_feedback (
   feedback_date TEXT,
   FOREIGN KEY (job_id) REFERENCES jobs_seen(job_id)
 );
+
+CREATE TABLE IF NOT EXISTS url_security_cache (
+  url_hash     TEXT PRIMARY KEY,   -- SHA256(url)[:32]
+  url          TEXT NOT NULL,
+  risk_score   INTEGER DEFAULT 0,
+  risk_label   TEXT DEFAULT 'unknown', -- safe | suspicious | dangerous
+  is_allowlist INTEGER DEFAULT 0,
+  final_url    TEXT,
+  redirect_hops TEXT,              -- JSON array of intermediate URLs
+  threats      TEXT,               -- JSON array of matched threat names
+  checked_at   TEXT,
+  expires_at   TEXT                -- ISO datetime; re-check after expiry
+);
