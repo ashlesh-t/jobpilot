@@ -4,7 +4,8 @@ Every native scraper returns a list of dicts in the canonical JobPilot schema:
 
     {
       "job_id", "company", "role", "location", "experience_req",
-      "jd_full", "application_url", "source_board", "posted_date"
+      "jd_full", "application_url", "source_board", "posted_date",
+      "last_date"   # application deadline (empty string = unknown)
     }
 
 job_id uses the SAME hash as apify_scraper.make_job_id so native + Apify results
@@ -99,7 +100,7 @@ def region_ok(location_text: str, focus: str) -> bool:
 
 
 def build_job(*, company, role, location, jd="", url="", source,
-              posted="", exp="") -> dict:
+              posted="", exp="", last_date="") -> dict:
     """Assemble one normalized job dict (canonical JobPilot schema)."""
     company = clean(company)
     role = clean(role)
@@ -115,6 +116,7 @@ def build_job(*, company, role, location, jd="", url="", source,
         "application_url": clean(url),
         "source_board": board,
         "posted_date": clean(posted) or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "last_date": clean(last_date),
     }
 
 

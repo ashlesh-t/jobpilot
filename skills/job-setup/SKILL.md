@@ -238,6 +238,71 @@ graduation year, github/portfolio if found) so the user can verify everything lo
 
 ---
 
+---
+
+## Step G — Telegram Channel Scraper (optional)
+
+Telegram channel scraping provides free India job leads from curated public channels.
+It requires a personal Telegram API key (separate from the bot token used for notifications).
+
+**Skip this step if the user declines** — it is entirely optional. Native scraping works fine without it.
+
+### G1 — Check if already configured
+
+If `~/.claude/job-hunt-ai/cache/telegram.session` exists:
+> "Telegram channel scraper is already authenticated. Skip this step? [Y/n]"
+If yes → skip to Confirmation summary.
+
+### G2 — Explain and get consent
+
+Show the user:
+> "The Telegram channel scraper reads recent job posts from public Indian job channels
+> (e.g. @techjobsindia, @bengalurujobs) directly via the Telegram API — no bots involved.
+> This requires a personal Telegram API key from my.telegram.org.
+> Your account is only used to READ public channels — nothing is posted on your behalf.
+> Would you like to set this up? [Y/n]"
+
+If no → skip.
+
+### G3 — Collect API credentials
+
+1. Ask the user to:
+   - Visit `https://my.telegram.org` and log in with their phone number
+   - Go to **API Development Tools**
+   - Create an app (any name, e.g. "JobPilot") if they haven't already
+   - Copy the **API ID** (a number) and **API Hash** (a hex string)
+
+2. Collect via AskUserQuestion (text input, not shown in Telegram):
+   - "Enter your Telegram API ID (number from my.telegram.org):"
+   - "Enter your Telegram API Hash (string from my.telegram.org):"
+
+3. Save secrets:
+   ```bash
+   python3 -c "
+   import sys; sys.path.insert(0, 'scripts')
+   from secrets import set_secret
+   set_secret('TELEGRAM_API_ID', '<api_id>')
+   set_secret('TELEGRAM_API_HASH', '<api_hash>')
+   "
+   ```
+
+### G4 — Authenticate (interactive)
+
+```bash
+python3 scripts/scrapers/telegram_channels.py --auth
+```
+
+This will:
+- Prompt for the user's phone number (with country code, e.g. +91...)
+- Send an OTP via the Telegram app
+- Save `~/.claude/job-hunt-ai/cache/telegram.session` permanently
+
+After completion, confirm:
+> "Telegram channel scraper authenticated. Session saved.
+> Public India job channels will be scraped on every `/job-search` run."
+
+---
+
 ## Notes
 - Never invoke any scraping here — this skill is configuration only.
 - If `resume_parser.py` fails (corrupt PDF, unreadable), print the error and ask the user to

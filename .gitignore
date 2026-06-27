@@ -24,4 +24,3 @@ venv/
 # Claude Code personal config (local to each user's machine)
 .claude/
 .claude-plugin/
-prompt.txt

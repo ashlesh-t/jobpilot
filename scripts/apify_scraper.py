@@ -16,13 +16,11 @@ NEVER calls the LLM. NEVER reads os.environ for secrets directly (uses secrets.p
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import sys
 import time
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,9 +34,9 @@ from scrapers._common import make_job_id  # noqa: E402
 REPO_DIR = Path(__file__).resolve().parent.parent
 RAW_OUT = "/tmp/jobpilot_raw.json"
 STATUS_OUT = "/tmp/jobpilot_scrape_status.json"
-FREE_ONLY = "--free-only" in sys.argv
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds between retry attempts
+APIFY_BASE = "https://api.apify.com/v2"
 
 # Set once if Apify becomes unusable mid-run, so we prompt/skip only once.
 _apify_blocked = False
@@ -73,9 +71,26 @@ def load_lessons() -> dict:
     return load_json(seed_path, {})
 
 
-def make_job_id(company: str, role: str, location: str, source: str) -> str:
-    raw = f"{source}|{company}|{role}|{location}".lower()
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+def load_run_state() -> dict:
+    return load_json(jobpilot_dir() / "cache" / "run_state.json",
+                     {"exhausted_slots": [], "next_scheduled_mode": "full", "last_full_run": ""})
+
+
+def save_run_state(state: dict) -> None:
+    path = jobpilot_dir() / "cache" / "run_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2))
+
+
+def _get_active_token(exhausted_slots: list) -> tuple:
+    """Return (token, slot_number) for the first non-exhausted slot that has a token."""
+    for slot, key in [(1, "APIFY_TOKEN"), (2, "APIFY_TOKEN_2"), (3, "APIFY_TOKEN_3")]:
+        if slot in exhausted_slots:
+            continue
+        t = get_secret_optional(key)
+        if t:
+            return t, slot
+    return None, 0
 
 
 # --------------------------------------------------------------------------- #
@@ -106,6 +121,8 @@ def normalize(item: dict, source_board: str) -> dict:
     if salary and salary.lower() not in jd_full.lower():
         jd_full = (jd_full + f"  Salary: {salary}").strip()
     board = str(pick("board", "site", "source", default=source_board)).strip() or source_board
+    last_date = str(pick("applicationDeadline", "lastDate", "applyBy", "deadline",
+                         default="")).strip()
 
     return {
         "job_id": make_job_id(company, role, location, board),
@@ -118,6 +135,7 @@ def normalize(item: dict, source_board: str) -> dict:
         "application_url": application_url,
         "source_board": board,
         "posted_date": posted or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "last_date": last_date,
     }
 
 
@@ -191,7 +209,7 @@ def _call_apify_actor(actor_id: str, run_input: dict, token: str, timeout: int) 
 def _run_apify_actor_raw(actor_id: str, run_input: dict, token: str, timeout: int) -> list:
     """Raw requests fallback if apify-client is unavailable."""
     actor_path = actor_id.replace("/", "~")
-    url = f"https://api.apify.com/v2/acts/{actor_path}/run-sync-get-dataset-items"
+    url = f"{APIFY_BASE}/acts/{actor_path}/run-sync-get-dataset-items"
     resp = requests.post(
         url,
         params={"token": token},
@@ -203,89 +221,9 @@ def _run_apify_actor_raw(actor_id: str, run_input: dict, token: str, timeout: in
     return data if isinstance(data, list) else data.get("items", [])
 
 
-# ── Free sources ─────────────────────────────────────────────────────────────
-
-def fetch_remoteok() -> list:
-    """Remote OK public JSON API — no auth needed."""
-    results = []
-    try:
-        resp = requests.get(
-            "https://remoteok.com/api",
-            headers={"User-Agent": "JobPilot/1.0"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        for item in resp.json():
-            if not isinstance(item, dict) or not item.get("position"):
-                continue
-            tags = item.get("tags") or []
-            results.append(normalize(
-                {
-                    "company": item.get("company", ""),
-                    "title": item.get("position", ""),
-                    "location": "Remote",
-                    "description": item.get("description", "") + " " + " ".join(tags),
-                    "url": item.get("url", ""),
-                    "postedAt": item.get("date", ""),
-                },
-                "remoteok",
-            ))
-    except Exception as exc:
-        print(f"[remoteok] fetch failed: {exc}", file=sys.stderr)
-    print(f"[remoteok] {len(results)} jobs fetched", file=sys.stderr)
-    return results
-
-
-def fetch_weworkremotely() -> list:
-    """We Work Remotely RSS feeds — no auth needed."""
-    feeds = [
-        "https://weworkremotely.com/categories/remote-programming-jobs.rss",
-        "https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
-        "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
-    ]
-    results = []
-    seen_ids: set = set()
-    for feed_url in feeds:
-        try:
-            resp = requests.get(feed_url, timeout=30, headers={"User-Agent": "JobPilot/1.0"})
-            resp.raise_for_status()
-            root = ET.fromstring(resp.content)
-            for item in root.iter("item"):
-                def tag(name: str) -> str:
-                    el = item.find(name)
-                    return (el.text or "").strip() if el is not None else ""
-
-                title_raw = tag("title")
-                if ":" in title_raw:
-                    company, _, role = title_raw.partition(":")
-                else:
-                    company, role = "", title_raw
-                company = company.strip()
-                role = role.strip()
-                link = tag("link")
-                jid = make_job_id(company, role, "Remote", "weworkremotely")
-                if jid in seen_ids:
-                    continue
-                seen_ids.add(jid)
-                jd_text = tag("description")
-                results.append({
-                    "job_id": jid,
-                    "company": company,
-                    "role": role,
-                    "location": "Remote",
-                    "experience_req": "",
-                    "jd_full": jd_text,
-                    "has_jd": len(jd_text.strip()) > 100,
-                    "application_url": link,
-                    "source_board": "weworkremotely",
-                    "posted_date": tag("pubDate") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                })
-        except Exception as exc:
-            print(f"[weworkremotely] feed {feed_url} failed: {exc}", file=sys.stderr)
-    print(f"[weworkremotely] {len(results)} jobs fetched", file=sys.stderr)
-    return results
-
-
+# --------------------------------------------------------------------------- #
+# Hacker News — Who Is Hiring (free, native)
+# --------------------------------------------------------------------------- #
 def fetch_hn_whoishiring() -> list:
     results = []
     try:
@@ -329,12 +267,6 @@ def fetch_hn_whoishiring() -> list:
     return results
 
 
-# ── Main scrape ──────────────────────────────────────────────────────────────
-
-def scrape_apify(
-    actors: dict, prefs: dict, token: str, lessons: dict
-) -> tuple[list, dict]:
-    """Run all configured Apify actors. Returns (normalized jobs, source_status)."""
 # --------------------------------------------------------------------------- #
 # Apify health + error handling
 # --------------------------------------------------------------------------- #
@@ -447,7 +379,7 @@ def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int):
     url = f"{APIFY_BASE}/acts/{actor_path}/run-sync-get-dataset-items"
     try:
         resp = requests.post(url, params={"token": token}, json=run_input, timeout=timeout)
-        if resp.status_code == 201 or resp.status_code == 200:
+        if resp.status_code in (200, 201):
             data = resp.json()
             if isinstance(data, list):
                 return data, None
@@ -474,13 +406,6 @@ def build_keywords(prefs: dict) -> str:
     extra = (prefs.get("search_keywords_extra") or "").strip()
     if extra:
         keywords = keywords + " " + extra
-
-    location_priority = prefs.get("location_priority") or prefs.get("locations", ["Bengaluru"])
-    primary_location = location_priority[0]
-    secondary_locations = location_priority[1:]
-    boards = actors.get("boards", ["linkedin", "indeed", "glassdoor", "google", "naukri"])
-    max_results = actors.get("max_results_per_board", 50)
-    hours_old = actors.get("hours_old", 24)
     return keywords.strip()
 
 
@@ -523,6 +448,33 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
         results += safe("jobicy", lambda: jobicy.fetch(keywords, max_results=cap, focus=focus))
         results += safe("arbeitnow",
                         lambda: arbeitnow.fetch(keywords, max_results=cap, focus=focus))
+
+    # Hacker News — Who Is Hiring. Cap at 20 to avoid flooding the pipeline.
+    hn = safe("hackernews", fetch_hn_whoishiring)
+    results += hn[:20]
+
+    # LinkedIn guest API — free, no auth, no JD but gives title/company/location/URL.
+    try:
+        from scrapers import linkedin_guest  # noqa
+        for loc in [l for l in locations[:2] if l.lower() != "remote"] or [""]:
+            results += safe(
+                f"linkedin_guest/{loc or 'all'}",
+                lambda loc=loc: linkedin_guest.fetch(keywords, loc, max_results=25, focus=focus),
+            )
+    except ImportError:
+        pass  # scraper not installed yet — skip silently
+
+    # Telegram job channels — only if session file exists (opt-in after --auth).
+    session_path = jobpilot_dir() / "cache" / "telegram.session"
+    if session_path.exists():
+        try:
+            from scrapers import telegram_channels  # noqa
+            results += safe(
+                "telegram_channels",
+                lambda: telegram_channels.fetch(keywords, max_results=60, focus=focus),
+            )
+        except ImportError:
+            pass  # telethon not installed yet — skip silently
 
     return results
 
@@ -607,8 +559,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
 
     # Supplementary job-board scraper (orgupdate schema: requires countryName,
     # locationName, pagesToFetch; keywords via includeKeyword). India/both only — it
-    # needs a concrete country. NOTE: this actor is a generic board scraper, not an
-    # ATS/greenhouse-specific one.
+    # needs a concrete country.
     ats = actors.get("ats_scraper")
     if ats and focus in ("india", "both"):
         results += run_actor_safe(ats, {
@@ -633,148 +584,66 @@ def scrape(native_only: bool = False) -> list:
         focus = "india"
 
     all_jobs: list = []
-    source_status: dict = {}
 
-<<<<<<< HEAD
-    # Actor 1: general job-board scraper
-    primary = actors.get("primary_scraper", "openclawai/job-board-scraper")
-    base_primary_input = {
-        "keywords": keywords,
-        "location": primary_location,
-        "hoursOld": hours_old,
-        "maxResults": max_results,
-        "boards": boards,
-    }
-    primary_input = build_run_input(base_primary_input, primary, lessons)
-    items, ok, attempts = run_apify_actor(primary, primary_input, token)
-    source_status[primary] = {
-        "count": len(items), "status": "ok" if ok else "failed", "attempts": attempts
-    }
-    for item in items:
-        all_jobs.append(normalize(item, "job-board"))
-
-    for sec_loc in secondary_locations:
-        sec_input = {**primary_input, "location": sec_loc, "maxResults": max_results // 2}
-        items, ok, _ = run_apify_actor(primary, sec_input, token)
-        for item in items:
-            all_jobs.append(normalize(item, "job-board"))
-
-    # Actor 2: ATS-targeted scraper (Greenhouse/Lever/Ashby/Workday)
-    ats = actors.get("ats_scraper", "orgupdate/job-posting-scraper")
-    base_ats_input = {
-        "keywords": keywords,
-        "location": primary_location,
-        "hoursOld": hours_old,
-        "maxResults": max_results,
-        "targets": ["greenhouse", "lever", "ashby", "workday"],
-    }
-    ats_input = build_run_input(base_ats_input, ats, lessons)
-    items, ok, attempts = run_apify_actor(ats, ats_input, token)
-    source_status[ats] = {
-        "count": len(items), "status": "ok" if ok else "failed", "attempts": attempts
-    }
-    for item in items:
-        all_jobs.append(normalize(item, "ats"))
-
-    # Optional India-specific actors
-    india_actors = [
-        ("naukri_scraper", "naukri"),
-        ("wellfound_scraper", "wellfound"),
-        ("cutshort_scraper", "cutshort"),
-    ]
-    for actor_key, source_label in india_actors:
-        actor_id = actors.get(actor_key, "").strip()
-        if not actor_id:
-            continue
-        base_india_input = {
-            "keywords": keywords,
-            "location": primary_location,
-            "maxResults": max_results,
-        }
-        india_input = build_run_input(base_india_input, actor_id, lessons)
-        items, ok, attempts = run_apify_actor(actor_id, india_input, token)
-        source_status[actor_id] = {
-            "count": len(items), "status": "ok" if ok else "failed", "attempts": attempts
-        }
-        for item in items:
-            all_jobs.append(normalize(item, source_label))
-
-    return all_jobs, source_status
-
-
-def scrape() -> list:
-    actors = load_actors()
-    prefs = load_preferences()
-    lessons = load_lessons()
-    free_sources = actors.get("free_sources", ["remoteok", "weworkremotely"])
-
-    all_jobs: list = []
-    source_status: dict = {}
-
-    if not FREE_ONLY:
-        token = get_secret_optional("APIFY_TOKEN")
-        if token:
-            apify_jobs, apify_status = scrape_apify(actors, prefs, token, lessons)
-            all_jobs.extend(apify_jobs)
-            source_status.update(apify_status)
-        else:
-            print("[apify] APIFY_TOKEN missing — skipping paid scrapers.", file=sys.stderr)
-
-    # Free sources — always fetched
-    if "remoteok" in free_sources:
-        jobs = fetch_remoteok()
-        all_jobs.extend(jobs)
-        source_status["remoteok"] = {
-            "count": len(jobs), "status": "ok" if jobs else "empty", "attempts": 1
-        }
-    if "weworkremotely" in free_sources:
-        jobs = fetch_weworkremotely()
-        all_jobs.extend(jobs)
-        source_status["weworkremotely"] = {
-            "count": len(jobs), "status": "ok" if jobs else "empty", "attempts": 1
-        }
-    hn_jobs = fetch_hn_whoishiring()
-    all_jobs.extend(hn_jobs)
-    source_status["hackernews"] = {
-        "count": len(hn_jobs), "status": "ok" if hn_jobs else "empty", "attempts": 1
-    }
-
-    # Write per-source status for the job-search skill to read and diagnose
-    Path(STATUS_OUT).write_text(json.dumps(source_status, indent=2))
-    print(f"[scraper] status written to {STATUS_OUT}", file=sys.stderr)
-=======
     # 1) Native first — always free, always runs.
     all_jobs += run_native_scrapers(focus, prefs)
 
-    # 2) Apify layer — only if a valid token exists and not explicitly skipped.
+    # 2) Apify layer — multi-slot key rotation; degrade to native-only if all exhausted.
     if not native_only:
-        token = apify_token()
-        if apify_available(token):
-            token_holder = {"token": token}
-            all_jobs += run_apify_layer(focus, prefs, actors, token_holder)
-        elif token:
-            # token present but invalid — prompt once
-            new_token = prompt_for_new_token("token invalid")
-            if new_token:
-                all_jobs += run_apify_layer(focus, prefs, actors, {"token": new_token})
-        else:
-            print("[apify] no APIFY_TOKEN set — native sources only.", file=sys.stderr)
+        run_state = load_run_state()
+        exhausted = list(run_state.get("exhausted_slots", []))
+        apify_ran = False
+
+        while True:
+            token, slot = _get_active_token(exhausted)
+            if not token:
+                break
+            if not apify_available(token):
+                print(f"[apify] slot {slot} token invalid — trying next.", file=sys.stderr)
+                exhausted.append(slot)
+                continue
+
+            global _apify_blocked
+            _apify_blocked = False  # reset for this slot's attempt
+            apify_jobs = run_apify_layer(focus, prefs, actors, {"token": token})
+
+            if _apify_blocked:
+                # Credit exhausted during this slot's run
+                print(f"[apify] slot {slot} credits exhausted — trying next slot.",
+                      file=sys.stderr)
+                exhausted.append(slot)
+                continue
+
+            all_jobs += apify_jobs
+            apify_ran = True
+            # Persist any newly discovered exhausted slots (e.g. secondary slots that failed)
+            run_state["exhausted_slots"] = [s for s in exhausted if s != slot]
+            save_run_state(run_state)
+            break
+
+        if not apify_ran:
+            run_state["exhausted_slots"] = exhausted
+            save_run_state(run_state)
+            if exhausted:
+                print(f"[apify] all slots exhausted {exhausted} — sending alert.",
+                      file=sys.stderr)
+                try:
+                    sys.path.insert(0, str(Path(__file__).resolve().parent))
+                    from telegram_notify import send_credit_alert  # noqa
+                    send_credit_alert(exhausted)
+                except Exception as exc:
+                    print(f"[apify] credit alert failed: {exc}", file=sys.stderr)
+            else:
+                print("[apify] no APIFY_TOKEN set — native sources only.", file=sys.stderr)
     else:
         print("[scraper] --native-only: skipping Apify layer.", file=sys.stderr)
->>>>>>> 5a15f6c (feat: hybrid native+Apify scraping, styled XLSX report, India-market focus)
 
     return all_jobs
 
 
 def main() -> int:
-<<<<<<< HEAD
-    mode = "free-only" if FREE_ONLY else "full"
-    print(f"[scraper] mode={mode}", file=sys.stderr)
-    jobs = scrape()
-=======
     native_only = any(a in sys.argv[1:] for a in ("--native-only", "--free-only"))
     jobs = scrape(native_only=native_only)
->>>>>>> 5a15f6c (feat: hybrid native+Apify scraping, styled XLSX report, India-market focus)
     Path(RAW_OUT).write_text(json.dumps(jobs, indent=2, ensure_ascii=False))
     by_board: dict[str, int] = {}
     for j in jobs:

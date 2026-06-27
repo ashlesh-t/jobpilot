@@ -106,6 +106,13 @@ def _parse_cards(html: str, keyword_terms, employment_filter):
         m_exp = re.search(r'ic-16-briefcase.*?<span[^>]*>(.*?)</span>', card, re.S)
         experience = strip_html(m_exp.group(1)) if m_exp else ""
 
+        # Deadline: calendar icon or "apply by" / "last date" text.
+        m_deadline = (
+            re.search(r'ic-16-calendar.*?<span[^>]*>(.*?)</span>', card, re.S)
+            or re.search(r'(?:apply\s+by|last\s+date)\s*[:\-]\s*([^<\n]{4,30})', card, re.I)
+        )
+        last_date = strip_html(m_deadline.group(1)).strip() if m_deadline else ""
+
         m_about = re.search(r'about_job.*?<div class="text">(.*?)</div>', card, re.S)
         jd = strip_html(m_about.group(1))[:800] if m_about else ""
         jd_parts = [p for p in (jd, f"Salary: {salary}" if salary else "",
@@ -120,7 +127,7 @@ def _parse_cards(html: str, keyword_terms, employment_filter):
         seen_ids.add(iid)
         jobs.append(build_job(
             company=company, role=title, location=location, jd=jd_full,
-            url=url, source="internshala", exp=experience,
+            url=url, source="internshala", exp=experience, last_date=last_date,
         ))
     return jobs
 

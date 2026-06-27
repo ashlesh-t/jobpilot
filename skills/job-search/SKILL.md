@@ -1,10 +1,6 @@
 ---
 name: job-search
-<<<<<<< HEAD
-description: The main JobPilot pipeline. Invoke for /job-search [optional override prompt]. Runs Layer A (scrape, dedupe, location-filter — pure Python, no LLM) then Layer B where Claude directly filters, scores, researches salary, writes the report CSV, tailors resumes, and sends the Telegram digest.
-=======
 description: The main JobPilot pipeline. Invoke for /job-search [optional override prompt]. Runs Layer A (native + Apify scrape, dedupe, filter — pure Python, no LLM) then Layer B (ATS scoring, salary research, styled XLSX report, resume tailoring, Telegram + Drive push) over the survivors.
->>>>>>> 5a15f6c (feat: hybrid native+Apify scraping, styled XLSX report, India-market focus)
 ---
 
 # /job-search [optional override prompt]
@@ -14,7 +10,41 @@ confirmation. If a script fails, log the error and continue with the next step.
 
 ---
 
-## Step 0 — Search keyword enrichment
+## Step 0 — Tiered scheduling + Search keyword enrichment
+
+### 0a — Decide run mode
+
+Read `~/.claude/job-hunt-ai/cache/run_state.json` (create as `{}` if missing).
+
+Determine today's date in IST (Asia/Kolkata).
+
+```
+last_full_run   = run_state.get("last_full_run", "")
+scheduled_mode  = run_state.get("next_scheduled_mode", "full")
+exhausted_slots = run_state.get("exhausted_slots", [])
+
+if last_full_run == today OR scheduled_mode == "native":
+    RUN_MODE = "native"          # native scrapers only (free)
+    run_state["next_scheduled_mode"] = "full"
+else:
+    RUN_MODE = "full"            # native + Apify
+    run_state["last_full_run"] = today
+    run_state["next_scheduled_mode"] = "native"
+
+write run_state back to run_state.json
+```
+
+- `RUN_MODE = "native"` → run `python3 scripts/apify_scraper.py --native-only`
+- `RUN_MODE = "full"`   → run `python3 scripts/apify_scraper.py` (with Apify)
+
+**Apify key rotation (applies during full runs only):**
+The scraper auto-rotates `APIFY_TOKEN` → `APIFY_TOKEN_2` → `APIFY_TOKEN_3` when it detects
+credit exhaustion. If all slots are exhausted, it sends a Telegram alert and degrades to
+native-only automatically. `run_state.json` tracks which slots are exhausted.
+
+Log: **"Run mode: <RUN_MODE> (last full run: <last_full_run>)"**
+
+### 0b — Search keyword enrichment
 
 Read `~/.claude/job-hunt-ai/options/preferences.json` and `~/.claude/job-hunt-ai/cache/profile.json`.
 Based on `experience_years` and `graduation`, infer seniority search terms and write them as
@@ -118,6 +148,33 @@ python3 scripts/filter.py
 Print: **"Layer A complete: X raw → Y after dedup → Z after location filter"**
 
 Also note: `<N> jobs have no JD (LinkedIn/other)` if any `has_jd == false` jobs exist.
+
+---
+
+## Step A0.5 — Company Career Page Crawl (optional, Layer B)
+
+Read `config/target_companies.json`. If `"enabled": true`:
+
+1. Filter companies by `job_market_focus`:
+   - `india` → companies with `"focus": "india"` or `"both"`
+   - `global` → companies with `"focus": "global"` or `"both"`
+   - `both` → all companies
+2. For each company, use WebFetch MCP to fetch `careers_url`.
+3. From the HTML, extract job listings visible without JavaScript (title, location, apply URL).
+   Skip companies where the page is SPA-only (blank HTML body) — log and continue.
+4. Keep only roles matching `role_types` from preferences (case-insensitive title check).
+5. For each matching role, build a canonical job dict:
+   - `source_board`: `"direct-<company_name_slug>"` (e.g. `"direct-google"`)
+   - `company`, `role`, `location`, `application_url` from parsed HTML
+   - `jd_full`: empty or any visible snippet; `has_jd: false` if no description found
+   - `last_date`: empty (career pages rarely show deadlines)
+   - `job_id`: compute same SHA1 hash as `make_job_id(company, role, location, source_board)`
+6. Skip any job whose `job_id` is already in the seen-jobs set (load from SQLite inline).
+7. Cap at **5 results per company** to avoid flooding.
+8. Append qualifying jobs to `/tmp/jobpilot_filtered.json` (read → merge → write).
+9. Log: `[careers] <Company>: N matching roles added` (or `skipped — SPA-only / 0 matches`).
+
+These jobs enter Layer B scoring on equal footing with the scraper results.
 
 ---
 

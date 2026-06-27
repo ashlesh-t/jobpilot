@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "_note": "Set enabled=false to skip career-page crawl in /job-search. focus: india|global|both controls which companies are checked based on job_market_focus preference.",
+  "companies": [
+    {"name": "Google", "careers_url": "https://careers.google.com/jobs/results/", "focus": "global"},
+    {"name": "Meta", "careers_url": "https://www.metacareers.com/jobs", "focus": "global"},
+    {"name": "Amazon", "careers_url": "https://www.amazon.jobs/en/search", "focus": "global"},
+    {"name": "Netflix", "careers_url": "https://jobs.netflix.com/search", "focus": "global"},
+    {"name": "Salesforce", "careers_url": "https://careers.salesforce.com/en/jobs/", "focus": "global"},
+    {"name": "IBM", "careers_url": "https://www.ibm.com/careers/search", "focus": "global"},
+    {"name": "HP", "careers_url": "https://jobs.hp.com/en-us/search-jobs", "focus": "global"},
+    {"name": "Boomi", "careers_url": "https://boomi.com/careers/", "focus": "global"},
+    {"name": "Microsoft", "careers_url": "https://jobs.careers.microsoft.com/global/en/search", "focus": "global"},
+    {"name": "Adobe", "careers_url": "https://careers.adobe.com/us/en/search-results", "focus": "global"},
+    {"name": "Atlassian", "careers_url": "https://www.atlassian.com/company/careers/all-jobs", "focus": "global"},
+    {"name": "Stripe", "careers_url": "https://stripe.com/jobs/search", "focus": "global"},
+    {"name": "Flipkart", "careers_url": "https://www.flipkartcareers.com/#!/joblist", "focus": "india"},
+    {"name": "Razorpay", "careers_url": "https://razorpay.com/jobs/", "focus": "india"},
+    {"name": "Zepto", "careers_url": "https://www.zepto.team/careers", "focus": "india"},
+    {"name": "CRED", "careers_url": "https://careers.cred.club/", "focus": "india"},
+    {"name": "Swiggy", "careers_url": "https://careers.swiggy.com/#careers", "focus": "india"},
+    {"name": "Freshworks", "careers_url": "https://careers.freshworks.com/jobs", "focus": "india"},
+    {"name": "Zoho", "careers_url": "https://careers.zohocorp.com/jobs/Careers", "focus": "india"},
+    {"name": "Infra.Market", "careers_url": "https://inframarket.in/careers/", "focus": "india"}
+  ]
+}

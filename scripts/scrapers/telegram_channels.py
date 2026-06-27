@@ -1,0 +1,349 @@
+"""Telegram job channel scraper — pure Python, NO LLM, NO Apify.
+
+Reads recent messages from curated public Telegram job channels using the
+Telethon MTProto user client. Every URL extracted from messages is run through
+the URL security pipeline before the job is added to the output.
+
+First-time setup (one-time interactive):
+  python3 scripts/scrapers/telegram_channels.py --auth
+
+Normal use (called by run_native_scrapers):
+  from scrapers import telegram_channels
+  jobs = telegram_channels.fetch(keywords, max_results=60, focus="india")
+
+Requires:
+  - ~/.claude/job-hunt-ai/cache/telegram.session   (created by --auth)
+  - TELEGRAM_API_ID + TELEGRAM_API_HASH secrets    (from my.telegram.org)
+  - telethon installed (pip install telethon)
+  - scripts/url_security.py
+"""
+from __future__ import annotations
+
+import asyncio
+import html
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import build_job, matches_keywords, split_terms  # noqa: E402
+
+REPO_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def _jobpilot_dir() -> Path:
+    raw = os.environ.get("JOBPILOT_DIR", "~/.claude/job-hunt-ai")
+    return Path(os.path.expanduser(raw))
+
+
+def _session_path() -> Path:
+    return _jobpilot_dir() / "cache" / "telegram"
+
+
+def _load_config() -> dict:
+    cfg_path = REPO_DIR / "config" / "telegram_channels.json"
+    try:
+        return json.loads(cfg_path.read_text())
+    except Exception:
+        return {"enabled": False, "channels": [], "max_messages_per_channel": 50,
+                "max_age_hours": 24, "max_results_total": 60}
+
+
+def _load_secrets() -> tuple[int | None, str | None]:
+    """Return (api_id, api_hash) from secrets store."""
+    try:
+        from secrets import get_secret_optional  # noqa
+        api_id_raw = get_secret_optional("TELEGRAM_API_ID")
+        api_hash = get_secret_optional("TELEGRAM_API_HASH")
+        api_id = int(api_id_raw) if api_id_raw else None
+        return api_id, api_hash
+    except Exception:
+        return None, None
+
+
+# --------------------------------------------------------------------------- #
+# URL extraction from message text
+# --------------------------------------------------------------------------- #
+
+_URL_RE = re.compile(
+    r"https?://[^\s\)\]>\"\']+",
+    re.IGNORECASE,
+)
+
+
+def _extract_urls(text: str) -> list[str]:
+    """Extract all HTTP/HTTPS URLs from message text."""
+    return [u.rstrip(".,;:)") for u in _URL_RE.findall(text or "")]
+
+
+def _clean_text(text: str) -> str:
+    """Strip Telegram HTML entities and tags."""
+    text = html.unescape(text or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s{3,}", "\n\n", text).strip()
+
+
+# --------------------------------------------------------------------------- #
+# Message → job dict parsing
+# --------------------------------------------------------------------------- #
+
+_PIPE_PATTERN = re.compile(
+    r"^(?P<company>[^|\n]{2,60})\s*\|\s*(?P<role>[^|\n]{2,80})"
+    r"(?:\s*\|\s*(?P<location>[^|\n]{2,50}))?",
+    re.MULTILINE,
+)
+
+
+def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict | None:
+    """Attempt to extract a job dict from a Telegram message.
+
+    Returns None if the message doesn't look like a job post.
+    """
+    clean = _clean_text(text)
+    lines = [l.strip() for l in clean.splitlines() if l.strip()]
+    if not lines:
+        return None
+
+    # Try structured pipe-delimited format: Company | Role | Location
+    m = _PIPE_PATTERN.search(clean)
+    if m:
+        company = m.group("company").strip()
+        role = m.group("role").strip()
+        location = (m.group("location") or "").strip() or "India"
+    else:
+        # Fallback: first line = role, second line = company
+        role = lines[0][:100]
+        company = lines[1][:80] if len(lines) > 1 else "Unknown"
+        location = "India"
+
+    apply_url = safe_urls[0] if safe_urls else ""
+    jd = clean[:600]  # first 600 chars of message text as JD
+
+    if not role or len(role) < 3:
+        return None
+
+    return build_job(
+        company=company,
+        role=role,
+        location=location,
+        jd=jd,
+        url=apply_url,
+        source=f"telegram-{channel_slug}",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Async Telethon fetch
+# --------------------------------------------------------------------------- #
+
+async def _fetch_channel_async(
+    client,
+    channel_username: str,
+    keyword_terms: list[str],
+    max_messages: int,
+    cutoff: datetime,
+    security_db,
+) -> list[dict]:
+    """Fetch and process messages from one Telegram channel."""
+    try:
+        from url_security import check_url  # noqa
+    except ImportError:
+        def check_url(url, conn):
+            return {"safe": True, "risk_label": "safe", "risk_score": 0}
+
+    jobs: list[dict] = []
+    channel_slug = channel_username.lower().replace("_", "-")
+
+    try:
+        entity = await client.get_entity(channel_username)
+    except Exception as exc:
+        print(f"[telegram] channel @{channel_username} inaccessible: {exc}", file=sys.stderr)
+        return []
+
+    async for msg in client.iter_messages(entity, limit=max_messages):
+        if not msg.date:
+            continue
+        # Ensure timezone-aware comparison
+        msg_date = msg.date
+        if msg_date.tzinfo is None:
+            msg_date = msg_date.replace(tzinfo=timezone.utc)
+        if msg_date < cutoff:
+            break  # messages are ordered newest-first; stop when too old
+
+        text = msg.text or ""
+        if not text or len(text) < 20:
+            continue
+        if not matches_keywords(text, keyword_terms):
+            continue
+
+        # Extract and security-check all URLs
+        raw_urls = _extract_urls(text)
+        safe_urls: list[str] = []
+        for url in raw_urls[:5]:  # cap URLs per message
+            result = check_url(url, security_db)
+            if result["risk_label"] == "dangerous":
+                print(f"[telegram] DANGEROUS URL blocked: {url} "
+                      f"(score={result['risk_score']})", file=sys.stderr)
+                continue
+            safe_urls.append(result.get("final_url", url))
+
+        # Only proceed if we have at least one safe URL OR no URLs at all
+        # (some messages are text-only job descriptions)
+        if raw_urls and not safe_urls:
+            continue  # all URLs were dangerous — skip this post
+
+        job = _parse_message(text, channel_slug, safe_urls)
+        if not job:
+            continue
+
+        # Flag suspicious links in the job dict for Claude to see
+        suspicious = [u for u in raw_urls if u in safe_urls and
+                      check_url(u, security_db).get("risk_label") == "suspicious"]
+        if suspicious:
+            job["url_suspicious"] = True
+
+        jobs.append(job)
+
+    return jobs
+
+
+async def _fetch_async(
+    keywords: str,
+    max_results: int,
+    hours_old: int,
+    focus: str,
+) -> list[dict]:
+    """Main async orchestrator — iterates all configured channels."""
+    try:
+        from telethon import TelegramClient  # noqa
+    except ImportError:
+        print("[telegram] telethon not installed — skipping. Run: pip install telethon",
+              file=sys.stderr)
+        return []
+
+    try:
+        from url_security import open_db  # noqa
+        security_db = open_db()
+    except Exception:
+        security_db = None  # security checks degraded but don't fail
+
+    api_id, api_hash = _load_secrets()
+    if not api_id or not api_hash:
+        print("[telegram] TELEGRAM_API_ID / TELEGRAM_API_HASH not set — skipping.",
+              file=sys.stderr)
+        return []
+
+    cfg = _load_config()
+    if not cfg.get("enabled", False):
+        return []
+
+    keyword_terms = split_terms(keywords)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_old)
+    max_per_channel = cfg.get("max_messages_per_channel", 50)
+
+    all_jobs: list[dict] = []
+    seen_ids: set[str] = set()
+
+    async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
+        for ch in cfg.get("channels", []):
+            username = ch.get("username", "")
+            if not username:
+                continue
+            jobs = await _fetch_channel_async(
+                client, username, keyword_terms, max_per_channel,
+                cutoff, security_db,
+            )
+            print(f"[telegram] @{username}: {len(jobs)} matching jobs", file=sys.stderr)
+            for j in jobs:
+                if j["job_id"] not in seen_ids:
+                    seen_ids.add(j["job_id"])
+                    all_jobs.append(j)
+                    if len(all_jobs) >= max_results:
+                        return all_jobs
+
+    return all_jobs
+
+
+# --------------------------------------------------------------------------- #
+# Public sync interface (matches other native scrapers)
+# --------------------------------------------------------------------------- #
+
+def fetch(keywords: str = "", location: str = "", max_results: int = 60,
+          hours_old: int = 24, focus: str = "india") -> list[dict]:
+    """Read recent Telegram job channel messages and return canonical job dicts.
+
+    Returns [] if session file is missing, Telethon not installed, or config disabled.
+    Never raises.
+    """
+    if not _session_path().with_suffix(".session").exists():
+        print("[telegram] no session file — run: python3 scripts/scrapers/telegram_channels.py --auth",
+              file=sys.stderr)
+        return []
+    try:
+        return asyncio.run(_fetch_async(keywords, max_results, hours_old, focus))
+    except Exception as exc:
+        print(f"[telegram] fetch failed: {exc}", file=sys.stderr)
+        return []
+
+
+# --------------------------------------------------------------------------- #
+# First-time auth
+# --------------------------------------------------------------------------- #
+
+def auth_interactive() -> None:
+    """Authenticate with Telegram (run once). Saves session file."""
+    try:
+        from telethon import TelegramClient  # noqa
+        from telethon.errors import SessionPasswordNeededError  # noqa
+    except ImportError:
+        print("telethon not installed. Run: pip install telethon")
+        sys.exit(1)
+
+    api_id, api_hash = _load_secrets()
+    if not api_id or not api_hash:
+        print("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set first.")
+        print("  1. Visit https://my.telegram.org → Log in → API Development Tools")
+        print("  2. Create an app and copy the API ID and API Hash")
+        print("  3. Run:")
+        print("       python3 -c \"from scripts.secrets import set_secret; "
+              "set_secret('TELEGRAM_API_ID', 'YOUR_ID'); "
+              "set_secret('TELEGRAM_API_HASH', 'YOUR_HASH')\"")
+        sys.exit(1)
+
+    print(f"Session will be saved to: {_session_path()}.session")
+    print("You will receive an OTP on your Telegram app.\n")
+
+    async def _do_auth():
+        async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
+            if not await client.is_user_authorized():
+                phone = input("Enter your phone number (with country code, e.g. +91...): ").strip()
+                await client.send_code_request(phone)
+                code = input("Enter the OTP from Telegram: ").strip()
+                try:
+                    await client.sign_in(phone, code)
+                except SessionPasswordNeededError:
+                    password = input("2FA password: ").strip()
+                    await client.sign_in(password=password)
+            me = await client.get_me()
+            print(f"\nAuthenticated as: {me.first_name} (@{me.username})")
+            print("Session saved. Telegram channel scraper is ready.")
+
+    asyncio.run(_do_auth())
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+if __name__ == "__main__":
+    if "--auth" in sys.argv:
+        auth_interactive()
+    else:
+        import json as _json
+        results = fetch("software engineer backend", max_results=10)
+        print(f"telegram_channels: {len(results)} jobs", file=sys.stderr)
+        print(_json.dumps(results[:3], indent=2, ensure_ascii=False))

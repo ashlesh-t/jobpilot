@@ -1,7 +1,7 @@
 """Layer A hard filter — pure Python, NO LLM.
 
-Applies ONLY location and seen-jobs filters. All other filtering (role relevance, CTC, keyword
-match) is handled by Claude in Layer B with real judgment.
+Applies location, deadline, experience, and CTC/company hard filters.
+All other filtering (role relevance, keyword match) is handled by Claude in Layer B.
 
 Reads /tmp/jobpilot_deduped.json + preferences.json, writes /tmp/jobpilot_filtered.json.
 """
@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DEDUPED_IN = "/tmp/jobpilot_deduped.json"
 FILTERED_OUT = "/tmp/jobpilot_filtered.json"
+
+IST = ZoneInfo("Asia/Kolkata")
 
 SERVICE_COMPANIES = [
     "tcs", "infosys", "wipro", "hcl", "cognizant", "accenture",
@@ -146,15 +151,55 @@ def location_weight(job: dict, prefs: dict) -> float:
     return 0.6  # unknown location — neutral weight
 
 
+def deadline_passed(job: dict) -> bool:
+    """True if last_date is set AND the deadline has already passed (IST midnight)."""
+    ld = (job.get("last_date") or "").strip()
+    if not ld:
+        return False
+    for fmt in ("%Y-%m-%d", "%d %b'%y", "%d %b %Y", "%d/%m/%Y", "%d-%b-%Y"):
+        try:
+            dt = datetime.strptime(ld, fmt).replace(tzinfo=IST)
+            return dt.date() < datetime.now(IST).date()
+        except ValueError:
+            continue
+    return False  # unparseable format — keep the job
+
+
+def ctc_company_ok(job: dict, prefs: dict) -> tuple[bool, bool]:
+    """Check CTC threshold and optionally filter service companies.
+
+    Returns (keep, ctc_unknown).
+    - (False, False): hard drop
+    - (True, False): keep, CTC confirmed ok
+    - (True, True): keep, CTC not found in JD — flag for Claude to judge
+    """
+    company = (job.get("company") or "").lower().strip()
+    if prefs.get("avoid_service_companies", False):
+        if any(s in company for s in SERVICE_COMPANIES):
+            return False, False
+
+    min_ctc = float(prefs.get("target_ctc_min_lpa") or 0)
+    if min_ctc <= 0:
+        return True, True  # no CTC preference set — keep, unknown
+
+    text = ((job.get("jd_full") or "") + " " + (job.get("experience_req") or "")).lower()
+    m = re.search(
+        r"(\d+(?:\.\d+)?)\s*(?:[-–]\s*\d+(?:\.\d+)?\s*)?(?:lpa|l\.p\.a|lakhs?)\b", text
+    )
+    if m:
+        found = float(m.group(1))
+        return (found >= min_ctc, False)
+    return True, True  # CTC unknown — keep, flag for Claude
+
+
 def main() -> int:
     jobs = load_json(DEDUPED_IN, [])
     prefs = load_json(jobpilot_dir() / "options" / "preferences.json", {})
     seen = seen_job_ids()
 
     kept = []
-    dropped_location = 0
     dropped_seen = 0
-    reasons = {"location": 0, "ctc_company": 0, "keyword": 0, "experience": 0}
+    reasons = {"location": 0, "expired": 0, "experience": 0, "ctc_company": 0}
 
     user_exp = int(prefs.get("experience_years", 0) or 0)
     # A fresher (0-1 yr) shouldn't see roles demanding 3+ yrs; scale the cap with the user.
@@ -165,8 +210,11 @@ def main() -> int:
         if jid in seen:
             dropped_seen += 1
             continue
+        if deadline_passed(job):
+            reasons["expired"] += 1
+            continue
         if not location_ok(job, prefs):
-            dropped_location += 1
+            reasons["location"] += 1
             continue
         exp_req = extract_exp_req(job)
         job["exp_req_years"] = exp_req
@@ -177,9 +225,6 @@ def main() -> int:
         if not keep_ctc:
             reasons["ctc_company"] += 1
             continue
-        if not keyword_ok(job, profile):
-            reasons["keyword"] += 1
-            continue
         if ctc_unknown:
             job["ctc_unknown"] = True
         job["location_weight"] = location_weight(job, prefs)
@@ -187,9 +232,9 @@ def main() -> int:
 
     Path(FILTERED_OUT).write_text(json.dumps(kept, indent=2, ensure_ascii=False))
     print(
-        f"Filter: {len(jobs)} in -> {len(kept)} kept | "
-        f"dropped by location={reasons['location']}, experience={reasons['experience']}, "
-        f"ctc/company={reasons['ctc_company']}, keyword={reasons['keyword']} -> {FILTERED_OUT}"
+        f"Filter: {len(jobs)} in → {len(kept)} kept | "
+        f"seen={dropped_seen} location={reasons['location']} expired={reasons['expired']} "
+        f"exp={reasons['experience']} ctc={reasons['ctc_company']} → {FILTERED_OUT}"
     )
     return len(kept)
 
