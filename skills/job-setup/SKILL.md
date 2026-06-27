@@ -143,6 +143,43 @@ after a hash change), OR the user explicitly asks to re-read the resume.
    > "Profile captured: **<name>**, **<N> skills**, **<N> projects**, graduating **<year>**.
    > Profile saved and verified ✓"
 
+### F. Claude reads and verifies the resume → profile.json
+
+**Run this step if** `profile.json` does not exist, or `profile_verified` is `false` (including
+after a resume-hash change), or the user explicitly asks to re-read the resume. Otherwise reuse
+the cached profile.
+
+1. Read `/tmp/jobpilot_resume_raw.txt` (written by `resume_parser.py` in step E).
+2. Read the existing `~/.claude/job-hunt-ai/cache/profile.json` (to compare/correct, not blindly reuse).
+3. Carefully extract: full name, email, **all** technical skills, roles held (title, company,
+   duration), projects (name, stack, 1-line description), education (degree, college, year),
+   publications, and `experience_years` (0 for a student/intern-only fresher). Also extract:
+   - `github_url` — any `github.com/...` link in the resume text (else `""`, do not invent).
+   - `portfolio_url` — a personal site/domain if present (else `""`).
+   - `graduation_date` — e.g. `"July 2026"` (from the education section).
+4. **Ask the user to clarify** anything genuinely missing or ambiguous (e.g. empty projects,
+   unclear company names). Do not ask about details already clearly readable.
+5. Write the complete `~/.claude/job-hunt-ai/cache/profile.json`, including these fields:
+   ```json
+   {
+     "name": "...", "email": "...", "skills": ["..."], "experience_years": 0,
+     "roles_held": [{"title": "...", "company": "...", "duration": "..."}],
+     "projects": [{"name": "...", "stack": ["..."], "description": "..."}],
+     "education": {"degree": "...", "college": "...", "year": "..."},
+     "publications": [],
+     "graduation_date": "July 2026",
+     "github_url": "", "portfolio_url": "",
+     "locations": [],            // mirror preferences.locations once known (step below)
+     "availability": "",         // mirror preferences.availability_date
+     "notice_period_days": 0,
+     "profile_verified": true,
+     "hash": "<resume_hash from preferences.json>"
+   }
+   ```
+6. After the preferences questionnaire, set `profile.locations`/`availability`/`notice_period_days`
+   to match the answers, and **warn** if `profile.locations` and `preferences.locations` diverge.
+7. Print: *"Profile captured: <name>, <N> skills, <N> projects, graduating <year>. Verified ✓"*
+
 ---
 
 ## Preferences questionnaire
@@ -170,22 +207,34 @@ Use the AskUserQuestion tool with multi-select where noted.
 
 - **Role types** — options: SWE / Backend / Full Stack / ML-AI / DevOps-Infra /
   Data Engineering / Other. Multi-select + free text. Store as `role_types`.
-
+- **Job market focus** — options: India-first (Naukri/Cutshort/Internshala/LinkedIn-IN) /
+  Global remote / Both. Store as `job_market_focus` (`india` | `global` | `both`). This decides
+  which sources `apify_scraper.py` runs — India-first prioritises Indian boards and skips
+  US-timezone remote boards (HackerNews etc.). Default `india`.
 - **Experience range** — options: 0–1 yr fresher / 1–2 yr / 2–3 yr / Other (free text).
   Store the lower bound as integer `experience_years`.
 
 - **Degree and expected/completed graduation** — e.g. "B.Tech CS, July 2026". Store as
   `degree` and `graduation`.
+- **Availability** — "When can you start?" e.g. "July 2026", "Immediately". Store as
+  `availability_date`; set `notice_period_days` (0 for a fresher) if relevant.
+- **Preferred tech stack** — optional; user may skip (will be inferred from resume). Store as
+  `preferred_stack`. (Also used as Cutshort skill filters when Apify is available.)
+- **Naukri / LinkedIn profile URL** — optional. Store as `naukri_profile_url` and
+  `linkedin_profile_url` (used only for reference/referrals; never auto-logged-in).
+- **Resume tailoring threshold** — optional; default **65**. Jobs scoring at/above this get a
+  tailored resume. Store as `score_threshold`.
 
-- **Preferred tech stack** — optional; user may skip (will be inferred from profile). Store
-  as `preferred_stack`.
+After collecting answers, mirror `locations`, `availability_date`, and `notice_period_days` into
+`profile.json` (per step F.6) and warn if profile vs preference locations diverge.
 
 ---
 
 ## Confirmation summary
 
-Print a tidy summary of every stored preference plus the profile highlights
-(name, skills count, projects count, experience years) so the user can verify everything.
+Print a tidy summary of every stored preference (including `job_market_focus`, `availability_date`,
+`score_threshold`) plus the verified profile highlights (name, skills count, projects count,
+graduation year, github/portfolio if found) so the user can verify everything looks right.
 
 ---
 

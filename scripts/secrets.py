@@ -71,6 +71,39 @@ def get_secret_optional(key: str, default: str | None = None) -> str | None:
         return default
 
 
+def set_secret(key: str, value: str) -> str:
+    """Persist a secret through the same channels get_secret reads.
+
+    Tries the OS keyring first; falls back to upserting the data-dir .env file.
+    Also updates os.environ so the running process sees it immediately.
+    Returns the backend used: "keyring" or "env".
+    """
+    value = (value or "").strip()
+    os.environ[key] = value
+    try:
+        import keyring
+
+        keyring.set_password(KEYRING_SERVICE, key, value)
+        return "keyring"
+    except Exception:
+        pass
+
+    env_path = _jobpilot_dir() / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines, found = [], False
+    if env_path.is_file():
+        for line in env_path.read_text().splitlines():
+            if line.strip().startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n")
+    return "env"
+
+
 if __name__ == "__main__":
     import sys
 
