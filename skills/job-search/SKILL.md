@@ -1,6 +1,6 @@
 ---
 name: job-search
-description: The main JobPilot pipeline. Invoke for /job-search [optional override prompt]. Runs Layer A (scrape, dedupe, location-filter — pure Python, no LLM) then Layer B where Claude directly filters, scores, researches salary, writes the report CSV, tailors resumes, and sends the Telegram digest.
+description: The main JobPilot pipeline. Invoke for /job-search [optional override prompt]. Runs Layer A (native + Apify scrape, dedupe, filter — pure Python, no LLM) then Layer B (ATS scoring, salary research, styled XLSX report, resume tailoring, Telegram + Drive push) over the survivors.
 ---
 
 # /job-search [optional override prompt]
@@ -10,7 +10,41 @@ confirmation. If a script fails, log the error and continue with the next step.
 
 ---
 
-## Step 0 — Search keyword enrichment
+## Step 0 — Tiered scheduling + Search keyword enrichment
+
+### 0a — Decide run mode
+
+Read `~/.claude/job-hunt-ai/cache/run_state.json` (create as `{}` if missing).
+
+Determine today's date in IST (Asia/Kolkata).
+
+```
+last_full_run   = run_state.get("last_full_run", "")
+scheduled_mode  = run_state.get("next_scheduled_mode", "full")
+exhausted_slots = run_state.get("exhausted_slots", [])
+
+if last_full_run == today OR scheduled_mode == "native":
+    RUN_MODE = "native"          # native scrapers only (free)
+    run_state["next_scheduled_mode"] = "full"
+else:
+    RUN_MODE = "full"            # native + Apify
+    run_state["last_full_run"] = today
+    run_state["next_scheduled_mode"] = "native"
+
+write run_state back to run_state.json
+```
+
+- `RUN_MODE = "native"` → run `python3 scripts/apify_scraper.py --native-only`
+- `RUN_MODE = "full"`   → run `python3 scripts/apify_scraper.py` (with Apify)
+
+**Apify key rotation (applies during full runs only):**
+The scraper auto-rotates `APIFY_TOKEN` → `APIFY_TOKEN_2` → `APIFY_TOKEN_3` when it detects
+credit exhaustion. If all slots are exhausted, it sends a Telegram alert and degrades to
+native-only automatically. `run_state.json` tracks which slots are exhausted.
+
+Log: **"Run mode: <RUN_MODE> (last full run: <last_full_run>)"**
+
+### 0b — Search keyword enrichment
 
 Read `~/.claude/job-hunt-ai/options/preferences.json` and `~/.claude/job-hunt-ai/cache/profile.json`.
 Based on `experience_years` and `graduation`, infer seniority search terms and write them as
@@ -21,7 +55,9 @@ a plain string into `preferences.json` field `search_keywords_extra`:
 - `experience_years` 1–2: write `"junior mid-level 1-3 years"`
 - `experience_years` 3+: leave empty or omit fresher terms.
 
----
+`job_market_focus` (`india` | `global` | `both`) in preferences drives source selection
+automatically inside `apify_scraper.py` — no action needed here. Never hardcode seniority terms
+in Python; Claude infers them in this step.
 
 ## Step 1 — Profile verification
 
@@ -33,6 +69,21 @@ If `profile_verified` is `false` or the file does not exist:
 3. Follow the same profile verification steps as `/job-setup` Step F — extract all fields,
    ask clarifying questions, write complete `profile.json` with `profile_verified: true`.
 4. Continue once verification is complete.
+These scripts must never call the LLM. Run each and read the printed counts.
+
+1. `python3 scripts/apify_scraper.py` -> writes `/tmp/jobpilot_raw.json`
+   - Runs the **native scrapers first** (free: Internshala, RemoteOK, WeWorkRemotely,
+     Remotive, Arbeitnow, Jobicy) and then the **Apify layer** (LinkedIn, Glassdoor,
+     Indeed-IN, Naukri, Cutshort, Wellfound, ATS) only if a valid `APIFY_TOKEN` exists.
+   - **If Apify credit is exhausted or the token is invalid**, the script prints a one-time
+     inline prompt for a fresh `APIFY_TOKEN`. In an interactive run, paste a new token to
+     continue with paid sources; otherwise the pipeline proceeds with native results only.
+     Note in the final digest if paid sources were skipped.
+2. `python3 scripts/dedupe.py` -> writes `/tmp/jobpilot_deduped.json`
+3. `python3 scripts/filter.py` -> writes `/tmp/jobpilot_filtered.json`
+   (location + city-alias match, experience cap, CTC/company, keyword pre-filter;
+   adds `exp_req_years` and `location_weight` to each job)
+4. Print: **"Layer A complete: X raw -> Y after dedup -> Z after filter"**
 
 If `profile_verified` is `true`, continue directly.
 
@@ -97,6 +148,33 @@ python3 scripts/filter.py
 Print: **"Layer A complete: X raw → Y after dedup → Z after location filter"**
 
 Also note: `<N> jobs have no JD (LinkedIn/other)` if any `has_jd == false` jobs exist.
+
+---
+
+## Step A0.5 — Company Career Page Crawl (optional, Layer B)
+
+Read `config/target_companies.json`. If `"enabled": true`:
+
+1. Filter companies by `job_market_focus`:
+   - `india` → companies with `"focus": "india"` or `"both"`
+   - `global` → companies with `"focus": "global"` or `"both"`
+   - `both` → all companies
+2. For each company, use WebFetch MCP to fetch `careers_url`.
+3. From the HTML, extract job listings visible without JavaScript (title, location, apply URL).
+   Skip companies where the page is SPA-only (blank HTML body) — log and continue.
+4. Keep only roles matching `role_types` from preferences (case-insensitive title check).
+5. For each matching role, build a canonical job dict:
+   - `source_board`: `"direct-<company_name_slug>"` (e.g. `"direct-google"`)
+   - `company`, `role`, `location`, `application_url` from parsed HTML
+   - `jd_full`: empty or any visible snippet; `has_jd: false` if no description found
+   - `last_date`: empty (career pages rarely show deadlines)
+   - `job_id`: compute same SHA1 hash as `make_job_id(company, role, location, source_board)`
+6. Skip any job whose `job_id` is already in the seen-jobs set (load from SQLite inline).
+7. Cap at **5 results per company** to avoid flooding.
+8. Append qualifying jobs to `/tmp/jobpilot_filtered.json` (read → merge → write).
+9. Log: `[careers] <Company>: N matching roles added` (or `skipped — SPA-only / 0 matches`).
+
+These jobs enter Layer B scoring on equal footing with the scraper results.
 
 ---
 
@@ -275,6 +353,84 @@ python3 scripts/telegram_notify.py --digest "<digest_text>" --csv "<report_csv_p
 ```
 
 ### Step B7: Drive upload
+### B1 — JD enrichment for empty descriptions (cap 25)
+
+For jobs where `jd_full` is empty or < 120 chars AND `source_board` is `linkedin` (or any
+paid board that returned no description), enrich the JD before scoring:
+1. `WebFetch` the `application_url` — LinkedIn/company pages often render the JD without login.
+2. If that yields nothing useful, `WebSearch` `"<company> <role> careers"` and `WebFetch` the
+   company careers/ATS page.
+Write the recovered text back into the job's `jd_full` and set `jd_source: "fetched"`.
+Cap at 25 enrichments; skip a page if it takes more than ~8s. **Do NOT** scrape LinkedIn with a
+logged-in session — it risks banning the account used to apply.
+
+### B2 — ATS scoring (write the scored JSON)
+
+For each surviving job, read the **full** `jd_full` and `profile.json`, then compute:
+- `matched_skills`: profile skills present in the JD (case-insensitive).
+- `missing_skills`: important hard skills in the JD not in the profile (top ~8).
+- `keyword_score` = `len(matched_skills) / len(profile.skills) * 100`.
+- `semantic_score` (0–100): holistic fit — stack alignment, seniority (fresher OK for
+  entry/junior), projects, product vs pure-service company.
+- `score`:
+  - jobs **with** a real JD: `round(0.5*semantic + 0.5*keyword)`, `score_confidence: "high"`.
+  - jobs **still without** a JD after B1: `round(0.9*semantic + 0.1*title_keyword)`,
+    `score_confidence: "low"`.
+- `why`: one sentence justifying the score.
+- `must_have_skills` (≤6), `nice_to_have` (≤4), `degree_required` — extracted from the JD.
+- `jd_summary`: 3–5 short bullet strings.
+- carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `application_url`,
+  `company`, `role`, `location`, `job_id`.
+
+Rank by `effective_score = score * location_weight` (descending). Apply any **override prompt**
+the user passed (e.g. "remote backend only", "rank by salary") here.
+
+### B3 — Salary research (top 20, India-aware)
+
+For the top ~20 by effective_score with `score >= 55`:
+1. **AmbitionBox actor** (India salaries) via Apify MCP, if Apify is available:
+   `call-actor "thirdwatch/ambitionbox-scraper"` with
+   `{ "companies": ["<company>"], "roles": ["<role-slug>"], "includeCompanyReviews": false }`.
+   Extract the LPA range for the matching role.
+2. **Fallback** `WebSearch`: `"<company> <role> salary India LPA" site:ambitionbox.com OR glassdoor.co.in`.
+3. `your_demand = round_to_0.5( max(target_ctc_min_lpa, market_75th_pct * score/100) )` — never
+   below `target_ctc_min_lpa`.
+4. Set `market_salary` (e.g. "8–14 LPA"), `your_demand` (e.g. "12 LPA"),
+   `salary_source` ("AmbitionBox" / "Glassdoor" / "web-estimated" / "not-found").
+   Leave blank rather than invent a number.
+
+Write the enriched list (all fields above) to **`/tmp/jobpilot_scored.json`**.
+
+### B4 — Styled XLSX report (top 20)
+
+```bash
+python3 scripts/report_generator.py --input /tmp/jobpilot_scored.json \
+  --output ~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>.xlsx
+```
+`<slot>` = morning (<12 IST) / afternoon (12–17) / evening (17+). The script colours rows by
+score (≥75 green, 60–74 yellow), freezes the header, hyperlinks the apply link, and caps at 20.
+All scored jobs remain in `/tmp/jobpilot_scored.json`; only the report is capped.
+
+### B5 — Resume tailoring (top matches)
+
+Read `score_threshold` from preferences (default **65**). For the top 5 jobs with
+`score >= score_threshold`:
+- If `~/.claude/job-hunt-ai/resumes/base.tex` exists: edit it to weave in `matched_skills`
+  (never invent experience/dates/employers), write `/tmp/<company>-<job_id>.tex`, and compile
+  with `tectonic ... --outdir ~/.claude/job-hunt-ai/resumes/tailored/`.
+- Else: `python3 scripts/resume_tailor.py <job_id> --matched-skills <csv>` (DOCX).
+Self-cap at 5 per run.
+
+### B6 — Telegram digest
+
+Build a plain-text digest (top 3 jobs, flag ⚠️ Google-Form apply links, note if Apify paid
+sources were skipped), then:
+```bash
+python3 scripts/telegram_notify.py --digest "<text>" --xlsx "<report_path>"
+```
+(If `telegram_notify.py` only accepts `--csv`, pass the xlsx path to it as the attachment.)
+
+### B7 — Drive upload
 
 ```bash
 python3 scripts/drive_upload.py
@@ -309,3 +465,14 @@ W resumes tailored. Report sent to Telegram + Drive."**
 
 Wrap each step so a single failure is logged and the pipeline continues. Always attempt
 B4 (CSV), B6 (Telegram), and B7 (Drive) even if earlier steps partially failed.
+Read `/tmp/jobpilot_drive_manifest.json`. Use the Google Drive MCP `search_files` to find/confirm
+the `"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
+upload each manifest file via `create_file`. Log `[drive] Uploaded <name> -> <link>`. If Drive MCP
+is unavailable or an upload fails, log and continue — do not abort.
+
+8. Print: **"Done. N jobs scored, top match: <company> <role> (score). Report -> Telegram + Drive."**
+
+## Failure handling
+Wrap each step so a single failure (Apify quota, Telegram timeout, Drive auth) is logged and the
+pipeline continues. Always attempt B4 (report), B6 (Telegram), and B7 (Drive) even if earlier
+steps partially failed.

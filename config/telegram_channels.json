@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "_note": "Set enabled=false to skip Telegram channel scraping. Requires telegram.session (run: python3 scripts/scrapers/telegram_channels.py --auth). Channel usernames should be verified before first run.",
+  "max_messages_per_channel": 50,
+  "max_age_hours": 24,
+  "max_results_total": 60,
+  "channels": [
+    {"username": "techjobsindia",       "name": "Tech Jobs India",          "members": 180000},
+    {"username": "bengalurujobs",        "name": "Bengaluru Jobs",           "members": 95000},
+    {"username": "startupjobsindia",     "name": "Startup Jobs India",       "members": 72000},
+    {"username": "remotejobsindia",      "name": "Remote Jobs India",        "members": 60000},
+    {"username": "softwarejobsindia",    "name": "Software Jobs India",      "members": 55000},
+    {"username": "freshersjobsindia",    "name": "Freshers Jobs India",      "members": 48000},
+    {"username": "linkedinjobalerts",    "name": "LinkedIn Job Alerts IN",   "members": 40000},
+    {"username": "indiastartupjobs",     "name": "India Startup Jobs",       "members": 35000}
+  ]
+}
