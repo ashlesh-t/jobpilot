@@ -1,5 +1,137 @@
 # Changelog
 
+## v1.3.0 — 2026-06-27
+
+### Release title: "Free-First Scraping & Credit Resilience"
+
+Rearchitects the scraper layer around a hybrid native-first model: six free native scrapers
+run on every call, Apify is reserved for sources that block native access. Adds tiered
+scheduling (alternate native-only / full-run days), automatic rotation across up to three
+Apify API keys, and graceful degradation when all credits are exhausted. Introduces two
+entirely new free sources — a LinkedIn guest API scraper and a Telegram job channel scraper
+with a built-in URL security pipeline that blocks malicious links before they reach your inbox.
+
+---
+
+### Breaking changes
+- None. All changes are additive; existing `preferences.json` and `profile.json` files work unchanged.
+
+### What's new
+
+**Hybrid native-first scraper architecture**
+- `scripts/apify_scraper.py` now runs six native scrapers (zero cost, no token) before touching Apify:
+  Internshala (server-rendered HTML, India freshers), RemoteOK (JSON API), WeWorkRemotely (RSS),
+  Remotive (JSON API), Arbeitnow (JSON API), Jobicy (JSON API)
+- All scrapers live in `scripts/scrapers/` and share canonical schema via `scripts/scrapers/_common.py`
+- `build_job()` helper enforces a consistent output dict for every source
+- HN "Who is Hiring" capped at 20 results to avoid flooding the pipeline
+
+**Tiered scheduling (alternate-day Apify usage)**
+- `~/.claude/job-hunt-ai/cache/run_state.json` tracks `last_full_run`, `next_scheduled_mode`, `exhausted_slots`
+- `/job-search` Step 0a reads the file and decides: native-only OR full (native + Apify)
+- Alternates automatically — native today, full tomorrow, native the day after — halving Apify credit usage
+- `--native-only` flag on `apify_scraper.py` enforces native-only mode programmatically
+
+**Multi-slot Apify key rotation**
+- Supports up to 3 Apify accounts: `APIFY_TOKEN`, `APIFY_TOKEN_2`, `APIFY_TOKEN_3`
+- On credit exhaustion or auth error, scraper auto-rotates to the next valid slot
+- Exhausted slots recorded in `run_state.json`; skipped on subsequent runs until refreshed
+- When all slots are exhausted: sends a Telegram alert with instructions (create new free account OR top-up), then degrades to native-only automatically — pipeline keeps running
+
+**`scripts/apify_token_update.py` — secure token management**
+- Interactive CLI to update any of the three Apify token slots
+- Token input via `getpass` (hidden in terminal) — tokens are never pasted into Telegram or chat
+- Validates each token against `/v2/users/me` before saving
+- Clears the slot from `run_state.json` exhausted list after successful save
+- `--status` flag shows current slot status (FOUND / MISSING / EXHAUSTED) without exposing token values
+
+**Telegram credit-exhaustion alert**
+- `send_credit_alert(exhausted_slots)` in `telegram_notify.py` — called automatically when all Apify slots fail
+- Alert includes step-by-step instructions: create a new free Apify account OR subscribe to Starter plan OR top up existing credits
+- `--credit-alert --slots '[1,2]'` CLI mode for manual trigger
+- Also adds: `send_message_get_id()` (returns message ID for deletion), `delete_message()` (best-effort, silent)
+
+**LinkedIn guest API scraper (`scripts/scrapers/linkedin_guest.py`)**
+- Scrapes LinkedIn's unauthenticated guest job search endpoint — no login, no Apify cost
+- 3-page pagination (up to 75 results), 24h freshness filter
+- Extracts: job ID (from `data-entity-urn`), role title, company, location, apply URL — all via `re` (no BeautifulSoup)
+- `has_jd = False` on all results (guest API returns cards only, no description)
+- Claude handles no-JD scoring at Layer B (neutral semantic baseline, skip tailoring)
+- `source_board = "linkedin-guest"`; runs for up to 2 preferred locations per search
+
+**Telegram job channel scraper (`scripts/scrapers/telegram_channels.py`)**
+- Uses Telethon MTProto user client (not bot API) to read recent posts from public India job channels
+- Configured in `config/telegram_channels.json` — 8 channels, configurable enable/disable
+- Every URL extracted from messages is run through the URL security pipeline before the job is kept
+- Message parsing: structured `Company | Role | Location` pipe format with freeform fallback
+- First-time auth: `python3 scripts/scrapers/telegram_channels.py --auth` (OTP via Telegram app, saves session)
+- Gracefully returns `[]` if session file missing, Telethon not installed, or `enabled: false`
+
+**URL security pipeline (`scripts/url_security.py`)**
+- 4-tier risk-scoring pipeline for every URL from Telegram messages:
+  - Tier 0: SQLite cache lookup → allowlist fast-pass (20+ trusted job boards and company domains)
+  - Tier 1 (local): HTTPS check, URL shortener detection, punycode detection, homoglyph attack detection
+  - Tier 2 (network): redirect chain follow (max 5 hops), domain age via WHOIS, URLHaus blocklist (free, no key)
+  - Tier 3 (threat intel): Google Safe Browsing API (`GOOGLE_SAFE_BROWSING_KEY`), VirusTotal (`VIRUSTOTAL_KEY`, only if score ≥ 50)
+- Risk score: 0–19 = safe, 20–49 = suspicious, 50+ = dangerous
+- Dangerous URLs: job post silently dropped. Suspicious: job kept, flagged with `url_suspicious: true`
+- Results cached in `url_security_cache` SQLite table with TTL (safe 72h, suspicious 24h, dangerous 6h)
+- `python3 scripts/url_security.py check <url>` / `flush` CLI
+
+**`url_security_cache` SQLite table**
+- Added to `schema/init.sql`: `url_hash` (SHA256[:32] PK), `url`, `risk_score`, `risk_label`, `is_allowlist`, `final_url`, `redirect_hops` (JSON), `threats` (JSON), `checked_at`, `expires_at`
+- `open_db()` in `url_security.py` creates the table automatically if missing
+
+**Target company career page crawl (Step A0.5)**
+- `config/target_companies.json` — 20 target companies: 12 global (Google, Meta, Amazon, Netflix, Salesforce, IBM, HP, Boomi, Microsoft, Adobe, Atlassian, Stripe), 8 India (Flipkart, Razorpay, Zepto, CRED, Swiggy, Freshworks, Zoho, Infra.Market)
+- `/job-search` Step A0.5: Claude uses WebFetch to crawl each company's careers page, extracts matching roles, capped at 5 per company
+- `source_board = "direct-<company_slug>"` for all career-page results
+- SPA-only pages (blank HTML) are skipped and logged
+
+**Application deadline filter (`last_date`)**
+- `last_date` field added to canonical job schema in `_common.py` and `build_job()`
+- `internshala.py` extracts deadline from job cards (calendar icon regex + "apply by" fallback)
+- `filter.py` drops jobs where `last_date` is in the past (IST timezone via `ZoneInfo("Asia/Kolkata")`)
+- `filter.py` also adds `avoid_service_companies` CTC filter (LPA regex from preferences)
+
+**Styled XLSX report (`scripts/report_generator.py`)**
+- Replaces the plain CSV: colour-coded rows (≥75 score = green, 60–74 = yellow), frozen header, hyperlinked apply URL
+- Top-20 cap in the report; all jobs remain in `/tmp/jobpilot_scored.json`
+- Saved to `~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>.xlsx`
+- `python3 scripts/report_generator.py --input /tmp/jobpilot_scored.json --output <path>`
+
+---
+
+### Bug fixes
+- **`apify_scraper.py` merge conflict markers** — raw `<<<<<<<` / `>>>>>>>` lines caused SyntaxError on import. Fixed via full rewrite keeping new-branch architecture.
+- **`filter.py` undefined `re`, `ctc_company_ok`, `keyword_ok`, `profile`** — keyword/profile filtering violated Layer A invariant (no LLM). Removed; `import re` added; `ctc_company_ok` implemented cleanly.
+- **`filter.py` `dropped_location` counter never flowed to reasons dict** — fixed.
+- **`telegram_notify.py` missing `import json`, undefined `DIVIDER`** — fixed in rewrite.
+- **`telegram_notify.py` imported `IST` from `report_generator`** — circular import risk; `IST` now defined inline.
+- **`telegram_notify.py` duplicate `send_document` functions** — merged into one caption-capable version.
+- **`skills/job-search/SKILL.md` frontmatter merge conflict** — resolved, kept new-branch description.
+
+---
+
+### Added files
+- `scripts/apify_token_update.py` — secure Apify token rotation CLI
+- `scripts/url_security.py` — URL risk-scoring pipeline
+- `scripts/report_generator.py` — styled XLSX report generator
+- `scripts/scrapers/__init__.py` — package marker
+- `scripts/scrapers/_common.py` — shared schema helpers for native scrapers
+- `scripts/scrapers/internshala.py` — Internshala native scraper
+- `scripts/scrapers/remoteok.py` — RemoteOK native scraper
+- `scripts/scrapers/weworkremotely.py` — WeWorkRemotely native scraper
+- `scripts/scrapers/remotive.py` — Remotive native scraper
+- `scripts/scrapers/arbeitnow.py` — Arbeitnow native scraper
+- `scripts/scrapers/jobicy.py` — Jobicy native scraper
+- `scripts/scrapers/linkedin_guest.py` — LinkedIn guest API scraper (free)
+- `scripts/scrapers/telegram_channels.py` — Telegram channel scraper (Telethon)
+- `config/target_companies.json` — 20 target companies for career page crawl
+- `config/telegram_channels.json` — 8 curated India job channels
+
+---
+
 ## v1.2.0 — 2026-06-27
 
 ### Release title: "Reliability & Scoring Quality"
