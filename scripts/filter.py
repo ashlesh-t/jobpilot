@@ -135,21 +135,56 @@ def location_ok(job: dict, prefs: dict) -> bool:
     return False
 
 
+def _load_locations_cache() -> dict:
+    """Load canonical city entries from locations.json.
+
+    Returns the 'canonical' dict (city_key → {aliases, weight, priority_rank}).
+    Returns {} if the file is missing or unreadable — caller falls back to CITY_ALIASES.
+    """
+    cache_path = jobpilot_dir() / "cache" / "locations.json"
+    try:
+        return json.loads(cache_path.read_text()).get("canonical", {})
+    except Exception:
+        return {}
+
+
 def location_weight(job: dict, prefs: dict) -> float:
-    priority = prefs.get("location_priority") or prefs.get("locations", [])
+    """Return a location fit weight (0.7–1.0) for sorting.
+
+    Layer A (cache): tries locations.json first — alias-aware, Claude-seeded at setup.
+    Layer B (fallback): uses CITY_ALIASES + preference-index weights if cache absent.
+    Logs which alias matched (or 'no match') to stderr for debugging.
+    """
     loc = (job.get("location") or "").lower()
+    canonical = _load_locations_cache()
+
+    if canonical:
+        for city_key, city_data in canonical.items():
+            aliases = [a.lower() for a in (city_data.get("aliases") or [])]
+            all_variants = [city_key.lower()] + aliases
+            matched = next((v for v in all_variants if v and v in loc), None)
+            if matched:
+                weight = float(city_data.get("weight", 1.0))
+                print(
+                    f"[filter] '{loc}' matched canonical '{city_key}' "
+                    f"via '{matched}' → weight {weight}",
+                    file=sys.stderr,
+                )
+                return weight
+        print(f"[filter] '{loc}' — no canonical match → weight 0.75", file=sys.stderr)
+        return 0.75  # unknown location — neutral weight
+
+    # Fallback: use CITY_ALIASES + preference-index weights (no locations.json present)
+    priority = prefs.get("location_priority") or prefs.get("locations", [])
     for i, pref_loc in enumerate(priority):
-        pl = pref_loc.lower()
-        # Use _loc_matches for alias-aware comparison (Bengaluru == Bangalore)
-        match = _loc_matches(pref_loc, loc)
-        if match:
+        if _loc_matches(pref_loc, loc):
             if i == 0:
                 return 1.0
             elif i == 1:
-                return 0.85   # was 0.7 — softer cliff for 2nd-choice location
+                return 0.85
             else:
-                return 0.7    # was 0.4 — softer cliff for 3rd-choice/remote
-    return 0.75  # unknown location — neutral weight (was 0.6)
+                return 0.7
+    return 0.75  # unknown location — neutral weight
 
 
 def deadline_passed(job: dict) -> bool:

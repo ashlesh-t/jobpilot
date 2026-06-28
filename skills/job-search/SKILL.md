@@ -419,6 +419,14 @@ For each surviving job, read the **full** `jd_full` and `profile.json`, then com
   when the map has a URL for this job_id**.
 - `effective_score` = `score * location_weight` — used **only for sort order**, never for gates.
 
+**Location override (B2 Layer B — Claude resolves what filter.py couldn't):**
+For any job where `location` is empty, `"Not specified"`, `"India"`, or otherwise ambiguous,
+read `~/.claude/job-hunt-ai/cache/locations.json` and resolve:
+- Match the job's `source_board` or JD text for city hints (e.g. "office in Bangalore")
+- If the JD implies remote: set `location_weight` to the remote weight from locations.json
+- If unresolvable: leave `location_weight` at 0.75 (neutral) and note in `why`
+Log: `location '<raw>' re-resolved to '<canonical>' via '<matched>' → weight <w>`
+
 Rank by `effective_score` (descending). Apply any **override prompt** the user passed here.
 
 ### B3 — Salary research (top 20, India-aware)
