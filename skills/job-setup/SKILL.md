@@ -89,61 +89,7 @@ reuse the cached profile.
 
 ---
 
-## Step F: Claude reads and understands the resume
-
-**Run this step if:** `profile.json` does not exist, OR `profile_verified == false` (including
-after a hash change), OR the user explicitly asks to re-read the resume.
-
-1. Read `/tmp/jobpilot_resume_raw.txt` (written by resume_parser.py in step E).
-2. Read `~/.claude/job-hunt-ai/cache/profile.json` if it exists (to see any previously stored
-   data to compare and correct, not to blindly reuse it).
-3. **Carefully read and understand the resume.** Extract:
-   - Full name and email address
-   - All technical skills: programming languages, frameworks, tools, platforms, databases,
-     cloud services, DevOps tools, ML/AI tools — be thorough, include everything visible
-   - All roles held: job title, company name, duration (e.g. "Backend Intern at XYZ, Jun–Aug 2024")
-   - All projects: name, tech stack used, 1–2 line description of what it does
-   - Education: degree name (e.g. "B.Tech Computer Science"), college name, graduation year
-   - Publications or open-source contributions if any
-   - Estimated experience years (0 for fresher/student with only internships)
-4. **Ask the user to clarify anything unclear or missing.** Examples of when to ask:
-   - Company names for internships are missing or ambiguous
-   - Projects section is empty or vague — "Can you briefly describe your key projects and tech stack?"
-   - Graduation year is unclear
-   - Skills list looks short — "I found X, Y, Z — are there other technologies you want included?"
-   - Do NOT ask about things clearly readable in the text.
-5. Once all information is confirmed, write `~/.claude/job-hunt-ai/cache/profile.json`:
-   ```json
-   {
-     "name": "Full Name",
-     "email": "email@example.com",
-     "skills": ["python", "java", "spring boot", "docker", "..."],
-     "experience_years": 0,
-     "roles_held": [
-       {"title": "Backend Intern", "company": "XYZ Corp", "duration": "Jun–Aug 2024"}
-     ],
-     "projects": [
-       {
-         "name": "Project Name",
-         "stack": ["python", "fastapi", "postgresql"],
-         "description": "Brief description of what it does"
-       }
-     ],
-     "education": {
-       "degree": "B.Tech Computer Science",
-       "college": "College Name",
-       "year": "2026"
-     },
-     "publications": [],
-     "profile_verified": true,
-     "hash": "<value from preferences.json resume_hash>"
-   }
-   ```
-6. Print a confirmation:
-   > "Profile captured: **<name>**, **<N> skills**, **<N> projects**, graduating **<year>**.
-   > Profile saved and verified ✓"
-
-### F. Claude reads and verifies the resume → profile.json
+## Step F — Claude reads and verifies the resume → profile.json
 
 **Run this step if** `profile.json` does not exist, or `profile_verified` is `false` (including
 after a resume-hash change), or the user explicitly asks to re-read the resume. Otherwise reuse
@@ -169,8 +115,8 @@ the cached profile.
      "publications": [],
      "graduation_date": "July 2026",
      "github_url": "", "portfolio_url": "",
-     "locations": [],            // mirror preferences.locations once known (step below)
-     "availability": "",         // mirror preferences.availability_date
+     "locations": [],
+     "availability": "",
      "notice_period_days": 0,
      "profile_verified": true,
      "hash": "<resume_hash from preferences.json>"
@@ -185,58 +131,72 @@ the cached profile.
 ## Preferences questionnaire
 
 Check for `~/.claude/job-hunt-ai/options/preferences.json`:
-- If it exists, ask: **"Edit existing or start fresh?"** If "edit", preserve current values
-  as defaults and only overwrite what the user changes. If "fresh", start from
+- **Always read the file first** (even when starting fresh) before writing it — the Write tool
+  requires a prior Read. If it does not exist, read `config/preferences.example.json` as the
+  starting template.
+- If `preferences.json` exists, ask: **"Edit existing or start fresh?"** If "edit", preserve
+  current values as defaults and only overwrite what the user changes. If "fresh", start from
   `config/preferences.example.json`.
 
-Ask these questions in order and record every answer into `preferences.json`.
-Use the AskUserQuestion tool with multi-select where noted.
+Ask these questions **one batch at a time** using the AskUserQuestion tool. Each question may
+have **at most 4 explicit options** (the tool auto-adds "Other" for free-text, giving 5 total).
 
-- **Preferred work locations** — options: Bengaluru / Remote / Hyderabad / Mumbai / Pune /
-  Other. Multi-select; allow custom typed values. Store as `locations` (set `remote_ok: true`
-  if Remote chosen).
+**Batch 1 — Location & market**
+
+- **Preferred work locations** — multi-select, max 4 options:
+  Bengaluru / Remote / Hyderabad / Mumbai
+  (user types other cities via "Other"). Store as `locations`; set `remote_ok: true` if Remote chosen.
 
 - **Location priority order** — if more than one location was selected, show the list numbered
   and ask the user to rank them (1 = most preferred). Reorder and store as `location_priority`.
-  Higher priority locations are searched at full volume; lower at half volume.
-  If only one location was selected, set `location_priority` equal to `locations` and skip.
+  If only one location was selected, set `location_priority` equal to `locations` and skip this question.
+
+- **Job market focus** — single-select, max 3 options:
+  - Both — India boards (Naukri/Cutshort/Internshala) + global remote boards
+  - India-first — prioritise Indian boards; skip US-timezone remote boards
+  - Global remote — focus on global remote boards only
+  Store as `job_market_focus` (`both` | `india` | `global`). Default `india`.
+
+**Batch 2 — Role & experience**
+
+- **Role types** — multi-select, max 4 options:
+  SWE / Backend / Full Stack / ML-AI
+  (user types DevOps, Data Engineering etc. via "Other"). Store as `role_types`.
+
+- **Experience range** — single-select, max 3 options:
+  - 0–1 yr fresher — `experience_years = 0`; no hard CTC filter
+  - 1–2 yr — `experience_years = 1`
+  - 2–3 yr — `experience_years = 2`
+  Store the lower bound as integer `experience_years`.
+
+**Batch 3 — Details (ask as plain conversation, not AskUserQuestion)**
+
+Ask each of these as a short conversational message and record the answer:
 
 - **Minimum target CTC in LPA** — a number. Store as `target_ctc_min_lpa`. Note: for freshers
-  (`experience_years == 0`) the pipeline does not hard-filter on CTC since most fresher JDs
-  don't state a salary — this value is used for reference in scoring only.
-
-- **Role types** — options: SWE / Backend / Full Stack / ML-AI / DevOps-Infra /
-  Data Engineering / Other. Multi-select + free text. Store as `role_types`.
-- **Job market focus** — options: India-first (Naukri/Cutshort/Internshala/LinkedIn-IN) /
-  Global remote / Both. Store as `job_market_focus` (`india` | `global` | `both`). This decides
-  which sources `apify_scraper.py` runs — India-first prioritises Indian boards and skips
-  US-timezone remote boards (HackerNews etc.). Default `india`.
-- **Experience range** — options: 0–1 yr fresher / 1–2 yr / 2–3 yr / Other (free text).
-  Store the lower bound as integer `experience_years`.
+  (`experience_years == 0`) the pipeline does not hard-filter on CTC — this value is used for
+  reference in scoring only.
 
 - **Degree and expected/completed graduation** — e.g. "B.Tech CS, July 2026". Store as
   `degree` and `graduation`.
+
 - **Availability** — "When can you start?" e.g. "July 2026", "Immediately". Store as
   `availability_date`; set `notice_period_days` (0 for a fresher) if relevant.
+
 - **Preferred tech stack** — optional; user may skip (will be inferred from resume). Store as
-  `preferred_stack`. (Also used as Cutshort skill filters when Apify is available.)
-- **Naukri / LinkedIn profile URL** — optional. Store as `naukri_profile_url` and
-  `linkedin_profile_url` (used only for reference/referrals; never auto-logged-in).
-- **Resume tailoring threshold** — optional; default **65**. Jobs scoring at/above this get a
+  `preferred_stack`. Also used as Cutshort skill filters when Apify is available.
+
+- **LinkedIn profile URL** — optional. e.g. `linkedin.com/in/username`. Store as `linkedin_profile_url`.
+
+- **Naukri profile URL** — optional. e.g. `naukri.com/mnjuser/profile`. Store as `naukri_profile_url`.
+  Used for reference only — never auto-logged-in.
+
+- **Resume tailoring threshold** — optional; default **65**. Jobs scoring at or above this get a
   tailored resume. Store as `score_threshold`.
 
-After collecting answers, mirror `locations`, `availability_date`, and `notice_period_days` into
-`profile.json` (per step F.6) and warn if profile vs preference locations diverge.
-
----
-
-## Confirmation summary
-
-Print a tidy summary of every stored preference (including `job_market_focus`, `availability_date`,
-`score_threshold`) plus the verified profile highlights (name, skills count, projects count,
-graduation year, github/portfolio if found) so the user can verify everything looks right.
-
----
+After collecting all answers, **read `profile.json` before writing it** to mirror `locations`,
+`availability_date`, and `notice_period_days` into it (per step F.6), and warn if profile vs
+preference locations diverge.
 
 ---
 
@@ -266,70 +226,7 @@ If no → skip.
 
 ### G3 — Collect API credentials
 
-1. Ask the user to:
-   - Visit `https://my.telegram.org` and log in with their phone number
-   - Go to **API Development Tools**
-   - Create an app (any name, e.g. "JobPilot") if they haven't already
-   - Copy the **API ID** (a number) and **API Hash** (a hex string)
-
-2. Collect via AskUserQuestion (text input, not shown in Telegram):
-   - "Enter your Telegram API ID (number from my.telegram.org):"
-   - "Enter your Telegram API Hash (string from my.telegram.org):"
-
-3. Save secrets:
-   ```bash
-   python3 -c "
-   import sys; sys.path.insert(0, 'scripts')
-   from secrets import set_secret
-   set_secret('TELEGRAM_API_ID', '<api_id>')
-   set_secret('TELEGRAM_API_HASH', '<api_hash>')
-   "
-   ```
-
-### G4 — Authenticate (interactive)
-
-```bash
-python3 scripts/scrapers/telegram_channels.py --auth
-```
-
-This will:
-- Prompt for the user's phone number (with country code, e.g. +91...)
-- Send an OTP via the Telegram app
-- Save `~/.claude/job-hunt-ai/cache/telegram.session` permanently
-
-After completion, confirm:
-> "Telegram channel scraper authenticated. Session saved.
-> Public India job channels will be scraped on every `/job-search` run."
-
----
-
-## Step G — Telegram Channel Scraper (optional)
-
-Telegram channel scraping provides free India job leads from curated public channels.
-It requires a personal Telegram API key (separate from the bot token used for notifications).
-
-**Skip this step if the user declines** — it is entirely optional. Native scraping works fine without it.
-
-### G1 — Check if already configured
-
-If `~/.claude/job-hunt-ai/cache/telegram.session` exists:
-> "Telegram channel scraper is already authenticated. Skip this step? [Y/n]"
-If yes → skip to Confirmation summary.
-
-### G2 — Explain and get consent
-
-Show the user:
-> "The Telegram channel scraper reads recent job posts from public Indian job channels
-> (e.g. @techjobsindia, @bengalurujobs) directly via the Telegram API — no bots involved.
-> This requires a personal Telegram API key from my.telegram.org.
-> Your account is only used to READ public channels — nothing is posted on your behalf.
-> Would you like to set this up? [Y/n]"
-
-If no → skip.
-
-### G3 — Collect API credentials
-
-Tell the user:
+Tell the user (output as plain chat text — do NOT use AskUserQuestion):
 
 > **Never paste your API credentials into this chat** — they stay on your machine only.
 >
@@ -360,6 +257,8 @@ Tell the user:
 > Replace `<YOUR_API_ID>` with the number and `<YOUR_API_HASH>` with the hex string from my.telegram.org.
 > Once you see **`Secrets saved.`** in the terminal, press **Enter** here to continue.
 
+Wait for the user to press Enter, then proceed to G4.
+
 ### G4 — Authenticate (interactive)
 
 ```bash
@@ -377,9 +276,21 @@ After completion, confirm:
 
 ---
 
+## Confirmation summary
+
+Print a tidy summary of every stored preference (including `job_market_focus`, `availability_date`,
+`score_threshold`) plus the verified profile highlights (name, skills count, projects count,
+graduation year, github/portfolio if found) so the user can verify everything looks right.
+
+---
+
 ## Notes
 - Never invoke any scraping here — this skill is configuration only.
 - If `resume_parser.py` fails (corrupt PDF, unreadable), print the error and ask the user to
   upload a different PDF to the `jobpilot-resume` folder, then re-run `/job-setup`.
 - `profile_verified: true` is the contract that profile.json is complete and Claude-reviewed.
   The `/job-search` skill checks this flag and triggers inline re-verification if false.
+- **AskUserQuestion hard limit:** each question may have at most 4 explicit options. The tool
+  always appends "Other" automatically, giving users a free-text escape hatch.
+- **Write rule:** always Read a file before Writing it, even when creating it fresh. Read the
+  existing file (or the example template if it doesn't exist) before every Write call.
