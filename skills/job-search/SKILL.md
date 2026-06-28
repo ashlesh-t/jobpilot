@@ -391,25 +391,35 @@ logged-in session — it risks banning the account used to apply.
 ### B2 — ATS scoring (write the scored JSON)
 
 For each surviving job, read the **full** `jd_full` and `profile.json`, then compute:
-- `matched_skills`: profile skills present in the JD (case-insensitive).
-- `missing_skills`: important hard skills in the JD not in the profile (top ~8).
-- `keyword_score` = `len(matched_skills) / len(profile.skills) * 100`.
+
+**Step 1 — extract JD hard skills:**
+- `must_have_skills` (≤6): concrete tech skills the JD explicitly requires.
+- `nice_to_have` (≤4): skills mentioned as preferred/bonus.
+- `jd_hard_skills` = union of must_have_skills + nice_to_have (the JD's skill footprint).
+- `degree_required`: extracted from the JD.
+
+**Step 2 — score:**
+- `matched_skills`: profile skills present in `jd_hard_skills` (case-insensitive). Capped to
+  skills that exist in `profile.skills` — do not invent matches.
+- `missing_skills`: important hard skills in `jd_hard_skills` not in the profile (top ~8).
+- `keyword_score` = `min(100, round(len(matched_skills) / max(len(jd_hard_skills), 1) * 100))`.
+  Score against **what the JD asks for**, not the full profile skills list. This means a
+  Golang-only JD where the candidate matches Go+Docker+K8s+CI/CD scores ~80, not ~20.
 - `semantic_score` (0–100): holistic fit — stack alignment, seniority (fresher OK for
   entry/junior), projects, product vs pure-service company.
-- `score`:
-  - jobs **with** a real JD: `round(0.5*semantic + 0.5*keyword)`, `score_confidence: "high"`.
-  - jobs **still without** a JD after B1: `round(0.9*semantic + 0.1*title_keyword)`,
+- `score` (pure fit, 0–100, drives all threshold gates):
+  - jobs **with** a real JD: `round(0.5*semantic + 0.5*keyword, 1)`, `score_confidence: "high"`.
+  - jobs **still without** a JD after B1: `round(0.9*semantic + 0.1*title_keyword, 1)`,
     `score_confidence: "low"`.
 - `why`: one sentence justifying the score.
-- `must_have_skills` (≤6), `nice_to_have` (≤4), `degree_required` — extracted from the JD.
 - `jd_summary`: 3–5 short bullet strings.
 - carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `company`,
   `role`, `location`, `job_id`.
 - `application_url`: always re-attach from `url_map` (built in B0) — **never omit or leave blank
   when the map has a URL for this job_id**.
+- `effective_score` = `score * location_weight` — used **only for sort order**, never for gates.
 
-Rank by `effective_score = score * location_weight` (descending). Apply any **override prompt**
-the user passed (e.g. "remote backend only", "rank by salary") here.
+Rank by `effective_score` (descending). Apply any **override prompt** the user passed here.
 
 ### B3 — Salary research (top 20, India-aware)
 
