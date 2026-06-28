@@ -75,12 +75,16 @@ in Python; Claude infers them in this step.
 
 Read `~/.claude/job-hunt-ai/cache/profile.json`.
 
+If `profile_verified` is `true`: continue directly — no action needed.
+
 If `profile_verified` is `false` or the file does not exist:
 1. Run `python3 scripts/resume_parser.py ~/.claude/job-hunt-ai/resumes/base.pdf`
 2. Read `/tmp/jobpilot_resume_raw.txt`
-3. Follow the same profile verification steps as `/job-setup` Step F — extract all fields,
-   ask clarifying questions, write complete `profile.json` with `profile_verified: true`.
-4. Continue once verification is complete.
+3. Extract all fields autonomously (name, skills, roles, projects, education, graduation_date,
+   github_url, portfolio_url, experience_years). **Do NOT ask clarifying questions** — infer
+   best-effort from the text, mark `profile_verified: true`, and continue. Note any ambiguities
+   in the run summary for the user to fix via `/job-setup`.
+4. Write `profile.json` and proceed immediately.
 These scripts must never call the LLM. Run each and read the printed counts.
 
 1. `python3 scripts/apify_scraper.py` -> writes `/tmp/jobpilot_raw.json`
@@ -517,26 +521,38 @@ Write the updated lessons JSON using the Write tool.
 
 ---
 
-## Final summary
+## Failure handling
 
-Print:
-**"Done. N jobs scored (M hard-dropped, K no-JD). Top match: <company> <role> (score: <score>).
-W resumes tailored. Report sent to Telegram + Drive."**
+Wrap every step in try/except logic (or equivalent). A single step failure must log the error and
+continue — **never abort the whole pipeline**. Always attempt B4 (report), B6 (Telegram), and
+B7 (Drive) even if earlier steps partially failed.
+
+Track failures in a `_failed_steps` list throughout the run. Each entry:
+`{"step": "B3-salary-<company>", "reason": "<brief error message>"}`.
+
+### Drive upload (B7)
+Read `/tmp/jobpilot_drive_manifest.json`. Use the Drive MCP `search_files` to find the
+`"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
+upload each manifest file via `create_file`. Log `[drive] Uploaded <name> → <link>`.
+If Drive MCP is unavailable or any upload fails, log and continue — do not abort.
 
 ---
 
-## Failure handling
+## Final summary
 
-Wrap each step so a single failure is logged and the pipeline continues. Always attempt
-B4 (CSV), B6 (Telegram), and B7 (Drive) even if earlier steps partially failed.
-Read `/tmp/jobpilot_drive_manifest.json`. Use the Google Drive MCP `search_files` to find/confirm
-the `"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
-upload each manifest file via `create_file`. Log `[drive] Uploaded <name> -> <link>`. If Drive MCP
-is unavailable or an upload fails, log and continue — do not abort.
+Print:
+```
+Done. N jobs scored (M hard-dropped, K no-JD). Top match: <company> <role> (score: <X>).
+W resumes tailored. Report → Telegram + Drive.
+```
 
-8. Print: **"Done. N jobs scored, top match: <company> <role> (score). Report -> Telegram + Drive."**
+If `_failed_steps` is non-empty, append a skipped/failed section:
+```
+⚠️ Skipped / degraded steps:
+  - <step>: <reason>
+  - <step>: <reason>
+Run /job-setup to fix configuration issues, or check apify_lessons.json for actor failures.
+```
 
-## Failure handling
-Wrap each step so a single failure (Apify quota, Telegram timeout, Drive auth) is logged and the
-pipeline continues. Always attempt B4 (report), B6 (Telegram), and B7 (Drive) even if earlier
-steps partially failed.
+This summary also appears in the Telegram digest (B6) as a trailing warning block, so the
+user sees failures even without reading the terminal output.
