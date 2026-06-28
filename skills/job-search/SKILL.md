@@ -8,6 +8,18 @@ description: The main JobPilot pipeline. Invoke for /job-search [optional overri
 Run the full JobPilot pipeline. Designed to run fully autonomously — do not pause for
 confirmation. If a script fails, log the error and continue with the next step.
 
+**Autonomy contract — this skill MUST NOT:**
+- Call `AskUserQuestion` at any point during the run.
+- Prompt for secrets inline (APIFY_TOKEN, Telegram tokens). If a secret is missing,
+  log `[skip] <source> — secret missing, run /job-setup to configure` and continue.
+- Wait for user input before proceeding to the next step.
+
+**Pre-conditions (assumed complete before /job-search runs):**
+- `/job-setup` has been completed: `profile.json` exists with `profile_verified: true`,
+  `preferences.json` exists, secrets are stored, Drive MCP UUID is in `settings.local.json`.
+- If any pre-condition is violated, log the specific missing item and degrade gracefully
+  (skip that source/step), **never block**.
+
 ---
 
 ## Step 0 — Tiered scheduling + Search keyword enrichment

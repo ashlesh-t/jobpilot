@@ -22,5 +22,7 @@ __pycache__/
 venv/
 
 # Claude Code personal config (local to each user's machine)
-.claude/
+# Use .claude/* (not .claude/) so we can un-ignore settings.json
+.claude/*
+!.claude/settings.json
 .claude-plugin/

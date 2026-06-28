@@ -377,6 +377,33 @@ After completion (or skip), confirm:
 
 ---
 
+## Step H — Update .claude/settings.local.json with MCP permissions
+
+This step runs once after Step B (Drive MCP) succeeds. It pre-authorises Drive MCP calls for
+all future `/job-search` runs so they complete with zero permission prompts.
+
+**How to detect the Drive MCP server UUID:**
+The tool you called in Step B has a name like `mcp__<UUID>__search_files`. Extract `<UUID>`
+from that tool name (e.g. if the tool was `mcp__abc123__search_files`, the UUID is `abc123`).
+
+**What to write:**
+Read `.claude/settings.local.json` first (it was created by `setup.sh` as an empty template).
+Then update the `permissions.allow` array to include these four entries for the detected UUID:
+```json
+"mcp__<UUID>__search_files",
+"mcp__<UUID>__create_file",
+"mcp__<UUID>__download_file_content",
+"mcp__<UUID>__read_file_content"
+```
+
+**Idempotency:** if the UUID entries are already present (re-run of /job-setup), do not add
+duplicates. If the UUID has changed (Drive MCP reconnected), remove the old UUID entries and
+add the new ones.
+
+Print: `"Permissions updated: Drive MCP UUID <UUID> → .claude/settings.local.json"`
+
+---
+
 ## Confirmation summary
 
 Print a tidy summary of every stored preference (including `job_market_focus`, `availability_date`,

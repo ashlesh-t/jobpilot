@@ -63,6 +63,22 @@ for skill_dir in "$REPO_DIR/skills"/*/; do
 done
 echo "==> Slash commands synced to .claude/commands/"
 
-# 7. Interactive secrets wizard
+# 7. Create .claude/settings.local.json if absent (MCP UUIDs are filled in by /job-setup)
+LOCAL_SETTINGS="$REPO_DIR/.claude/settings.local.json"
+if [ ! -f "$LOCAL_SETTINGS" ]; then
+  cat > "$LOCAL_SETTINGS" <<'EOF'
+{
+  "permissions": {
+    "allow": [],
+    "_note": "MCP tool permissions (Drive, etc.) are auto-populated by /job-setup Step H. Run /job-setup to add your Drive MCP server UUID entries here."
+  }
+}
+EOF
+  echo "==> Created .claude/settings.local.json (MCP entries added by /job-setup)"
+else
+  echo "==> .claude/settings.local.json already exists — leaving it untouched"
+fi
+
+# 8. Interactive secrets wizard
 echo "==> Launching secrets wizard..."
 python3 "$REPO_DIR/scripts/setup_wizard.py"
