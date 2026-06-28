@@ -11,20 +11,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import build_job, http_get, matches_keywords, region_ok, split_terms, strip_html  # noqa: E402
 
-API = "https://www.workatastartup.com/companies"
+COMPANIES_API = "https://www.workatastartup.com/companies"
+JOBS_API = "https://www.workatastartup.com/jobs"
 
 
 def fetch(keywords="software engineer", max_results=30, focus="both"):
     keyword_terms = split_terms(keywords)
-    params = {
-        "demographic": "",
-        "has_jobs": "true",
-        "query": keywords,
-        "remote": "true",
-        "roles": "eng",
-        "layout": "list-compact",
-    }
-    resp = http_get(API, params=params, headers={"Accept": "application/json"}, timeout=30)
+
+    # Try the jobs search endpoint first (React SPA — send XHR headers, not Accept: json)
+    params = {"query": keywords, "remote": "true", "roles": "eng"}
+    resp = http_get(
+        JOBS_API,
+        params=params,
+        headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json, */*"},
+        timeout=30,
+    )
+    if not resp:
+        # Fallback: companies endpoint
+        params2 = {"has_jobs": "true", "query": keywords, "remote": "true", "roles": "eng"}
+        resp = http_get(COMPANIES_API, params=params2, timeout=30)
     if not resp:
         return []
 

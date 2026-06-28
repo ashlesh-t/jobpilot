@@ -11,7 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import build_job, http_get, matches_keywords, region_ok, split_terms, strip_html  # noqa: E402
 
-API = "https://www.instahyre.com/api/v1/opportunity"
+_ENDPOINTS = [
+    "https://www.instahyre.com/api/v1/opportunity",
+    "https://www.instahyre.com/api/v1/jobs",
+    "https://www.instahyre.com/api/v1/search",
+]
 
 
 def fetch(keywords="software engineer", max_results=25, focus="both"):
@@ -26,7 +30,12 @@ def fetch(keywords="software engineer", max_results=25, focus="both"):
         "page_size": min(max_results, 50),
         "job_type": "full_time",
     }
-    resp = http_get(API, params=params, headers={"Accept": "application/json"}, timeout=25)
+    resp = None
+    for endpoint in _ENDPOINTS:
+        resp = http_get(endpoint, params=params, headers={"Accept": "application/json"}, timeout=25)
+        if resp and resp.status_code == 200:
+            break
+        resp = None
     if not resp:
         return []
 
