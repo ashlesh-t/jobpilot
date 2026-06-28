@@ -140,15 +140,16 @@ def location_weight(job: dict, prefs: dict) -> float:
     loc = (job.get("location") or "").lower()
     for i, pref_loc in enumerate(priority):
         pl = pref_loc.lower()
-        match = ("remote" in loc) if pl == "remote" else (pl in loc)
+        # Use _loc_matches for alias-aware comparison (Bengaluru == Bangalore)
+        match = _loc_matches(pref_loc, loc)
         if match:
             if i == 0:
                 return 1.0
             elif i == 1:
-                return 0.7
+                return 0.85   # was 0.7 — softer cliff for 2nd-choice location
             else:
-                return 0.4
-    return 0.6  # unknown location — neutral weight
+                return 0.7    # was 0.4 — softer cliff for 3rd-choice/remote
+    return 0.75  # unknown location — neutral weight (was 0.6)
 
 
 def deadline_passed(job: dict) -> bool:

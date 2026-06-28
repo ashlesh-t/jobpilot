@@ -251,7 +251,7 @@ scores based on feedback — just surface the pattern.
 
 ### Step B3: Salary research (top matches only)
 
-For jobs with `score >= 60` AND `experience_gate_drop != true` AND `has_jd != false`,
+For jobs with **`score >= 60`** (pure fit, NOT effective_score) AND `experience_gate_drop != true` AND `has_jd != false`,
 run up to 3 targeted WebSearch queries per job:
 
 1. `"<company> India salary software engineer 2025 site:glassdoor.co.in OR ambitionbox.com"`
@@ -423,7 +423,10 @@ Rank by `effective_score` (descending). Apply any **override prompt** the user p
 
 ### B3 — Salary research (top 20, India-aware)
 
-For the top ~20 by effective_score with `score >= 55`:
+For the top ~20 by `score` (pure fit) with **`score >= 55`** — gate on `score`, NOT
+`effective_score`. A strong match with a 2nd-choice location (score=72, effective=61) still
+deserves salary research.
+
 1. **AmbitionBox actor** (India salaries) via Apify MCP, if Apify is available:
    `call-actor "thirdwatch/ambitionbox-scraper"` with
    `{ "companies": ["<company>"], "roles": ["<role-slug>"], "includeCompanyReviews": false }`.
@@ -450,7 +453,8 @@ All scored jobs remain in `/tmp/jobpilot_scored.json`; only the report is capped
 ### B5 — Resume tailoring (top matches)
 
 Read `score_threshold` from preferences (default **65**). For the top 5 jobs with
-`score >= score_threshold`:
+**`score >= score_threshold`** — gate on `score` (pure fit), NOT `effective_score`.
+A job with score=72 in a 2nd-choice city (effective=61) should still get a tailored resume.
 - If `~/.claude/job-hunt-ai/resumes/base.tex` exists: edit it to weave in `matched_skills`
   (never invent experience/dates/employers), write `/tmp/<company>-<job_id>.tex`, and compile
   with `tectonic ... --outdir ~/.claude/job-hunt-ai/resumes/tailored/`.
