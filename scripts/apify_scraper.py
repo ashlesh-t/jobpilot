@@ -262,39 +262,95 @@ def _run_apify_actor_raw(actor_id: str, run_input: dict, token: str, timeout: in
 # --------------------------------------------------------------------------- #
 # Hacker News — Who Is Hiring (free, native)
 # --------------------------------------------------------------------------- #
+def _hn_strip_html(text: str) -> str:
+    """Remove HTML tags and unescape entities (inline, no _common import needed)."""
+    import html as _html_mod
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"[ \t]+", " ", _html_mod.unescape(text)).strip()
+
+
 def fetch_hn_whoishiring() -> list:
+    """Fetch jobs from the latest monthly 'Ask HN: Who is hiring?' thread.
+
+    Uses search_by_date (not search) so the most recent thread is always first,
+    not the most "relevant" one (which previously returned a 2020 thread).
+    Tags each job with the thread's year-month so staleness is visible.
+    """
     results = []
     try:
+        # search_by_date + author_whoishiring tag → always the newest monthly thread
         search = requests.get(
-            "https://hn.algolia.com/api/v1/search",
-            params={"query": "who is hiring", "tags": "story", "hitsPerPage": 1},
+            "https://hn.algolia.com/api/v1/search_by_date",
+            params={
+                "query": "Ask HN: Who is hiring",
+                "tags": "story,author_whoishiring",
+                "hitsPerPage": 1,
+            },
             timeout=30,
         ).json()
         hits = search.get("hits", [])
         if not hits:
+            print("[hn] No 'who is hiring' thread found", file=sys.stderr)
             return results
-        object_id = hits[0]["objectID"]
+
+        hit = hits[0]
+        object_id = hit["objectID"]
+        thread_month = (hit.get("created_at") or "")[:7]   # YYYY-MM — staleness tag
+        thread_date  = (hit.get("created_at") or "")[:10]  # YYYY-MM-DD — posted_date
+        thread_title = hit.get("title", "unknown")
+        print(f"[hn] Thread: '{thread_title}' ({thread_month}) id={object_id}",
+              file=sys.stderr)
+
         thread = requests.get(
             f"https://hn.algolia.com/api/v1/items/{object_id}", timeout=60
         ).json()
+
         for comment in thread.get("children", []) or []:
             text = (comment.get("text") or "").strip()
-            if not text:
+            if not text or len(text) < 30:
                 continue
-            first_line = text.split("<p>")[0]
-            parts = [p.strip() for p in first_line.split("|")]
-            company = parts[0][:80] if parts else "HN"
-            role = parts[1] if len(parts) > 1 else "See post"
-            location = parts[2] if len(parts) > 2 else "Unknown"
+
+            # First line only, stripped of HTML
+            raw_first = re.split(r"(?i)<p>", text, maxsplit=1)[0]
+            first_line = _hn_strip_html(raw_first).strip()
+            if not first_line:
+                continue
+
+            # Split on pipe — tolerate missing parts
+            parts = [p.strip() for p in re.split(r"\s*\|\s*", first_line)]
+            company = parts[0][:100] if parts else ""
+            role     = parts[1]      if len(parts) > 1 else ""
+            location = parts[2]      if len(parts) > 2 else "Unknown"
+
+            # Drop entries without a plausible company name
+            if not company or len(company) < 2:
+                continue
+            # Drop entries where role is absent or is just a meta-label
+            _bad_roles = {"remote", "full-time", "full time", "part-time", "contract",
+                          "see post", "hiring", ""}
+            if not role or role.lower() in _bad_roles:
+                if len(parts) == 1:
+                    continue  # only one field — not parseable as a job posting
+                role = "Various roles"
+
+            # Normalise obvious remote markers in location
+            if any(r in location.lower() for r in ("remote", "wfh", "work from home",
+                                                    "anywhere", "worldwide")):
+                if "remote" not in location.lower():
+                    location = f"Remote / {location}"
+
+            full_jd = _hn_strip_html(text)
             results.append(
                 normalize(
                     {
                         "company": company,
                         "title": role,
                         "location": location,
-                        "description": text,
+                        "description": f"[HN {thread_month}] {full_jd}",
                         "url": f"https://news.ycombinator.com/item?id={comment.get('id')}",
-                        "postedAt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "postedAt": thread_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                     },
                     "hackernews",
                 )
