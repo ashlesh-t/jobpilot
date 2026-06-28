@@ -291,6 +291,132 @@ def fetch(keywords: str = "", location: str = "", max_results: int = 60,
 
 
 # --------------------------------------------------------------------------- #
+# Channel discovery + validation (Plan D hybrid approach)
+# --------------------------------------------------------------------------- #
+
+SEED_CHANNELS = [
+    "techjobsindia", "bengalurujobs", "startupjobsindia", "remotejobsindia",
+    "softwarejobsindia", "freshersjobsindia", "linkedinjobalerts", "indiastartupjobs",
+    "HiringIndia", "jobsforindia", "techJobsIndia2", "devjobsindia",
+    "pythonJobsIndia", "mlJobsIndia", "backendJobsIndia", "freshersjobs_in",
+    "naukrijobsofficial", "hiringfreshers", "campusJobsIndia", "jobsinbengaluru",
+]
+
+_DISCOVERY_QUERIES = [
+    "jobs india",
+    "freshers jobs india",
+    "bangalore jobs hiring",
+    "startup jobs india",
+    "tech hiring india",
+]
+
+# Keywords that must appear (case-insensitive) in a discovered channel's title or username
+# for it to be considered a job channel. Seed channels bypass this filter.
+_JOB_KEYWORDS = {
+    "job", "jobs", "hiring", "career", "careers", "recruit", "vacancy",
+    "vacancies", "fresher", "freshers", "placement", "intern", "internship",
+    "work", "employ", "opportunity", "opportunities",
+}
+
+_MIN_MEMBERS_DISCOVERED = 500  # ignore low-traffic channels found via global search
+
+
+async def _discover_async() -> None:
+    """Validate seed channels + discover new ones via Telegram global search."""
+    try:
+        from telethon import TelegramClient  # noqa
+        from telethon.tl.functions.contacts import SearchRequest  # noqa
+        from telethon.tl.types import Channel  # noqa
+    except ImportError:
+        print("telethon not installed. Run: pip install telethon")
+        sys.exit(1)
+
+    api_id, api_hash = _load_secrets()
+    if not api_id or not api_hash:
+        print("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set first.")
+        sys.exit(1)
+
+    cfg = _load_config()
+    cfg_path = REPO_DIR / "config" / "telegram_channels.json"
+
+    # Collect candidates: seed + existing config channels
+    existing_usernames = {ch["username"] for ch in cfg.get("channels", [])}
+    candidates: set[str] = set(SEED_CHANNELS) | existing_usernames
+
+    async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
+        # Discover via global search
+        print(f"[discover] Running {len(_DISCOVERY_QUERIES)} global search queries...")
+        discovered_usernames: set[str] = set()
+        for query in _DISCOVERY_QUERIES:
+            try:
+                result = await client(SearchRequest(q=query, limit=25))
+                for chat in getattr(result, "chats", []):
+                    username = getattr(chat, "username", None)
+                    title = getattr(chat, "title", "") or ""
+                    if not username:
+                        continue
+                    # Filter: title or username must contain a job-related keyword
+                    combined = (title + " " + username).lower()
+                    if any(kw in combined for kw in _JOB_KEYWORDS):
+                        discovered_usernames.add(username)
+            except Exception as exc:
+                print(f"[discover] search '{query}' failed: {exc}", file=sys.stderr)
+
+        candidates |= discovered_usernames
+
+        print(f"[discover] Validating {len(candidates)} candidate channels...")
+        live: list[dict] = []
+        dead: list[str] = []
+        original_usernames = {ch["username"] for ch in cfg.get("channels", [])}
+        seed_set = set(SEED_CHANNELS)
+
+        for username in candidates:
+            is_seed = username in seed_set or username in original_usernames
+            try:
+                entity = await client.get_entity(username)
+                members = getattr(entity, "participants_count", 0) or 0
+                # Apply minimum member threshold only to newly discovered channels
+                if not is_seed and members < _MIN_MEMBERS_DISCOVERED:
+                    continue
+                live.append({"username": username, "members": members})
+            except Exception:
+                dead.append(username)
+
+    # Sort by member count descending
+    live.sort(key=lambda c: c["members"], reverse=True)
+
+    newly_discovered = [
+        c["username"] for c in live
+        if c["username"] not in original_usernames and c["username"] not in seed_set
+    ]
+
+    # Write updated config
+    cfg["channels"] = live
+    cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+
+    print(
+        f"[discover] Live: {len(live)} | Dead/inaccessible: {len(dead)} | "
+        f"Newly discovered: {len(newly_discovered)}"
+    )
+    if dead:
+        print(
+            f"[discover] Dead channels: {', '.join(dead)}\n"
+            f"[discover] Edit manually: {cfg_path}",
+            file=sys.stderr,
+        )
+    if newly_discovered:
+        print(f"[discover] New channels: {', '.join(newly_discovered)}")
+
+
+def discover_channels() -> None:
+    """Validate seed + existing channels and discover new ones. Rewrites config."""
+    if not _session_path().with_suffix(".session").exists():
+        print("No session file found. Run --auth first.")
+        sys.exit(1)
+    asyncio.run(_discover_async())
+
+
+# --------------------------------------------------------------------------- #
 # First-time auth
 # --------------------------------------------------------------------------- #
 
@@ -342,6 +468,8 @@ def auth_interactive() -> None:
 if __name__ == "__main__":
     if "--auth" in sys.argv:
         auth_interactive()
+    elif "--discover" in sys.argv:
+        discover_channels()
     else:
         import json as _json
         results = fetch("software engineer backend", max_results=10)

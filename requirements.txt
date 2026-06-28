@@ -11,5 +11,5 @@ telethon>=1.36
 tldextract>=5.1
 httpx>=0.27
 python-whois>=0.9
-confusable-homoglyphs>=4.0
+confusable-homoglyphs>=3.0
 urlextract>=1.9
