@@ -10,7 +10,8 @@
   "max_results_per_board": 50,
   "hours_old": 48,
   "_native_sources": [
-    "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy"
+    "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy",
+    "yc_startup", "hasjob", "instahyre", "wellfound_rss"
   ],
-  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings."
+  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings. New India sources: hasjob (India tech board), instahyre (curated India hiring). New global sources: yc_startup (YC Work at a Startup), wellfound_rss (Wellfound public listing, no Cloudflare)."
 }

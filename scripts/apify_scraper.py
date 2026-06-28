@@ -533,6 +533,20 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
                             lambda loc=loc: internshala.fetch(keywords, loc, max_results=40,
                                                               focus=focus))
 
+        # India-specific free boards: Hasjob + Instahyre
+        try:
+            from scrapers import hasjob  # noqa
+            results += safe("hasjob", lambda: hasjob.fetch(keywords, max_results=25, focus=focus))
+        except ImportError:
+            pass
+
+        try:
+            from scrapers import instahyre  # noqa
+            results += safe("instahyre",
+                            lambda: instahyre.fetch(keywords, max_results=25, focus=focus))
+        except ImportError:
+            pass
+
     # Remote JSON boards — relevant whenever remote is acceptable or focus isn't India-only.
     remote_ok = prefs.get("remote_ok", True)
     if focus in ("global", "both") or remote_ok:
@@ -544,6 +558,22 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
         results += safe("jobicy", lambda: jobicy.fetch(keywords, max_results=cap, focus=focus))
         results += safe("arbeitnow",
                         lambda: arbeitnow.fetch(keywords, max_results=cap, focus=focus))
+
+        # YC Work at a Startup (global + both) — high signal for early-stage tech
+        try:
+            from scrapers import yc_startup  # noqa
+            results += safe("yc_startup",
+                            lambda: yc_startup.fetch(keywords, max_results=cap, focus=focus))
+        except ImportError:
+            pass
+
+        # Wellfound public listing (no Cloudflare on basic search)
+        try:
+            from scrapers import wellfound_rss  # noqa
+            results += safe("wellfound_rss",
+                            lambda: wellfound_rss.fetch(keywords, max_results=cap, focus=focus))
+        except ImportError:
+            pass
 
     # Hacker News — Who Is Hiring. Cap at 20 to avoid flooding the pipeline.
     hn = safe("hackernews", fetch_hn_whoishiring)
