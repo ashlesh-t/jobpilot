@@ -112,3 +112,8 @@ ATS platforms (Greenhouse, Lever, Ashby, Workday) via secondary actor. India-spe
 
 Primary: Claude reads `base.tex`, edits it, compiles via `tectonic`. Falls back to DOCX via
 `resume_tailor.py --matched-skills` when no LaTeX source. Self-caps at 5 per pipeline run.
+
+## Very important rule — never skip this
+
+1. Whenever you write to a file (for example `preferences.json`), first check whether the file
+   exists. If it does, **read it before writing** — otherwise the write will fail with an error.
