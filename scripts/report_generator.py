@@ -286,6 +286,13 @@ def main() -> None:
         jobs = load_json("/tmp/jobpilot_filtered.json", [])
         print(f"[report] {args.input} not found — using /tmp/jobpilot_filtered.json",
               file=sys.stderr)
+
+    missing_url_ids = [j.get("job_id", "?") for j in jobs if not j.get("application_url")]
+    if missing_url_ids:
+        print(f"[report] {len(missing_url_ids)} rows missing apply link: "
+              f"{', '.join(missing_url_ids[:10])}"
+              + (" ..." if len(missing_url_ids) > 10 else ""), file=sys.stderr)
+
     out = Path(os.path.expanduser(args.output)) if args.output else default_output()
     path = write_report(jobs, out)
     shown = min(len(jobs), TOP_N)

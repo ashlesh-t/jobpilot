@@ -99,6 +99,12 @@ the run and use the `source_quirks` section to guide how you interpret each sour
 
 ## Layer A — Scraping
 
+> **IMPORTANT — never use `sleep N && tail` or `sleep N && <any-command>` to wait for script output.**
+> These chains are blocked by the harness. For scripts that run longer than ~10s:
+> - Launch with `run_in_background: true` in the Bash tool, then await the completion notification.
+> - For polling until a file appears: use the Monitor tool with an `until` loop (e.g. `until [ -f /tmp/jobpilot_raw.json ]; do sleep 2; done`).
+> - After the script completes, read output files directly — do NOT tail them.
+
 ### Step A1: Job scraping (Apify MCP preferred, Python SDK fallback)
 
 **If the Apify MCP is connected** (check by attempting to list available MCP tools — look for
@@ -353,6 +359,24 @@ python3 scripts/telegram_notify.py --digest "<digest_text>" --csv "<report_csv_p
 ```
 
 ### Step B7: Drive upload
+### B0 — Build apply-URL preservation map
+
+Before any scoring or enrichment, build a URL map from `/tmp/jobpilot_filtered.json` so that
+apply links are never lost when Claude reconstructs scored records:
+
+```python
+url_map = {job["job_id"]: job.get("application_url", "") for job in filtered_jobs}
+```
+
+Keep `url_map` in memory for the rest of Layer B. After computing each scored record, always
+re-attach the URL:
+```python
+scored_job["application_url"] = scored_job.get("application_url") or url_map.get(scored_job["job_id"], "")
+```
+
+This guarantees that a URL captured by the scraper is never silently dropped when Claude
+writes the scored JSON, even if the record was rebuilt from scratch during scoring.
+
 ### B1 — JD enrichment for empty descriptions (cap 25)
 
 For jobs where `jd_full` is empty or < 120 chars AND `source_board` is `linkedin` (or any
@@ -379,8 +403,10 @@ For each surviving job, read the **full** `jd_full` and `profile.json`, then com
 - `why`: one sentence justifying the score.
 - `must_have_skills` (≤6), `nice_to_have` (≤4), `degree_required` — extracted from the JD.
 - `jd_summary`: 3–5 short bullet strings.
-- carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `application_url`,
-  `company`, `role`, `location`, `job_id`.
+- carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `company`,
+  `role`, `location`, `job_id`.
+- `application_url`: always re-attach from `url_map` (built in B0) — **never omit or leave blank
+  when the map has a URL for this job_id**.
 
 Rank by `effective_score = score * location_weight` (descending). Apply any **override prompt**
 the user passed (e.g. "remote backend only", "rank by salary") here.
@@ -422,6 +448,10 @@ Read `score_threshold` from preferences (default **65**). For the top 5 jobs wit
 Self-cap at 5 per run.
 
 ### B6 — Telegram digest
+
+When building the digest, resolve each job's apply link via `url_map` (built in B0) first,
+then fall back to the `application_url` field in the scored record. This ensures URLs captured
+by the scraper but omitted during scoring reconstruction are still included in the digest.
 
 Build a plain-text digest (top 3 jobs, flag ⚠️ Google-Form apply links, note if Apify paid
 sources were skipped), then:
