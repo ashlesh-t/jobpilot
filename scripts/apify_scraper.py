@@ -96,8 +96,33 @@ def _get_active_token(exhausted_slots: list) -> tuple:
 # --------------------------------------------------------------------------- #
 # Normalization (shared schema with native scrapers)
 # --------------------------------------------------------------------------- #
-def normalize(item: dict, source_board: str) -> dict:
-    """Map a raw Apify actor record to the common JobPilot schema."""
+def _synthesize_fallback_url(company: str, role: str, location: str, board: str) -> str:
+    """Build a deterministic search URL when the actor returns no apply link."""
+    import urllib.parse
+    slug = lambda s: re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    q = urllib.parse.quote_plus(f"{role} {company}".strip())
+    loc = urllib.parse.quote_plus(location or "")
+    if board == "naukri":
+        return f"https://www.naukri.com/job-listings-{slug(role)}-{slug(company)}?q={q}&l={loc}"
+    if board == "cutshort":
+        return f"https://cutshort.io/jobs?q={q}"
+    if board in ("wellfound", "angel"):
+        return f"https://wellfound.com/jobs?q={q}"
+    if board == "linkedin":
+        return f"https://www.linkedin.com/jobs/search/?keywords={q}&location={loc}"
+    if board == "indeed":
+        return f"https://www.indeed.co.in/jobs?q={q}&l={loc}"
+    if board == "glassdoor":
+        return f"https://www.glassdoor.co.in/Job/jobs.htm?sc.keyword={q}&locT=C&locId=0"
+    return ""
+
+
+def normalize(item: dict, source_board: str, url_field: str = "") -> dict:
+    """Map a raw Apify actor record to the common JobPilot schema.
+
+    url_field: optional actor-specific key that holds the apply URL (from lessons cache).
+    When supplied it is tried before the generic pick() list.
+    """
     def pick(*keys, default=""):
         for k in keys:
             v = item.get(k)
@@ -110,9 +135,18 @@ def normalize(item: dict, source_board: str) -> dict:
     location = str(pick("location", "jobLocation", "place", "city", default="")).strip()
     jd_full = str(pick("description", "jobDescription", "descriptionText", "jd", "text",
                        default="")).strip()
-    application_url = str(
-        pick("applyUrl", "applicationUrl", "url", "jobUrl", "link", "jobLink", default="")
-    ).strip()
+
+    # URL pick order: actor-specific override first, then exhaustive fallback list.
+    url_keys = []
+    if url_field:
+        url_keys.append(url_field)
+    url_keys += [
+        "applyUrl", "applicationUrl", "url", "jobUrl", "link", "jobLink",
+        "detailUrl", "positionUrl", "startupUrl", "jobPostUrl", "applyLink",
+        "jobDetailUrl", "externalApplyUrl", "applyNowUrl", "jobListingUrl",
+        "companyUrl", "redirectUrl", "sourceUrl",
+    ]
+    application_url = str(pick(*url_keys, default="")).strip()
     posted = str(pick("postedAt", "postedDate", "datePosted", "publishedAt", "posted",
                       default="")).strip()
     exp = str(pick("experience", "experienceRequired", "seniority", "experienceRange",
@@ -123,6 +157,10 @@ def normalize(item: dict, source_board: str) -> dict:
     board = str(pick("board", "site", "source", default=source_board)).strip() or source_board
     last_date = str(pick("applicationDeadline", "lastDate", "applyBy", "deadline",
                          default="")).strip()
+
+    # Synthesise a search URL when the actor returns no direct link.
+    if not application_url:
+        application_url = _synthesize_fallback_url(company, role, location, board)
 
     return {
         "job_id": make_job_id(company, role, location, board),
@@ -224,39 +262,95 @@ def _run_apify_actor_raw(actor_id: str, run_input: dict, token: str, timeout: in
 # --------------------------------------------------------------------------- #
 # Hacker News — Who Is Hiring (free, native)
 # --------------------------------------------------------------------------- #
+def _hn_strip_html(text: str) -> str:
+    """Remove HTML tags and unescape entities (inline, no _common import needed)."""
+    import html as _html_mod
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"[ \t]+", " ", _html_mod.unescape(text)).strip()
+
+
 def fetch_hn_whoishiring() -> list:
+    """Fetch jobs from the latest monthly 'Ask HN: Who is hiring?' thread.
+
+    Uses search_by_date (not search) so the most recent thread is always first,
+    not the most "relevant" one (which previously returned a 2020 thread).
+    Tags each job with the thread's year-month so staleness is visible.
+    """
     results = []
     try:
+        # search_by_date + author_whoishiring tag → always the newest monthly thread
         search = requests.get(
-            "https://hn.algolia.com/api/v1/search",
-            params={"query": "who is hiring", "tags": "story", "hitsPerPage": 1},
+            "https://hn.algolia.com/api/v1/search_by_date",
+            params={
+                "query": "Ask HN: Who is hiring",
+                "tags": "story,author_whoishiring",
+                "hitsPerPage": 1,
+            },
             timeout=30,
         ).json()
         hits = search.get("hits", [])
         if not hits:
+            print("[hn] No 'who is hiring' thread found", file=sys.stderr)
             return results
-        object_id = hits[0]["objectID"]
+
+        hit = hits[0]
+        object_id = hit["objectID"]
+        thread_month = (hit.get("created_at") or "")[:7]   # YYYY-MM — staleness tag
+        thread_date  = (hit.get("created_at") or "")[:10]  # YYYY-MM-DD — posted_date
+        thread_title = hit.get("title", "unknown")
+        print(f"[hn] Thread: '{thread_title}' ({thread_month}) id={object_id}",
+              file=sys.stderr)
+
         thread = requests.get(
             f"https://hn.algolia.com/api/v1/items/{object_id}", timeout=60
         ).json()
+
         for comment in thread.get("children", []) or []:
             text = (comment.get("text") or "").strip()
-            if not text:
+            if not text or len(text) < 30:
                 continue
-            first_line = text.split("<p>")[0]
-            parts = [p.strip() for p in first_line.split("|")]
-            company = parts[0][:80] if parts else "HN"
-            role = parts[1] if len(parts) > 1 else "See post"
-            location = parts[2] if len(parts) > 2 else "Unknown"
+
+            # First line only, stripped of HTML
+            raw_first = re.split(r"(?i)<p>", text, maxsplit=1)[0]
+            first_line = _hn_strip_html(raw_first).strip()
+            if not first_line:
+                continue
+
+            # Split on pipe — tolerate missing parts
+            parts = [p.strip() for p in re.split(r"\s*\|\s*", first_line)]
+            company = parts[0][:100] if parts else ""
+            role     = parts[1]      if len(parts) > 1 else ""
+            location = parts[2]      if len(parts) > 2 else "Unknown"
+
+            # Drop entries without a plausible company name
+            if not company or len(company) < 2:
+                continue
+            # Drop entries where role is absent or is just a meta-label
+            _bad_roles = {"remote", "full-time", "full time", "part-time", "contract",
+                          "see post", "hiring", ""}
+            if not role or role.lower() in _bad_roles:
+                if len(parts) == 1:
+                    continue  # only one field — not parseable as a job posting
+                role = "Various roles"
+
+            # Normalise obvious remote markers in location
+            if any(r in location.lower() for r in ("remote", "wfh", "work from home",
+                                                    "anywhere", "worldwide")):
+                if "remote" not in location.lower():
+                    location = f"Remote / {location}"
+
+            full_jd = _hn_strip_html(text)
             results.append(
                 normalize(
                     {
                         "company": company,
                         "title": role,
                         "location": location,
-                        "description": text,
+                        "description": f"[HN {thread_month}] {full_jd}",
                         "url": f"https://news.ycombinator.com/item?id={comment.get('id')}",
-                        "postedAt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "postedAt": thread_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                     },
                     "hackernews",
                 )
@@ -344,12 +438,14 @@ def _classify_error(status: int, body: str) -> str | None:
 
 
 def run_actor_safe(actor_id: str, run_input: dict, token_holder: dict,
-                   source_board: str, timeout: int = 300) -> list:
+                   source_board: str, timeout: int = 300,
+                   url_field: str = "") -> list:
     """Run an Apify actor; normalize + return its items. On credit/auth failure, prompt
     once (interactive) for a new token and retry, else degrade to native-only.
 
     token_holder is a 1-key dict {"token": ...} so a refreshed token propagates to
     later actor calls within the same run.
+    url_field: actor-specific URL key from the lessons cache (empty = use generic list).
     """
     global _apify_blocked
     if _apify_blocked or not actor_id:
@@ -370,7 +466,7 @@ def run_actor_safe(actor_id: str, run_input: dict, token_holder: dict,
                 return []
         else:
             return []
-    return [normalize(it, source_board) for it in items]
+    return [normalize(it, source_board, url_field=url_field) for it in items]
 
 
 def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int):
@@ -437,6 +533,20 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
                             lambda loc=loc: internshala.fetch(keywords, loc, max_results=40,
                                                               focus=focus))
 
+        # India-specific free boards: Hasjob + Instahyre
+        try:
+            from scrapers import hasjob  # noqa
+            results += safe("hasjob", lambda: hasjob.fetch(keywords, max_results=25, focus=focus))
+        except ImportError:
+            pass
+
+        try:
+            from scrapers import instahyre  # noqa
+            results += safe("instahyre",
+                            lambda: instahyre.fetch(keywords, max_results=25, focus=focus))
+        except ImportError:
+            pass
+
     # Remote JSON boards — relevant whenever remote is acceptable or focus isn't India-only.
     remote_ok = prefs.get("remote_ok", True)
     if focus in ("global", "both") or remote_ok:
@@ -448,6 +558,22 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
         results += safe("jobicy", lambda: jobicy.fetch(keywords, max_results=cap, focus=focus))
         results += safe("arbeitnow",
                         lambda: arbeitnow.fetch(keywords, max_results=cap, focus=focus))
+
+        # YC Work at a Startup (global + both) — high signal for early-stage tech
+        try:
+            from scrapers import yc_startup  # noqa
+            results += safe("yc_startup",
+                            lambda: yc_startup.fetch(keywords, max_results=cap, focus=focus))
+        except ImportError:
+            pass
+
+        # Wellfound public listing (no Cloudflare on basic search)
+        try:
+            from scrapers import wellfound_rss  # noqa
+            results += safe("wellfound_rss",
+                            lambda: wellfound_rss.fetch(keywords, max_results=cap, focus=focus))
+        except ImportError:
+            pass
 
     # Hacker News — Who Is Hiring. Cap at 20 to avoid flooding the pipeline.
     hn = safe("hackernews", fetch_hn_whoishiring)
@@ -482,7 +608,15 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
 # --------------------------------------------------------------------------- #
 # Apify actor calls (paid)
 # --------------------------------------------------------------------------- #
-def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -> list:
+def _actor_url_field(actor_id: str, lessons: dict) -> str:
+    """Return the actor-specific URL field name from the lessons cache, or empty string."""
+    return (lessons.get("actors") or {}).get(actor_id, {}).get("url_field", "")
+
+
+def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict,
+                    lessons: dict | None = None) -> list:
+    if lessons is None:
+        lessons = {}
     keywords = build_keywords(prefs)
     locations = prefs.get("location_priority") or prefs.get("locations") or ["Bengaluru"]
     primary_location = locations[0]
@@ -511,11 +645,12 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
             "linkedinFetchDescription": True,
             "proxyConfiguration": proxy_in,
         }
-        results += run_actor_safe(primary, primary_input, token_holder, "linkedin")
+        purl = _actor_url_field(primary, lessons)
+        results += run_actor_safe(primary, primary_input, token_holder, "linkedin", url_field=purl)
         for sec in secondary_locations:
             results += run_actor_safe(
                 primary, {**primary_input, "location": sec, "maxResults": max_results // 2},
-                token_holder, "linkedin")
+                token_holder, "linkedin", url_field=purl)
 
     # Indeed India (dedicated actor) — india/both only
     if focus in ("india", "both"):
@@ -525,7 +660,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
                 "keywords": keywords, "country": "IN", "location": primary_location,
                 "maxResults": max_results, "includeDescription": True,
                 "proxyConfiguration": proxy_in,
-            }, token_holder, "indeed")
+            }, token_holder, "indeed", url_field=_actor_url_field(indeed, lessons))
 
         # Naukri (bot-protected natively -> Apify)
         naukri = actors.get("naukri_scraper")
@@ -535,7 +670,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
             results += run_actor_safe(naukri, {
                 "queries": queries[:2], "maxResultsPerQuery": 20, "scrapeMode": "full",
                 "proxyConfiguration": proxy_in,
-            }, token_holder, "naukri")
+            }, token_holder, "naukri", url_field=_actor_url_field(naukri, lessons))
 
         # Cutshort (client-side API -> Apify) — skills-based
         cutshort = actors.get("cutshort_scraper")
@@ -543,7 +678,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
             skills = (prefs.get("preferred_stack") or [])[:6] or [keywords]
             results += run_actor_safe(cutshort, {
                 "skills": skills, "maxResults": 30, "proxyConfiguration": proxy_in,
-            }, token_holder, "cutshort")
+            }, token_holder, "cutshort", url_field=_actor_url_field(cutshort, lessons))
 
     # Wellfound (Cloudflare -> Apify) — startups, india + global.
     # Only include optional keys when non-empty (the actor treats empty arrays/strings
@@ -555,7 +690,8 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
             wf_input["location"] = [primary_location]
         if int(prefs.get("experience_years", 0) or 0) <= 1:
             wf_input["experienceLevel"] = "entry"
-        results += run_actor_safe(wellfound, wf_input, token_holder, "wellfound")
+        results += run_actor_safe(wellfound, wf_input, token_holder, "wellfound",
+                                  url_field=_actor_url_field(wellfound, lessons))
 
     # Supplementary job-board scraper (orgupdate schema: requires countryName,
     # locationName, pagesToFetch; keywords via includeKeyword). India/both only — it
@@ -568,7 +704,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
             "includeKeyword": keywords,
             "pagesToFetch": 2,
             "datePosted": "week",
-        }, token_holder, "jobboard")
+        }, token_holder, "jobboard", url_field=_actor_url_field(ats, lessons))
 
     return results
 
@@ -579,6 +715,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict) -
 def scrape(native_only: bool = False) -> list:
     actors = load_actors()
     prefs = load_preferences()
+    lessons = load_lessons()
     focus = (prefs.get("job_market_focus") or "india").lower()
     if focus not in ("india", "global", "both"):
         focus = "india"
@@ -605,7 +742,8 @@ def scrape(native_only: bool = False) -> list:
 
             global _apify_blocked
             _apify_blocked = False  # reset for this slot's attempt
-            apify_jobs = run_apify_layer(focus, prefs, actors, {"token": token})
+            apify_jobs = run_apify_layer(focus, prefs, actors, {"token": token},
+                                         lessons=lessons)
 
             if _apify_blocked:
                 # Credit exhausted during this slot's run

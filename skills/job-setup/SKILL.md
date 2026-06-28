@@ -169,34 +169,101 @@ have **at most 4 explicit options** (the tool auto-adds "Other" for free-text, g
   - 2–3 yr — `experience_years = 2`
   Store the lower bound as integer `experience_years`.
 
-**Batch 3 — Details (ask as plain conversation, not AskUserQuestion)**
+**Batch 3a — CTC, Availability, Degree, Tailoring Threshold** (one AskUserQuestion call, up to 4 questions)
 
-Ask each of these as a short conversational message and record the answer:
+Use the AskUserQuestion tool with these four questions together:
 
-- **Minimum target CTC in LPA** — a number. Store as `target_ctc_min_lpa`. Note: for freshers
-  (`experience_years == 0`) the pipeline does not hard-filter on CTC — this value is used for
-  reference in scoring only.
+- **"What is your minimum target CTC?"**
+  Header: `Min CTC`
+  Options: `< 3 LPA`, `3–6 LPA`, `6–10 LPA`, `10+ LPA`
+  (+ Other for exact figure). Parse the integer from the answer and store as `target_ctc_min_lpa`.
+  Note: for freshers (`experience_years == 0`) CTC is not a hard filter — it's used for scoring reference only.
 
-- **Degree and expected/completed graduation** — e.g. "B.Tech CS, July 2026". Store as
-  `degree` and `graduation`.
+- **"When can you start? (availability)"**
+  Header: `Availability`
+  Options: `Immediately`, `After 1 month`, `After 2–3 months`, `After graduation`
+  (+ Other for custom date). Store as `availability_date`; set `notice_period_days` (0 for immediately/fresher).
 
-- **Availability** — "When can you start?" e.g. "July 2026", "Immediately". Store as
-  `availability_date`; set `notice_period_days` (0 for a fresher) if relevant.
+- **"What degree are you pursuing or did you complete?"**
+  Header: `Degree`
+  Options: `B.Tech / B.E. (graduating 2026)`, `B.Tech / B.E. (already graduated)`, `M.Tech / M.E.`, `BCA / MCA / B.Sc`
+  (+ Other — user types exact degree + graduation year, e.g. "B.Tech CS, May 2026").
+  Store as `degree` and parse `graduation` from the answer.
 
-- **Preferred tech stack** — optional; user may skip (will be inferred from resume). Store as
-  `preferred_stack`. Also used as Cutshort skill filters when Apify is available.
+- **"Resume tailoring threshold — jobs at or above this score get a tailored resume"**
+  Header: `Tailor Score`
+  Options: `55 — cast wide net`, `65 — balanced (default)`, `75 — selective`, `85 — top matches only`
+  (+ Other for custom number). Store as `score_threshold` (integer, default 65).
 
-- **LinkedIn profile URL** — optional. e.g. `linkedin.com/in/username`. Store as `linkedin_profile_url`.
+**Batch 3b — Preferred stack and profile URLs** (one AskUserQuestion call, 3 questions)
 
-- **Naukri profile URL** — optional. e.g. `naukri.com/mnjuser/profile`. Store as `naukri_profile_url`.
-  Used for reference only — never auto-logged-in.
+- **"Preferred tech stack? (optional — will be inferred from resume if skipped)"**
+  Header: `Tech Stack`
+  multiSelect: true
+  Options: `Python / ML / Data Science`, `Java / Spring / Microservices`, `JavaScript / Node / React`, `Skip — infer from resume`
+  (+ Other to type custom stack). Store as `preferred_stack`; empty string if skipped.
+  Also used as Cutshort skill filters when Apify is available.
 
-- **Resume tailoring threshold** — optional; default **65**. Jobs scoring at or above this get a
-  tailored resume. Store as `score_threshold`.
+- **"LinkedIn profile URL? (optional — paste yours via Other)"**
+  Header: `LinkedIn URL`
+  Options: `Skip (optional)`, `linkedin.com/in/username — type yours via Other`
+  User selects "Other" to type their actual URL. Store as `linkedin_profile_url`.
+
+- **"Naukri profile URL? (optional — paste yours via Other)"**
+  Header: `Naukri URL`
+  Options: `Skip (optional)`, `naukri.com/mnjuser/profile — type yours via Other`
+  Used for reference only — never auto-logged-in. Store as `naukri_profile_url`.
 
 After collecting all answers, **read `profile.json` before writing it** to mirror `locations`,
 `availability_date`, and `notice_period_days` into it (per step F.6), and warn if profile vs
 preference locations diverge.
+
+---
+
+## Step F2 — Generate canonical locations cache
+
+After writing `preferences.json`, generate `~/.claude/job-hunt-ai/cache/locations.json` using
+your knowledge of city spellings, aliases, and regional variations. This cache is the
+authoritative source for location matching in every `/job-search` run.
+
+**Weight assignment from priority_rank:**
+- rank 0 (most preferred): weight 1.0
+- rank 1: weight 0.85
+- rank 2+: weight 0.7
+- "remote" (any rank): weight 0.85
+
+**Alias expansion rules** — for each city in `location_priority`, expand to include:
+- Common alternate spellings (Bengaluru ↔ Bangalore, Gurugram ↔ Gurgaon)
+- Official/historic names (Mumbai ↔ Bombay, Chennai ↔ Madras, Kolkata ↔ Calcutta)
+- Airport/postal codes (BLR, DEL, BOM, MAA, HYD)
+- Metro-area names (Navi Mumbai, Thane, PCMC, Noida, Greater Noida, NCR)
+- Common short forms (Hyd, Pune, Blr)
+- Remote aliases: "work from home", "wfh", "anywhere", "pan india", "pan-india"
+
+**Format:**
+```json
+{
+  "canonical": {
+    "bengaluru": {
+      "aliases": ["bangalore", "blr", "bengaluru urban", "electronic city"],
+      "priority_rank": 0,
+      "weight": 1.0
+    },
+    "remote": {
+      "aliases": ["work from home", "wfh", "anywhere", "pan india", "pan-india"],
+      "priority_rank": 1,
+      "weight": 0.85
+    }
+  }
+}
+```
+
+**Idempotency:** if `locations.json` already exists, read it first. Only overwrite entries
+whose city appears in the current `location_priority` — do not remove cities added by a
+previous setup run unless they are no longer in preferences.
+
+Write the file using the Write tool. Print:
+> "Location cache written: N cities, K total aliases."
 
 ---
 
@@ -209,24 +276,25 @@ It requires a personal Telegram API key (separate from the bot token used for no
 
 ### G1 — Check if already configured
 
-If `~/.claude/job-hunt-ai/cache/telegram.session` exists:
-> "Telegram channel scraper is already authenticated. Skip this step? [Y/n]"
-If yes → skip to Confirmation summary.
+If `~/.claude/job-hunt-ai/cache/telegram.session` exists, use AskUserQuestion:
+- Question: "Telegram channel scraper is already authenticated. Skip this step?"
+- Header: `Telegram Auth`
+- Options: `Yes — skip, already set up`, `No — re-authenticate`
+
+If user picks "Yes" → skip to Confirmation summary.
 
 ### G2 — Explain and get consent
 
-Show the user:
-> "The Telegram channel scraper reads recent job posts from public Indian job channels
-> (e.g. @techjobsindia, @bengalurujobs) directly via the Telegram API — no bots involved.
-> This requires a personal Telegram API key from my.telegram.org.
-> Your account is only used to READ public channels — nothing is posted on your behalf.
-> Would you like to set this up? [Y/n]"
+Use AskUserQuestion:
+- Question: "The Telegram channel scraper reads recent job posts from public Indian job channels (e.g. @techjobsindia, @bengalurujobs) via the Telegram API — no bots. It requires a personal API key from my.telegram.org. Your account is only used to READ public channels — nothing is posted on your behalf. Set this up?"
+- Header: `Telegram Scraper`
+- Options: `Yes — set it up`, `No — skip this step`
 
-If no → skip.
+If user picks "No" → skip.
 
 ### G3 — Collect API credentials
 
-Tell the user (output as plain chat text — do NOT use AskUserQuestion):
+Output the following instructions as plain chat text (not in AskUserQuestion — the user needs to copy commands):
 
 > **Never paste your API credentials into this chat** — they stay on your machine only.
 >
@@ -255,24 +323,84 @@ Tell the user (output as plain chat text — do NOT use AskUserQuestion):
 > ```
 >
 > Replace `<YOUR_API_ID>` with the number and `<YOUR_API_HASH>` with the hex string from my.telegram.org.
-> Once you see **`Secrets saved.`** in the terminal, press **Enter** here to continue.
 
-Wait for the user to press Enter, then proceed to G4.
+Then use AskUserQuestion to wait for confirmation:
+- Question: "Have you saved your Telegram API credentials? (Did you see 'Secrets saved.' in your terminal?)"
+- Header: `Credentials Saved`
+- Options: `Yes — I saw "Secrets saved." — continue`, `I need help / something went wrong`
+
+If user picks "I need help":
+- Print: "Check that you replaced both placeholders with your real values from my.telegram.org. The API ID is a number (e.g. 12345678) and the API hash is a 32-character hex string. Re-run the command and look for 'Secrets saved.'"
+- Use AskUserQuestion again with the same two options to re-confirm before proceeding to G4.
 
 ### G4 — Authenticate (interactive)
 
+The `--auth` script requires real interactive terminal input (phone number + OTP). **Do NOT run it via the Bash tool** — it will hang. Instead, output this message to the user:
+
+> Run this command **directly in your terminal** (or prefix with `!` in this chat to run it in the session):
+>
+> ```bash
+> cd ~/my_works/jobpilot && python3 scripts/scrapers/telegram_channels.py --auth
+> ```
+>
+> It will ask for your phone number (with country code, e.g. +91...) and then the OTP that Telegram sends you.
+> When it prints **"Authenticated as: Your Name (@username)"**, come back here.
+
+Then use AskUserQuestion to wait for the result:
+- Question: "Did the Telegram authentication succeed?"
+- Header: `Telegram Auth`
+- Options: `Yes — session saved, continue`, `It failed / I got an error`, `Skip — I'll set this up later`
+
+If user picks "It failed":
+- Print: "Common fixes: (1) Make sure TELEGRAM_API_ID and TELEGRAM_API_HASH are set correctly — re-run the G3 command to overwrite them. (2) Ensure telethon is installed: `pip install telethon`. (3) Check your phone number includes the country code, e.g. +91."
+- Use AskUserQuestion again with the same three options.
+
+If user picks "Skip" → proceed to Confirmation summary without channel discovery.
+
+### G5 — Discover and validate Telegram channels
+
+Run channel discovery immediately after successful authentication:
+
 ```bash
-python3 scripts/scrapers/telegram_channels.py --auth
+cd ~/my_works/jobpilot && python3 scripts/scrapers/telegram_channels.py --discover
 ```
 
-This will:
-- Prompt for the user's phone number (with country code, e.g. +91...)
-- Send an OTP via the Telegram app
-- Save `~/.claude/job-hunt-ai/cache/telegram.session` permanently
+This validates the built-in seed list against the live Telegram network, searches for additional active Indian job channels, and rewrites `config/telegram_channels.json` with only live, accessible channels.
 
-After completion, confirm:
-> "Telegram channel scraper authenticated. Session saved.
-> Public India job channels will be scraped on every `/job-search` run."
+Read the output and show the user:
+> "Channel validation complete: **N live channels saved** (M dead removed, K newly discovered)."
+
+If the script prints an error or exits non-zero, log the error and skip — the existing `config/telegram_channels.json` remains unchanged.
+
+After completion (or skip), confirm:
+> "Telegram channel scraper ready. Live channels will be scraped on every `/job-search` run."
+
+---
+
+## Step H — Update .claude/settings.local.json with MCP permissions
+
+This step runs once after Step B (Drive MCP) succeeds. It pre-authorises Drive MCP calls for
+all future `/job-search` runs so they complete with zero permission prompts.
+
+**How to detect the Drive MCP server UUID:**
+The tool you called in Step B has a name like `mcp__<UUID>__search_files`. Extract `<UUID>`
+from that tool name (e.g. if the tool was `mcp__abc123__search_files`, the UUID is `abc123`).
+
+**What to write:**
+Read `.claude/settings.local.json` first (it was created by `setup.sh` as an empty template).
+Then update the `permissions.allow` array to include these four entries for the detected UUID:
+```json
+"mcp__<UUID>__search_files",
+"mcp__<UUID>__create_file",
+"mcp__<UUID>__download_file_content",
+"mcp__<UUID>__read_file_content"
+```
+
+**Idempotency:** if the UUID entries are already present (re-run of /job-setup), do not add
+duplicates. If the UUID has changed (Drive MCP reconnected), remove the old UUID entries and
+add the new ones.
+
+Print: `"Permissions updated: Drive MCP UUID <UUID> → .claude/settings.local.json"`
 
 ---
 

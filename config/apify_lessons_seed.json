@@ -14,6 +14,7 @@
         "hoursOld": "int",
         "boards": "array of strings"
       },
+      "url_field": "url",
       "last_success": null,
       "zero_result_runs": [
         {
@@ -22,22 +23,63 @@
           "diagnosis": "Wrong field name: actor expects 'searchTerms' array, not 'keywords' string. Silently returns 0 results with no error when wrong field is used."
         }
       ],
-      "notes": "searchTerms[] required. 'keywords' string field silently returns 0 results. Discovered 2026-06-26 via trial-and-error. Split keyword string into array of terms."
+      "notes": "searchTerms[] required. 'keywords' string field silently returns 0 results. Discovered 2026-06-26 via trial-and-error. Split keyword string into array of terms. URL field is 'url'."
     },
     "orgupdate/job-posting-scraper": {
       "field_overrides": {},
       "value_transforms": {},
       "confirmed_schema": {},
+      "url_field": "jobUrl",
       "last_success": null,
       "zero_result_runs": [],
-      "notes": ""
+      "notes": "ATS board scraper. URL likely in 'jobUrl' field."
+    },
+    "thirdwatch/naukri-jobs-scraper": {
+      "field_overrides": {},
+      "value_transforms": {},
+      "confirmed_schema": {},
+      "url_field": "jobUrl",
+      "last_success": null,
+      "zero_result_runs": [],
+      "notes": "Naukri dedicated scraper. URL field is likely 'jobUrl' — update url_field after first live run confirms correct key."
+    },
+    "thirdwatch/cutshort-jobs-scraper": {
+      "field_overrides": {},
+      "value_transforms": {},
+      "confirmed_schema": {},
+      "url_field": "url",
+      "last_success": null,
+      "zero_result_runs": [],
+      "notes": "Cutshort scraper. URL likely in 'url' field."
+    },
+    "blackfalcondata/wellfound-scraper": {
+      "field_overrides": {},
+      "value_transforms": {},
+      "confirmed_schema": {},
+      "url_field": "startupUrl",
+      "last_success": null,
+      "zero_result_runs": [],
+      "notes": "Wellfound scraper. URL likely in 'startupUrl' field — update after first live run."
+    },
+    "k1ra/indeed-jobs-scraper": {
+      "field_overrides": {},
+      "value_transforms": {},
+      "confirmed_schema": {},
+      "url_field": "url",
+      "last_success": null,
+      "zero_result_runs": [],
+      "notes": "Indeed India scraper. URL likely in 'url' field."
     }
   },
   "source_quirks": {
     "linkedin": "JD text is almost always empty from Apify scrapers — LinkedIn aggressively blocks JD extraction. has_jd will be false for most LinkedIn jobs. Use keyword_score only; set semantic_score=30 as neutral baseline. Do NOT tailor resume for no-JD jobs.",
     "remoteok": "tags field contains tech stack — already appended to jd_full by scraper. has_jd should be true for most Remote OK jobs.",
     "hackernews": "Free-form comment text, not structured JDs. Parse the full text field. Quality varies widely — treat HN scores with lower confidence.",
-    "weworkremotely": "RSS description is often short HTML. has_jd may be marginal — accept anything > 100 chars."
+    "weworkremotely": "RSS description is often short HTML. has_jd may be marginal — accept anything > 100 chars.",
+    "naukri": "URL field is 'jobUrl' in thirdwatch actor output — confirmed in url_field. Fallback: search URL built from role+company slug.",
+    "cutshort": "URL field is 'url'. Fallback: cutshort.io/jobs search.",
+    "wellfound": "URL field is 'startupUrl'. Fallback: wellfound.com/jobs search.",
+    "indeed": "URL field is 'url'. Fallback: indeed.co.in search."
   },
-  "last_updated": "2026-06-26"
+  "last_updated": "2026-06-28"
 }

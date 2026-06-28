@@ -8,6 +8,18 @@ description: The main JobPilot pipeline. Invoke for /job-search [optional overri
 Run the full JobPilot pipeline. Designed to run fully autonomously — do not pause for
 confirmation. If a script fails, log the error and continue with the next step.
 
+**Autonomy contract — this skill MUST NOT:**
+- Call `AskUserQuestion` at any point during the run.
+- Prompt for secrets inline (APIFY_TOKEN, Telegram tokens). If a secret is missing,
+  log `[skip] <source> — secret missing, run /job-setup to configure` and continue.
+- Wait for user input before proceeding to the next step.
+
+**Pre-conditions (assumed complete before /job-search runs):**
+- `/job-setup` has been completed: `profile.json` exists with `profile_verified: true`,
+  `preferences.json` exists, secrets are stored, Drive MCP UUID is in `settings.local.json`.
+- If any pre-condition is violated, log the specific missing item and degrade gracefully
+  (skip that source/step), **never block**.
+
 ---
 
 ## Step 0 — Tiered scheduling + Search keyword enrichment
@@ -63,12 +75,16 @@ in Python; Claude infers them in this step.
 
 Read `~/.claude/job-hunt-ai/cache/profile.json`.
 
+If `profile_verified` is `true`: continue directly — no action needed.
+
 If `profile_verified` is `false` or the file does not exist:
 1. Run `python3 scripts/resume_parser.py ~/.claude/job-hunt-ai/resumes/base.pdf`
 2. Read `/tmp/jobpilot_resume_raw.txt`
-3. Follow the same profile verification steps as `/job-setup` Step F — extract all fields,
-   ask clarifying questions, write complete `profile.json` with `profile_verified: true`.
-4. Continue once verification is complete.
+3. Extract all fields autonomously (name, skills, roles, projects, education, graduation_date,
+   github_url, portfolio_url, experience_years). **Do NOT ask clarifying questions** — infer
+   best-effort from the text, mark `profile_verified: true`, and continue. Note any ambiguities
+   in the run summary for the user to fix via `/job-setup`.
+4. Write `profile.json` and proceed immediately.
 These scripts must never call the LLM. Run each and read the printed counts.
 
 1. `python3 scripts/apify_scraper.py` -> writes `/tmp/jobpilot_raw.json`
@@ -98,6 +114,12 @@ the run and use the `source_quirks` section to guide how you interpret each sour
 ---
 
 ## Layer A — Scraping
+
+> **IMPORTANT — never use `sleep N && tail` or `sleep N && <any-command>` to wait for script output.**
+> These chains are blocked by the harness. For scripts that run longer than ~10s:
+> - Launch with `run_in_background: true` in the Bash tool, then await the completion notification.
+> - For polling until a file appears: use the Monitor tool with an `until` loop (e.g. `until [ -f /tmp/jobpilot_raw.json ]; do sleep 2; done`).
+> - After the script completes, read output files directly — do NOT tail them.
 
 ### Step A1: Job scraping (Apify MCP preferred, Python SDK fallback)
 
@@ -245,7 +267,7 @@ scores based on feedback — just surface the pattern.
 
 ### Step B3: Salary research (top matches only)
 
-For jobs with `score >= 60` AND `experience_gate_drop != true` AND `has_jd != false`,
+For jobs with **`score >= 60`** (pure fit, NOT effective_score) AND `experience_gate_drop != true` AND `has_jd != false`,
 run up to 3 targeted WebSearch queries per job:
 
 1. `"<company> India salary software engineer 2025 site:glassdoor.co.in OR ambitionbox.com"`
@@ -353,6 +375,24 @@ python3 scripts/telegram_notify.py --digest "<digest_text>" --csv "<report_csv_p
 ```
 
 ### Step B7: Drive upload
+### B0 — Build apply-URL preservation map
+
+Before any scoring or enrichment, build a URL map from `/tmp/jobpilot_filtered.json` so that
+apply links are never lost when Claude reconstructs scored records:
+
+```python
+url_map = {job["job_id"]: job.get("application_url", "") for job in filtered_jobs}
+```
+
+Keep `url_map` in memory for the rest of Layer B. After computing each scored record, always
+re-attach the URL:
+```python
+scored_job["application_url"] = scored_job.get("application_url") or url_map.get(scored_job["job_id"], "")
+```
+
+This guarantees that a URL captured by the scraper is never silently dropped when Claude
+writes the scored JSON, even if the record was rebuilt from scratch during scoring.
+
 ### B1 — JD enrichment for empty descriptions (cap 25)
 
 For jobs where `jd_full` is empty or < 120 chars AND `source_board` is `linkedin` (or any
@@ -367,27 +407,50 @@ logged-in session — it risks banning the account used to apply.
 ### B2 — ATS scoring (write the scored JSON)
 
 For each surviving job, read the **full** `jd_full` and `profile.json`, then compute:
-- `matched_skills`: profile skills present in the JD (case-insensitive).
-- `missing_skills`: important hard skills in the JD not in the profile (top ~8).
-- `keyword_score` = `len(matched_skills) / len(profile.skills) * 100`.
+
+**Step 1 — extract JD hard skills:**
+- `must_have_skills` (≤6): concrete tech skills the JD explicitly requires.
+- `nice_to_have` (≤4): skills mentioned as preferred/bonus.
+- `jd_hard_skills` = union of must_have_skills + nice_to_have (the JD's skill footprint).
+- `degree_required`: extracted from the JD.
+
+**Step 2 — score:**
+- `matched_skills`: profile skills present in `jd_hard_skills` (case-insensitive). Capped to
+  skills that exist in `profile.skills` — do not invent matches.
+- `missing_skills`: important hard skills in `jd_hard_skills` not in the profile (top ~8).
+- `keyword_score` = `min(100, round(len(matched_skills) / max(len(jd_hard_skills), 1) * 100))`.
+  Score against **what the JD asks for**, not the full profile skills list. This means a
+  Golang-only JD where the candidate matches Go+Docker+K8s+CI/CD scores ~80, not ~20.
 - `semantic_score` (0–100): holistic fit — stack alignment, seniority (fresher OK for
   entry/junior), projects, product vs pure-service company.
-- `score`:
-  - jobs **with** a real JD: `round(0.5*semantic + 0.5*keyword)`, `score_confidence: "high"`.
-  - jobs **still without** a JD after B1: `round(0.9*semantic + 0.1*title_keyword)`,
+- `score` (pure fit, 0–100, drives all threshold gates):
+  - jobs **with** a real JD: `round(0.5*semantic + 0.5*keyword, 1)`, `score_confidence: "high"`.
+  - jobs **still without** a JD after B1: `round(0.9*semantic + 0.1*title_keyword, 1)`,
     `score_confidence: "low"`.
 - `why`: one sentence justifying the score.
-- `must_have_skills` (≤6), `nice_to_have` (≤4), `degree_required` — extracted from the JD.
 - `jd_summary`: 3–5 short bullet strings.
-- carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `application_url`,
-  `company`, `role`, `location`, `job_id`.
+- carry over `location_weight`, `exp_req_years`, `source_board`, `posted_date`, `company`,
+  `role`, `location`, `job_id`.
+- `application_url`: always re-attach from `url_map` (built in B0) — **never omit or leave blank
+  when the map has a URL for this job_id**.
+- `effective_score` = `score * location_weight` — used **only for sort order**, never for gates.
 
-Rank by `effective_score = score * location_weight` (descending). Apply any **override prompt**
-the user passed (e.g. "remote backend only", "rank by salary") here.
+**Location override (B2 Layer B — Claude resolves what filter.py couldn't):**
+For any job where `location` is empty, `"Not specified"`, `"India"`, or otherwise ambiguous,
+read `~/.claude/job-hunt-ai/cache/locations.json` and resolve:
+- Match the job's `source_board` or JD text for city hints (e.g. "office in Bangalore")
+- If the JD implies remote: set `location_weight` to the remote weight from locations.json
+- If unresolvable: leave `location_weight` at 0.75 (neutral) and note in `why`
+Log: `location '<raw>' re-resolved to '<canonical>' via '<matched>' → weight <w>`
+
+Rank by `effective_score` (descending). Apply any **override prompt** the user passed here.
 
 ### B3 — Salary research (top 20, India-aware)
 
-For the top ~20 by effective_score with `score >= 55`:
+For the top ~20 by `score` (pure fit) with **`score >= 55`** — gate on `score`, NOT
+`effective_score`. A strong match with a 2nd-choice location (score=72, effective=61) still
+deserves salary research.
+
 1. **AmbitionBox actor** (India salaries) via Apify MCP, if Apify is available:
    `call-actor "thirdwatch/ambitionbox-scraper"` with
    `{ "companies": ["<company>"], "roles": ["<role-slug>"], "includeCompanyReviews": false }`.
@@ -414,7 +477,8 @@ All scored jobs remain in `/tmp/jobpilot_scored.json`; only the report is capped
 ### B5 — Resume tailoring (top matches)
 
 Read `score_threshold` from preferences (default **65**). For the top 5 jobs with
-`score >= score_threshold`:
+**`score >= score_threshold`** — gate on `score` (pure fit), NOT `effective_score`.
+A job with score=72 in a 2nd-choice city (effective=61) should still get a tailored resume.
 - If `~/.claude/job-hunt-ai/resumes/base.tex` exists: edit it to weave in `matched_skills`
   (never invent experience/dates/employers), write `/tmp/<company>-<job_id>.tex`, and compile
   with `tectonic ... --outdir ~/.claude/job-hunt-ai/resumes/tailored/`.
@@ -422,6 +486,10 @@ Read `score_threshold` from preferences (default **65**). For the top 5 jobs wit
 Self-cap at 5 per run.
 
 ### B6 — Telegram digest
+
+When building the digest, resolve each job's apply link via `url_map` (built in B0) first,
+then fall back to the `application_url` field in the scored record. This ensures URLs captured
+by the scraper but omitted during scoring reconstruction are still included in the digest.
 
 Build a plain-text digest (top 3 jobs, flag ⚠️ Google-Form apply links, note if Apify paid
 sources were skipped), then:
@@ -453,26 +521,38 @@ Write the updated lessons JSON using the Write tool.
 
 ---
 
-## Final summary
+## Failure handling
 
-Print:
-**"Done. N jobs scored (M hard-dropped, K no-JD). Top match: <company> <role> (score: <score>).
-W resumes tailored. Report sent to Telegram + Drive."**
+Wrap every step in try/except logic (or equivalent). A single step failure must log the error and
+continue — **never abort the whole pipeline**. Always attempt B4 (report), B6 (Telegram), and
+B7 (Drive) even if earlier steps partially failed.
+
+Track failures in a `_failed_steps` list throughout the run. Each entry:
+`{"step": "B3-salary-<company>", "reason": "<brief error message>"}`.
+
+### Drive upload (B7)
+Read `/tmp/jobpilot_drive_manifest.json`. Use the Drive MCP `search_files` to find the
+`"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
+upload each manifest file via `create_file`. Log `[drive] Uploaded <name> → <link>`.
+If Drive MCP is unavailable or any upload fails, log and continue — do not abort.
 
 ---
 
-## Failure handling
+## Final summary
 
-Wrap each step so a single failure is logged and the pipeline continues. Always attempt
-B4 (CSV), B6 (Telegram), and B7 (Drive) even if earlier steps partially failed.
-Read `/tmp/jobpilot_drive_manifest.json`. Use the Google Drive MCP `search_files` to find/confirm
-the `"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
-upload each manifest file via `create_file`. Log `[drive] Uploaded <name> -> <link>`. If Drive MCP
-is unavailable or an upload fails, log and continue — do not abort.
+Print:
+```
+Done. N jobs scored (M hard-dropped, K no-JD). Top match: <company> <role> (score: <X>).
+W resumes tailored. Report → Telegram + Drive.
+```
 
-8. Print: **"Done. N jobs scored, top match: <company> <role> (score). Report -> Telegram + Drive."**
+If `_failed_steps` is non-empty, append a skipped/failed section:
+```
+⚠️ Skipped / degraded steps:
+  - <step>: <reason>
+  - <step>: <reason>
+Run /job-setup to fix configuration issues, or check apify_lessons.json for actor failures.
+```
 
-## Failure handling
-Wrap each step so a single failure (Apify quota, Telegram timeout, Drive auth) is logged and the
-pipeline continues. Always attempt B4 (report), B6 (Telegram), and B7 (Drive) even if earlier
-steps partially failed.
+This summary also appears in the Telegram digest (B6) as a trailing warning block, so the
+user sees failures even without reading the terminal output.

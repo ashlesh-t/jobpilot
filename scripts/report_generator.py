@@ -37,6 +37,7 @@ COLUMNS = [
     ("Nice-to-Have", "nice_to_have", 24),
     ("Degree Required", "degree_required", 16),
     ("Match Score", "score", 11),
+    ("Rank Score", "effective_score", 11),
     ("Why", "why", 42),
     ("Matched Skills", "matched_skills", 28),
     ("Missing Skills", "missing_skills", 26),
@@ -156,6 +157,11 @@ def cell_value(job: dict, key: str, row_index: int):
             return round(float(job.get("score") or 0))
         except (TypeError, ValueError):
             return 0
+    if key == "effective_score":
+        try:
+            return round(effective_score(job), 1)
+        except (TypeError, ValueError):
+            return 0
     if key in ("must_have_skills", "nice_to_have", "matched_skills", "missing_skills"):
         return _join(job.get(key) if key != "missing_skills"
                      else (job.get("missing_skills") or job.get("missing_keywords")))
@@ -196,7 +202,7 @@ def build_workbook(jobs: list):
 
     wrap_keys = {"why", "jd_summary", "must_have_skills", "nice_to_have",
                  "matched_skills", "missing_skills"}
-    center_keys = {"_row", "score", "exp_required", "posted_date"}
+    center_keys = {"_row", "score", "effective_score", "exp_required", "posted_date"}
 
     for r, job in enumerate(jobs, start=2):
         row_index = r - 1
@@ -232,6 +238,9 @@ def build_workbook(jobs: list):
                 c.number_format = "0"
                 c.font = Font(bold=True, color=font_color or "000000",
                               italic=low_conf)
+            if key == "effective_score":
+                c.number_format = "0.0"
+                c.font = Font(bold=False, color="595959", italic=low_conf)
             if key == "application_url" and value:
                 c.hyperlink = value
                 c.font = Font(color="0563C1", underline="single")
@@ -286,6 +295,13 @@ def main() -> None:
         jobs = load_json("/tmp/jobpilot_filtered.json", [])
         print(f"[report] {args.input} not found — using /tmp/jobpilot_filtered.json",
               file=sys.stderr)
+
+    missing_url_ids = [j.get("job_id", "?") for j in jobs if not j.get("application_url")]
+    if missing_url_ids:
+        print(f"[report] {len(missing_url_ids)} rows missing apply link: "
+              f"{', '.join(missing_url_ids[:10])}"
+              + (" ..." if len(missing_url_ids) > 10 else ""), file=sys.stderr)
+
     out = Path(os.path.expanduser(args.output)) if args.output else default_output()
     path = write_report(jobs, out)
     shown = min(len(jobs), TOP_N)

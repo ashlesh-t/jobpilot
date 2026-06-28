@@ -87,11 +87,21 @@ Scripts `apify_scraper.py`, `dedupe.py`, `filter.py`, and everything in `scripts
 ## Scoring (Claude inline — no script)
 
 Claude scores each job in Layer B by reading the full JD + `profile.json` and computing:
-- `matched_skills`: profile skills present in JD
-- `keyword_score` = `len(matched_skills) / len(profile.skills) * 100`
-- `semantic_score` = holistic judgment of fit (0–100)
-- `score` = `0.5 * semantic_score + 0.5 * keyword_score`
-- `effective_score` = `score * location_weight`
+- `jd_hard_skills`: concrete tech skills the JD actually asks for — union of `must_have_skills`
+  and `nice_to_have` extracted from the JD (not the full profile skills list).
+- `matched_skills`: profile skills present in JD (case-insensitive intersection of profile.skills
+  with jd_hard_skills).
+- `keyword_score` = `len(matched_skills) / max(len(jd_hard_skills), 1) * 100` (capped at 100).
+  Scoring against JD-relevant skills, not all profile skills, so a Golang-only JD where the
+  candidate has Go+Docker+K8s+CI/CD+microservices scores keyword_score ≥ 70, not ~20.
+- `semantic_score` = holistic judgment of fit (0–100).
+- `score` = `round(0.5 * semantic_score + 0.5 * keyword_score, 1)` — pure fit, 0–100.
+  Used for threshold gates (tailoring, salary research). **Never multiply by location_weight.**
+- `effective_score` = `score * location_weight` — used **only for sort order**, never for gates.
+
+**Worked example (Swiss Re Golang):** JD asks for Go, Docker, Kubernetes, CI/CD, microservices
+(5 skills). Profile has Go, Docker, K8s, GitHub Actions, gRPC → 4 matched / 5 JD skills = 80.
+With semantic_score=75 → score = round(0.5×75 + 0.5×80) = 78. Crosses tailoring threshold.
 
 No `ats_scorer.py`, no `sentence-transformers`, no Jaccard fallback.
 

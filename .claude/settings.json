@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/apify_scraper.py*)",
+      "Bash(python3 scripts/dedupe.py*)",
+      "Bash(python3 scripts/filter.py*)",
+      "Bash(python3 scripts/report_generator.py*)",
+      "Bash(python3 scripts/telegram_notify.py*)",
+      "Bash(python3 scripts/drive_upload.py*)",
+      "Bash(python3 scripts/resume_tailor.py*)",
+      "Bash(python3 scripts/resume_parser.py*)",
+      "Bash(python3 scripts/secrets.py*)",
+      "Bash(python3 scripts/scrapers/telegram_channels.py*)",
+      "Bash(python3 scripts/feedback.py*)",
+      "Bash(python3 -c *)",
+      "Bash(sqlite3 ~/.claude/job-hunt-ai/cache/jobs.sqlite*)",
+      "Bash(tectonic *)",
+      "Bash(cat ~/.claude/job-hunt-ai/*)",
+      "Bash(cat /tmp/jobpilot*)",
+      "Bash(ls ~/.claude/job-hunt-ai/*)"
+    ],
+    "_note": "MCP tool permissions (search_files, create_file, download_file_content, etc.) go in .claude/settings.local.json because they contain user-specific server UUIDs that vary per machine. See skills/job-search/SKILL.md Step E1 for full list."
+  }
+}
