@@ -575,9 +575,16 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
         except ImportError:
             pass
 
-    # Hacker News — Who Is Hiring. Cap at 20 to avoid flooding the pipeline.
+    # Hacker News — Who Is Hiring. Configurable via hn_max_results (default 100).
+    hn_cap = int(prefs.get("hn_max_results", 100))
     hn = safe("hackernews", fetch_hn_whoishiring)
-    results += hn[:20]
+    emitting = min(len(hn), hn_cap)
+    if len(hn) > hn_cap:
+        print(f"[hn] Fetched {len(hn)} jobs, emitting {emitting} (hn_max_results={hn_cap})",
+              file=sys.stderr)
+    else:
+        print(f"[hn] Fetched {len(hn)} jobs, emitting all", file=sys.stderr)
+    results += hn[:hn_cap]
 
     # LinkedIn guest API — free, no auth, no JD but gives title/company/location/URL.
     try:
