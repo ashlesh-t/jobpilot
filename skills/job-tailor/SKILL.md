@@ -12,7 +12,7 @@ Tailor the user's resume to one specific job posting.
 1. **Resolve the JD** from the argument:
    - **job_id** → look up `jd_full` from `/tmp/jobpilot_filtered.json` first; if not found,
      query the SQLite `jobs_seen` table at `~/.claude/job-hunt-ai/cache/jobs.sqlite`.
-   - **URL** → fetch the page with WebFetch and extract the job-description text.
+   - **URL** → fetch the page with `WebFetch` (Claude) or `read_url_content` (Antigravity) and extract the job-description text.
    - **raw text** → use it directly.
 
 2. **Score before tailoring** — read `~/.claude/job-hunt-ai/cache/profile.json` and the JD text.

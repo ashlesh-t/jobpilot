@@ -19,7 +19,7 @@ your top matches plus a CSV. You do nothing day-to-day except read Telegram.
 |---|---|---|
 | **Python 3.11+** | Runs the pipeline | https://www.python.org/downloads/ — verify with `python3 --version` |
 | **sqlite3** | Local job cache | Usually preinstalled. macOS: built in. Ubuntu: `sudo apt install sqlite3`. Windows: ships with Python |
-| **Claude Desktop (Pro)** | Runs the scheduled task and skills | The scheduled run uses your Pro subscription |
+| **Claude Desktop Pro / Google Antigravity** | Runs the scheduled task and skills | The scheduled run uses your local or cloud subscription |
 | **tectonic** *(optional)* | Compiles LaTeX resumes to PDF | macOS: `brew install tectonic`. Else see https://tectonic-typesetting.github.io. Skip it if you only use `.docx` resumes |
 
 You also need two free accounts: **Apify** and a **Telegram bot**. Steps 3 and 4 cover those.
@@ -45,7 +45,7 @@ code), installs Python dependencies, and syncs the slash commands to `.claude/co
 
 ---
 
-## 2b. (Recommended) Connect Apify MCP to Claude Desktop
+## 2b. (Recommended) Connect Apify MCP to Claude Desktop / Antigravity
 
 This lets Claude call Apify actors directly as tools — no Python HTTP code involved, and no
 API token stored in config files. Auth is handled via OAuth in your browser.
@@ -60,6 +60,9 @@ API token stored in config files. Auth is handled via OAuth in your browser.
 ```bash
 claude mcp add --transport sse apify https://mcp.apify.com/sse
 ```
+
+**Option C — Antigravity:**
+Configure the Apify SSE server in your `~/.gemini/config/mcp/` directory according to Antigravity's standard MCP configuration format.
 
 When connected, `/job-search` will call Apify actors directly through the MCP. If the MCP is
 not connected (e.g. during a scheduled task), the pipeline falls back to the `apify-client`
@@ -126,8 +129,9 @@ update only the ones you want. Or edit `~/.claude/job-hunt-ai/.env` directly.
 
 JobPilot keeps your resume in Google Drive so it's never tied to a specific machine.
 
-**a. Connect Google Drive in Claude Desktop**
-Open Claude Desktop → **Settings → Connections** → connect your Google Drive account.
+**a. Connect Google Drive**
+- **Claude Desktop:** Open Settings → Connections → connect your Google Drive account.
+- **Antigravity:** Configure Google Drive MCP in `~/.gemini/config/mcp/`.
 
 **b. Create the resume folder**
 In Google Drive, create a folder named exactly: **`jobpilot-resume`**
@@ -136,7 +140,7 @@ In Google Drive, create a folder named exactly: **`jobpilot-resume`**
 Upload your resume as a **PDF file** into the `jobpilot-resume` folder. Any filename is fine.
 If you have multiple versions, upload all of them — `/job-setup` will let you pick.
 
-**d. Run /job-setup inside Claude Desktop**
+**d. Run /job-setup inside Claude Desktop or Antigravity**
 ```
 /job-setup
 ```
@@ -179,8 +183,8 @@ python3 scripts/apify_scraper.py     # prints how many jobs were scraped from ea
 python3 scripts/dedupe.py
 python3 scripts/filter.py            # prints location filter breakdown
 
-# 3) A full manual run inside Claude Desktop
-/job-search
+# 3) A full manual run inside Claude Desktop or Antigravity
+/job-search (or ask Antigravity to 'Run job-search')
 ```
 
 If `/job-search` produces a CSV in `~/.claude/job-hunt-ai/reports/` and a Telegram message
@@ -215,12 +219,13 @@ If you skipped Drive, that's fine — you'll still get the CSV and resumes via T
 
 ## 10. Schedule it
 
-In Claude Desktop: **Schedule → New Task**, set it to **09:30 IST, weekdays**, and paste:
+**In Claude Desktop:** Go to **Schedule → New Task**, set it to **09:30 IST, weekdays**, and paste the prompt below.
+**In Antigravity:** Use the `/schedule` slash command and provide the prompt below along with a cron expression (e.g. `30 9 * * 1-5`).
 
 ```
 Run the JobPilot job search pipeline. Load skills from ~/projects/jobpilot. Execute /job-search fully autonomously:
 1. Run scripts/apify_scraper.py, dedupe.py, filter.py via bash (Layer A — no LLM)
-2. Claude scores, filters, and researches salary on survivors (Layer B — no Python scripts needed)
+2. The AI scores, filters, and researches salary on survivors (Layer B — no Python scripts needed)
 3. Write CSV report, tailor resumes for top matches, push to Telegram and Google Drive
 Do not pause for confirmation. If any script fails, log the error and continue.
 ```
@@ -237,7 +242,7 @@ One run per day keeps you inside Apify's free tier.
 | Telegram test sends nothing | Wrong `TELEGRAM_CHAT_ID`, or you never messaged the bot first (step 4b). |
 | `0 raw jobs scraped` | Missing/invalid `APIFY_TOKEN`, exhausted Apify credit, or the actor IDs in `config/actors.json` changed — verify them in the Apify Store. Free sources (Remote OK, WWR) still run without a token. |
 | Scores look very low | `profile_verified` is likely `false` in `profile.json` — run `/job-setup` and let Claude read your resume interactively. Scores depend on a complete profile. |
-| Claude asks me questions during /job-setup | This is expected. Claude is reading your resume and clarifying missing details. Answer them for a complete profile. |
+| The AI asks me questions during /job-setup | This is expected. The AI is reading your resume and clarifying missing details. Answer them for a complete profile. |
 | `tectonic: command not found` | Install tectonic, or it falls back to DOCX automatically. |
 | Drive upload skipped | Google Drive not connected in Claude Desktop. Go to Settings → Connections and connect it. |
 | Want to re-see old jobs | Run `/jobpilot-clear` (type CONFIRM) to wipe the seen-job cache. |

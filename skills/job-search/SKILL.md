@@ -115,11 +115,10 @@ the run and use the `source_quirks` section to guide how you interpret each sour
 
 ## Layer A — Scraping
 
-> **IMPORTANT — never use `sleep N && tail` or `sleep N && <any-command>` to wait for script output.**
-> These chains are blocked by the harness. For scripts that run longer than ~10s:
-> - Launch with `run_in_background: true` in the Bash tool, then await the completion notification.
-> - For polling until a file appears: use the Monitor tool with an `until` loop (e.g. `until [ -f /tmp/jobpilot_raw.json ]; do sleep 2; done`).
-> - After the script completes, read output files directly — do NOT tail them.
+> **IMPORTANT — Background Execution & Script Waiting:**
+> - Never use `sleep N && tail` or `sleep N && <any-command>`.
+> - **In Claude:** Use the Bash tool with `run_in_background: true`, and use the Monitor tool with an `until` loop for polling.
+> - **In Antigravity:** Use `run_command` with `WaitMsBeforeAsync` for long scripts. You will automatically receive a message when it finishes; do not poll manually. After it finishes, read output files directly.
 
 ### Step A1: Job scraping (Apify MCP preferred, Python SDK fallback)
 
@@ -148,7 +147,7 @@ After Step A1, read `/tmp/jobpilot_scrape_status.json`.
 
 For any source with `"status": "failed"` or `"count": 0`:
 
-1. Run WebSearch: `apify "<actor_id>" returns 0 results input schema 2025`
+1. Run web search (via `WebSearch` in Claude, or `search_web` in Antigravity): `apify "<actor_id>" returns 0 results input schema 2025`
 2. Also search: `apify "<actor_id>" correct input fields example`
 3. If you find an updated input schema or explanation:
    - Update `~/.claude/job-hunt-ai/cache/apify_lessons.json`:
@@ -268,7 +267,7 @@ scores based on feedback — just surface the pattern.
 ### Step B3: Salary research (top matches only)
 
 For jobs with **`score >= 60`** (pure fit, NOT effective_score) AND `experience_gate_drop != true` AND `has_jd != false`,
-run up to 3 targeted WebSearch queries per job:
+run up to 3 targeted web search queries per job (via `WebSearch` in Claude, or `search_web` in Antigravity):
 
 1. `"<company> India salary software engineer 2025 site:glassdoor.co.in OR ambitionbox.com"`
 2. `"<role title> fresher salary <primary_city> LPA 2025"`
@@ -283,7 +282,7 @@ Extract LPA range from results. Rules:
 
 ### Step B4: Write the report CSV
 
-Use the Write tool to create:
+Use the Write tool (Claude) or `write_to_file` (Antigravity) to create:
 `~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>.csv`
 where `<slot>` is `morning` (before 12 IST), `afternoon` (12–17 IST), or `evening` (17+ IST).
 
@@ -397,9 +396,8 @@ writes the scored JSON, even if the record was rebuilt from scratch during scori
 
 For jobs where `jd_full` is empty or < 120 chars AND `source_board` is `linkedin` (or any
 paid board that returned no description), enrich the JD before scoring:
-1. `WebFetch` the `application_url` — LinkedIn/company pages often render the JD without login.
-2. If that yields nothing useful, `WebSearch` `"<company> <role> careers"` and `WebFetch` the
-   company careers/ATS page.
+1. Fetch the URL (via `WebFetch` in Claude, or `read_url_content` in Antigravity) — LinkedIn/company pages often render the JD without login.
+2. If that yields nothing useful, search (via `WebSearch` or `search_web`) `"<company> <role> careers"` and fetch the company careers/ATS page.
 Write the recovered text back into the job's `jd_full` and set `jd_source: "fetched"`.
 Cap at 25 enrichments; skip a page if it takes more than ~8s. **Do NOT** scrape LinkedIn with a
 logged-in session — it risks banning the account used to apply.
@@ -455,7 +453,7 @@ deserves salary research.
    `call-actor "thirdwatch/ambitionbox-scraper"` with
    `{ "companies": ["<company>"], "roles": ["<role-slug>"], "includeCompanyReviews": false }`.
    Extract the LPA range for the matching role.
-2. **Fallback** `WebSearch`: `"<company> <role> salary India LPA" site:ambitionbox.com OR glassdoor.co.in`.
+2. **Fallback** web search (`WebSearch` or `search_web`): `"<company> <role> salary India LPA" site:ambitionbox.com OR glassdoor.co.in`.
 3. `your_demand = round_to_0.5( max(target_ctc_min_lpa, market_75th_pct * score/100) )` — never
    below `target_ctc_min_lpa`.
 4. Set `market_salary` (e.g. "8–14 LPA"), `your_demand` (e.g. "12 LPA"),
@@ -517,7 +515,7 @@ After the full run completes, update `~/.claude/job-hunt-ai/cache/apify_lessons.
 3. If a new `field_overrides` or `value_transforms` was discovered during A2 diagnosis: write it.
 4. Update `"last_updated"` to today's date.
 
-Write the updated lessons JSON using the Write tool.
+Write the updated lessons JSON using the Write tool (Claude) or `write_to_file` (Antigravity).
 
 ---
 
