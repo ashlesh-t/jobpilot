@@ -5,13 +5,21 @@
   "max_age_hours": 24,
   "max_results_total": 60,
   "channels": [
-    {"username": "techjobsindia",       "name": "Tech Jobs India",          "members": 180000},
-    {"username": "bengalurujobs",        "name": "Bengaluru Jobs",           "members": 95000},
-    {"username": "startupjobsindia",     "name": "Startup Jobs India",       "members": 72000},
-    {"username": "remotejobsindia",      "name": "Remote Jobs India",        "members": 60000},
-    {"username": "softwarejobsindia",    "name": "Software Jobs India",      "members": 55000},
-    {"username": "freshersjobsindia",    "name": "Freshers Jobs India",      "members": 48000},
-    {"username": "linkedinjobalerts",    "name": "LinkedIn Job Alerts IN",   "members": 40000},
-    {"username": "indiastartupjobs",     "name": "India Startup Jobs",       "members": 35000}
+    {
+      "username": "freshersjobs_in",
+      "members": 0
+    },
+    {
+      "username": "freshersjobsindia",
+      "members": 0
+    },
+    {
+      "username": "remotejobsindia",
+      "members": 0
+    },
+    {
+      "username": "softwarejobsindia",
+      "members": 0
+    }
   ]
 }

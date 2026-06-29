@@ -23,69 +23,31 @@ If any key prints `MISSING`:
 
 Stop. Do not continue.
 
-### B. Google Drive MCP check
-Try to list files in Google Drive using the Google Drive MCP tool. If the MCP tool is
-unavailable or returns an auth error:
-> "Google Drive is not connected.
-> Go to **Claude Desktop → Settings → Connections** and connect your Google Drive,
-> then re-run `/job-setup`."
+### B. Google Drive MCP check & Resume Selection
+Try to list files in Google Drive using the Google Drive MCP tool.
 
-Stop. Do not continue.
+**Path 1: Google Drive IS connected**
+1. Search Google Drive for a folder named exactly **`jobpilot-resume`**. If not found, tell the user to create it and upload their PDF resume, then stop.
+2. List all PDFs in that folder.
+   - 0 found: Tell the user to upload a PDF and stop.
+   - 1 found: Ask "Found: **<filename>**. Use this as your resume? [Y/n]"
+   - 2+ found: Show a numbered list and ask the user to pick one.
+3. Download the selected PDF via MCP to `~/.claude/job-hunt-ai/resumes/base.pdf`.
+4. Run: `python3 scripts/resume_parser.py ~/.claude/job-hunt-ai/resumes/base.pdf --drive-file-id <file_id>`
+5. Confirm `resume_drive_file_id` is updated in `preferences.json`.
 
-### C. jobpilot-resume folder check
-Search Google Drive for a folder named exactly **`jobpilot-resume`**.
+**Path 2: Google Drive is NOT connected**
+If the MCP tool is unavailable or returns an auth error, Google Drive is treated as optional.
+Ask the user:
+> "Google Drive is not connected. (You can connect it in Claude Desktop Settings or Antigravity MCP config if you prefer cloud storage)."
+> "To proceed with a local file, please provide the absolute path to your resume PDF on this machine:"
 
-If not found:
-> "The `jobpilot-resume` folder does not exist in your Google Drive.
-> Please create it, upload your resume as a PDF file, then re-run `/job-setup`."
+1. Wait for the user to provide the local path.
+2. Copy the provided file to `~/.claude/job-hunt-ai/resumes/base.pdf` (using bash `cp`).
+3. Run: `python3 scripts/resume_parser.py ~/.claude/job-hunt-ai/resumes/base.pdf`
+4. Ensure `resume_drive_file_id` in `preferences.json` is set to `""` or `null`.
 
-Stop. Do not continue.
-
----
-
-## Resume selection
-
-### D. List PDFs in jobpilot-resume
-List all files with MIME type `application/pdf` inside the `jobpilot-resume` folder.
-
-**0 PDFs found:**
-> "No PDF found in `jobpilot-resume`. Upload your resume as a PDF file to that
-> folder in Google Drive, then re-run `/job-setup`."
-Stop.
-
-**1 PDF found:**
-> "Found: **<filename>**. Use this as your resume? [Y/n]"
-- Y → proceed to step E.
-- N → "Upload the correct PDF to the `jobpilot-resume` folder and re-run `/job-setup`." Stop.
-
-**2 or more PDFs found:**
-Show a numbered list, e.g.:
-```
-  1. resume_2025.pdf
-  2. resume_backend.pdf
-  3. cv_latest.pdf
-```
-> "Which resume should JobPilot use? Enter a number."
-Use the chosen file.
-
-### E. Download and cache resume
-1. Download the selected PDF from Google Drive via the MCP tool.
-2. Write the file contents to: `~/.claude/job-hunt-ai/resumes/base.pdf`
-3. Run via bash:
-   ```bash
-   python3 scripts/resume_parser.py ~/.claude/job-hunt-ai/resumes/base.pdf --drive-file-id <file_id>
-   ```
-   This writes:
-   - `/tmp/jobpilot_resume_raw.txt` — raw extracted text for Claude to read
-   - Updates `resume_hash`, `resume_path`, `resume_drive_file_id` in `preferences.json`
-   - Resets `profile_verified: false` in `profile.json` if the resume hash changed
-
-4. Confirm `preferences.json` now contains `resume_drive_file_id` matching the chosen PDF's
-   Drive file ID.
-
-**On re-runs:** if `resume_drive_file_id` already matches the current PDF, the hash has not
-changed, AND `profile.json` has `profile_verified: true`, skip steps E and F entirely and
-reuse the cached profile.
+*(On re-runs: if the PDF hasn't changed and `profile_verified: true`, you can skip the parse and verification steps).*
 
 ---
 
@@ -138,8 +100,7 @@ Check for `~/.claude/job-hunt-ai/options/preferences.json`:
   current values as defaults and only overwrite what the user changes. If "fresh", start from
   `config/preferences.example.json`.
 
-Ask these questions **one batch at a time** using the AskUserQuestion tool. Each question may
-have **at most 4 explicit options** (the tool auto-adds "Other" for free-text, giving 5 total).
+Ask these questions **one batch at a time**. If running in Claude, use the `AskUserQuestion` tool (max 4 options, auto-adds "Other"). If running in Antigravity, use the `ask_question` tool (providing the `questions` array format).
 
 **Batch 1 — Location & market**
 
@@ -377,8 +338,11 @@ After completion (or skip), confirm:
 
 ---
 
-## Step H — Update .claude/settings.local.json with MCP permissions
+## Step H — Update .claude/settings.local.json with MCP permissions (Claude Only)
 
+**If you are running in Antigravity:** Skip this step entirely. MCP permissions are managed globally and do not require local `.claude` configuration.
+
+**If you are running in Claude Desktop:**
 This step runs once after Step B (Drive MCP) succeeds. It pre-authorises Drive MCP calls for
 all future `/job-search` runs so they complete with zero permission prompts.
 
@@ -418,7 +382,6 @@ graduation year, github/portfolio if found) so the user can verify everything lo
   upload a different PDF to the `jobpilot-resume` folder, then re-run `/job-setup`.
 - `profile_verified: true` is the contract that profile.json is complete and Claude-reviewed.
   The `/job-search` skill checks this flag and triggers inline re-verification if false.
-- **AskUserQuestion hard limit:** each question may have at most 4 explicit options. The tool
-  always appends "Other" automatically, giving users a free-text escape hatch.
+- **Questionnaire tools:** In Claude, `AskUserQuestion` has a hard limit of 4 explicit options and auto-adds "Other". In Antigravity, use `ask_question` which does not have a strict 4-option limit; if a write-in is needed, the Antigravity tool automatically provides a default write-in option in the UI.
 - **Write rule:** always Read a file before Writing it, even when creating it fresh. Read the
   existing file (or the example template if it doesn't exist) before every Write call.

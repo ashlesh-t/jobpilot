@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Automated, personal job-hunting pipeline for Claude Code.
+Automated, personal job-hunting pipeline for Claude Code and Google Antigravity.
 
 ## 1. What it does
 
@@ -14,7 +14,7 @@ picks is pushed automatically on whatever schedule you set.
 
 ## 2. Prerequisites
 
-- **Claude Desktop Pro** (the scheduled task runs under your Pro subscription).
+- **Claude Desktop Pro** or **Google Antigravity**.
 - **Apify account** — free tier is fine (~$5 credit/month).
 - **Telegram bot** — create one with [@BotFather](https://t.me/BotFather) and grab your chat ID.
 - **Python 3.11+**.
@@ -26,19 +26,26 @@ picks is pushed automatically on whatever schedule you set.
 
 Three paths, pick one:
 
-**a. Plugin install (recommended)**
+**a. Plugin install (Claude)**
 ```bash
 claude plugin install github:ashlesh-t/jobpilot
 ```
 
-**b. Clone + setup**
+**b. Plugin install (Antigravity)**
+Clone the repo and symlink it to your plugins folder:
+```bash
+git clone https://github.com/ashlesh-t/jobpilot ~/projects/jobpilot
+ln -s ~/projects/jobpilot ~/.gemini/config/plugins/jobpilot
+```
+
+**c. Clone + setup (Manual)**
 ```bash
 git clone https://github.com/ashlesh-t/jobpilot ~/projects/jobpilot
 cd ~/projects/jobpilot
 ./setup.sh
 ```
 
-**c. Future `.mcpb` bundle** — a one-click `.mcpb` installer is planned; not yet available.
+**d. Future `.mcpb` bundle** — a one-click `.mcpb` installer is planned; not yet available.
 
 ## 4. One-time setup
 
@@ -46,12 +53,12 @@ cd ~/projects/jobpilot
 the SQLite cache, and runs an interactive wizard that collects your Apify token, Telegram bot
 token, and chat ID (validates each one live before saving).
 
-**b. Connect Google Drive** in Claude Desktop → Settings → Connections.
+**b. Connect Google Drive** in Claude Desktop → Settings → Connections (or via standard MCP config in Antigravity `~/.gemini/config/mcp/`).
 
 **c. Create a folder** named `jobpilot-resume` in your Google Drive and upload your resume
 as a PDF file into it.
 
-**d. Run `/job-setup`** in Claude Desktop. It checks that secrets and Google Drive are ready,
+**d. Run `/job-setup`** in Claude Desktop or Antigravity. It checks that secrets and Google Drive are ready,
 lets you pick your resume PDF from the Drive folder (shows a numbered list if there are
 several), downloads and parses it, then asks for your job preferences (locations, CTC floor,
 role types, experience, degree, optional tech stack).
@@ -92,7 +99,7 @@ file for you.
 Layer A (scraping + filtering) costs nothing in LLM tokens — it is pure Python. The only spend
 is Apify usage; the free tier (~$5 credit/month) covers roughly **one run per day**. Tune
 `schedule_slots_ist` to a single daily slot to stay free. LLM usage in Layer B is covered by
-your Claude Pro subscription.
+your Claude Pro or Google Antigravity subscription.
 
 ## 10. Contributing / marketplace listing
 

@@ -1,0 +1,4 @@
+{
+  "name": "jobpilot",
+  "description": "Automated job-hunt pipeline: scrape -> score -> notify via Telegram"
+}
