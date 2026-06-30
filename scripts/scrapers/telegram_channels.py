@@ -97,11 +97,41 @@ _PIPE_PATTERN = re.compile(
     re.MULTILINE,
 )
 
+# Patterns that signal a referral is available in the post
+_REFERRAL_PATTERNS = [
+    re.compile(r"\bdm\s+(?:me\s+)?for\s+(?:a\s+)?referral\b", re.I),
+    re.compile(r"\breferral\s+(?:available|open|slot|link|code|opportunity)\b", re.I),
+    re.compile(r"\bcan\s+refer\s+you\b", re.I),
+    re.compile(r"\brefer\s+you\b", re.I),
+    re.compile(r"\bhave\s+(?:a\s+)?referral\b", re.I),
+    re.compile(r"\bproviding\s+referrals?\b", re.I),
+    re.compile(r"\breferral\s+(?:is\s+)?available\b", re.I),
+    re.compile(r"\bwill\s+refer\b", re.I),
+    re.compile(r"\bsharing\s+referrals?\b", re.I),
+]
+
+
+def _detect_referral(text: str) -> tuple[bool, str]:
+    """Detect referral offers in a message and extract the contact handle.
+
+    Returns (has_referral, referral_contact).
+    referral_contact is a "@handle" string when found, else "".
+    """
+    has_ref = any(p.search(text) for p in _REFERRAL_PATTERNS)
+    contact = ""
+    if has_ref:
+        # Extract first @handle from the message (the referrer's Telegram username)
+        m = re.search(r"@([A-Za-z0-9_]{3,32})", text)
+        if m:
+            contact = "@" + m.group(1)
+    return has_ref, contact
+
 
 def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict | None:
     """Attempt to extract a job dict from a Telegram message.
 
     Returns None if the message doesn't look like a job post.
+    Adds has_referral / referral_contact when referral patterns detected.
     """
     clean = _clean_text(text)
     lines = [l.strip() for l in clean.splitlines() if l.strip()]
@@ -126,7 +156,7 @@ def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict |
     if not role or len(role) < 3:
         return None
 
-    return build_job(
+    job = build_job(
         company=company,
         role=role,
         location=location,
@@ -134,6 +164,17 @@ def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict |
         url=apply_url,
         source=f"telegram-{channel_slug}",
     )
+
+    # Referral detection — check original text (before cleaning) for patterns
+    has_referral, referral_contact = _detect_referral(text)
+    if has_referral:
+        job["has_referral"] = True
+        if referral_contact:
+            job["referral_contact"] = referral_contact
+    else:
+        job["has_referral"] = False
+
+    return job
 
 
 # --------------------------------------------------------------------------- #
