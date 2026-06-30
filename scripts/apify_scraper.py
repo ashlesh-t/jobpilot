@@ -526,11 +526,15 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
             print(f"[native] {label} failed: {exc}", file=sys.stderr)
             return []
 
+    # Per-source cap — prevents any single source from flooding the pipeline.
+    per_source_cap = int(prefs.get("per_source_cap", 20))
+
     # India boards (native): Internshala. Run for primary + secondary city.
     if focus in ("india", "both"):
         for loc in [loc for loc in locations[:2] if loc.lower() != "remote"] or [""]:
             results += safe(f"internshala/{loc or 'all'}",
-                            lambda loc=loc: internshala.fetch(keywords, loc, max_results=40,
+                            lambda loc=loc: internshala.fetch(keywords, loc,
+                                                              max_results=per_source_cap,
                                                               focus=focus))
 
         # India-specific free boards: Hasjob + Instahyre
