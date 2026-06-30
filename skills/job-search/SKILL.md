@@ -54,7 +54,7 @@ The scraper auto-rotates `APIFY_TOKEN` → `APIFY_TOKEN_2` → `APIFY_TOKEN_3` w
 credit exhaustion. If all slots are exhausted, it sends a Telegram alert and degrades to
 native-only automatically. `run_state.json` tracks which slots are exhausted.
 
-Log: **"Run mode: <RUN_MODE> (last full run: <last_full_run>)"**
+Log: **"Run mode: <RUN_MODE> (last full run: <last_full_run>). Native-only runs skip LinkedIn/Glassdoor/Naukri/Cutshort/Wellfound."**
 
 ### 0b — Search keyword enrichment
 
@@ -284,8 +284,9 @@ Extract LPA range from results. Rules:
 ### Step B4: Write the report CSV
 
 Use the Write tool to create:
-`~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>.csv`
-where `<slot>` is `morning` (before 12 IST), `afternoon` (12–17 IST), or `evening` (17+ IST).
+`~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>-<mode>.csv`
+where `<slot>` is `morning` (before 12 IST), `afternoon` (12–17 IST), or `evening` (17+ IST),
+and `<mode>` is `full` or `native` (the RUN_MODE decided in Step 0a).
 
 **Write ALL scored jobs to the CSV** — no top-N cap. Hidden gems at rank 40 should be visible.
 Hard-dropped jobs are included at the bottom with `experience_gate_drop = true`.
@@ -468,11 +469,13 @@ Write the enriched list (all fields above) to **`/tmp/jobpilot_scored.json`**.
 
 ```bash
 python3 scripts/report_generator.py --input /tmp/jobpilot_scored.json \
-  --output ~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>.xlsx
+  --output ~/.claude/job-hunt-ai/reports/YYYY-MM-DD-<slot>-<mode>.xlsx
 ```
-`<slot>` = morning (<12 IST) / afternoon (12–17) / evening (17+). The script colours rows by
-score (≥75 green, 60–74 yellow), freezes the header, hyperlinks the apply link, and caps at 20.
-All scored jobs remain in `/tmp/jobpilot_scored.json`; only the report is capped.
+`<slot>` = morning (<12 IST) / afternoon (12–17) / evening (17+).
+`<mode>` = `full` or `native` — matches the RUN_MODE from Step 0a so the filename makes it
+immediately obvious which run type produced the report.
+The script colours rows by score (≥75 green, 60–74 yellow), freezes the header, hyperlinks
+the apply link, and caps at 20 rows. All scored jobs remain in `/tmp/jobpilot_scored.json`.
 
 ### B5 — Resume tailoring (top matches)
 
@@ -494,9 +497,11 @@ by the scraper but omitted during scoring reconstruction are still included in t
 Build a plain-text digest (top 3 jobs, flag ⚠️ Google-Form apply links, note if Apify paid
 sources were skipped), then:
 ```bash
-python3 scripts/telegram_notify.py --digest "<text>" --xlsx "<report_path>"
+python3 scripts/telegram_notify.py --digest "<text>" --xlsx "<report_path>" --run-mode "<RUN_MODE>"
 ```
-(If `telegram_notify.py` only accepts `--csv`, pass the xlsx path to it as the attachment.)
+`--run-mode` is either `full` or `native` (from Step 0a). This adds `[native-only]` or
+`[full (native + Apify)]` to the digest header and, on native runs, appends a line listing
+which premium sources were skipped so the user knows why results may be fewer.
 
 ### B7 — Drive upload (removed)
 
