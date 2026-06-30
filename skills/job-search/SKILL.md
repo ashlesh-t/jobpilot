@@ -498,13 +498,13 @@ python3 scripts/telegram_notify.py --digest "<text>" --xlsx "<report_path>"
 ```
 (If `telegram_notify.py` only accepts `--csv`, pass the xlsx path to it as the attachment.)
 
-### B7 — Drive upload
+### B7 — Drive upload (removed)
 
-```bash
-python3 scripts/drive_upload.py
-```
-Read `/tmp/jobpilot_drive_manifest.json`. Upload each file via Drive MCP.
-If Drive MCP unavailable, log and continue.
+Drive upload has been removed (issue #12). Base64 encoding of files > ~10 KB over the MCP
+boundary was truncated, producing invalid payloads rejected by the Drive MCP.
+
+Telegram (B6) is now the **sole delivery mechanism** — the XLSX report and tailored resumes
+are sent directly via `sendDocument` calls in the previous step. No Drive action needed.
 
 ---
 
@@ -530,11 +530,8 @@ B7 (Drive) even if earlier steps partially failed.
 Track failures in a `_failed_steps` list throughout the run. Each entry:
 `{"step": "B3-salary-<company>", "reason": "<brief error message>"}`.
 
-### Drive upload (B7)
-Read `/tmp/jobpilot_drive_manifest.json`. Use the Drive MCP `search_files` to find the
-`"JobPilot Reports"` folder (create via `create_file` with folder MIME type if missing), then
-upload each manifest file via `create_file`. Log `[drive] Uploaded <name> → <link>`.
-If Drive MCP is unavailable or any upload fails, log and continue — do not abort.
+### Drive upload (B7) — removed
+Drive upload is no longer part of the pipeline. All delivery happens via Telegram (B6).
 
 ---
 

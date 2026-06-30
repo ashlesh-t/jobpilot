@@ -181,7 +181,7 @@ def build_digest(jobs: list, total_found: int, survived_filter: int, tailored_co
     )
     if apify_skipped:
         lines.append("LinkedIn/Glassdoor/Naukri skipped — Apify credits exhausted.")
-    lines.append("Report + tailored resumes uploaded to Drive.")
+    lines.append("Report + tailored resumes sent via Telegram.")
     lines.append(DIVIDER)
     return "\n".join(lines)
 
