@@ -13,5 +13,15 @@
     "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy",
     "yc_startup", "hasjob", "instahyre", "wellfound_rss"
   ],
-  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings. New India sources: hasjob (India tech board), instahyre (curated India hiring). New global sources: yc_startup (YC Work at a Startup), wellfound_rss (Wellfound public listing, no Cloudflare)."
+  "disabled_native_sources": [
+    "instahyre",
+    "wellfound_rss",
+    "linkedin_guest"
+  ],
+  "_disabled_notes": {
+    "instahyre": "All API endpoints (/api/v1/opportunity, /api/v1/jobs) return 404; /search-jobs/ returns 403. Disabled until a working endpoint is found.",
+    "wellfound_rss": "Cloudflare WAF returns 403 on all unauthenticated requests. Use Apify wellfound_scraper on full runs instead.",
+    "linkedin_guest": "Unauthenticated LinkedIn endpoint returns 0 jobs consistently (soft-blocked). LinkedIn data sourced exclusively via Apify on full runs."
+  },
+  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings. hasjob now uses Atom feed (/feed). yc_startup now uses HN Firebase Jobs API. instahyre and wellfound_rss are disabled — see disabled_native_sources."
 }
