@@ -142,13 +142,16 @@ def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict |
 
 async def _fetch_channel_async(
     client,
-    channel_username: str,
+    channel_identifier,
     keyword_terms: list[str],
     max_messages: int,
     cutoff: datetime,
     security_db,
 ) -> list[dict]:
-    """Fetch and process messages from one Telegram channel."""
+    """Fetch and process messages from one Telegram channel.
+
+    channel_identifier may be a @username string or a numeric chat ID (int).
+    """
     try:
         from url_security import check_url  # noqa
     except ImportError:
@@ -156,12 +159,13 @@ async def _fetch_channel_async(
             return {"safe": True, "risk_label": "safe", "risk_score": 0}
 
     jobs: list[dict] = []
-    channel_slug = channel_username.lower().replace("_", "-")
+    label = str(channel_identifier)
+    channel_slug = label.lstrip("@").lower().replace("_", "-").replace("-100", "")
 
     try:
-        entity = await client.get_entity(channel_username)
+        entity = await client.get_entity(channel_identifier)
     except Exception as exc:
-        print(f"[telegram] channel @{channel_username} inaccessible: {exc}", file=sys.stderr)
+        print(f"[telegram] channel {label} inaccessible: {exc}", file=sys.stderr)
         return []
 
     async for msg in client.iter_messages(entity, limit=max_messages):
@@ -250,14 +254,18 @@ async def _fetch_async(
 
     async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
         for ch in cfg.get("channels", []):
+            # Support both @username and numeric chat ID for private channels.
+            chat_id = ch.get("id")
             username = ch.get("username", "")
-            if not username:
+            identifier = chat_id if chat_id else (username if username else None)
+            if not identifier:
                 continue
+            label = str(chat_id) if chat_id else f"@{username}"
             jobs = await _fetch_channel_async(
-                client, username, keyword_terms, max_per_channel,
+                client, identifier, keyword_terms, max_per_channel,
                 cutoff, security_db,
             )
-            print(f"[telegram] @{username}: {len(jobs)} matching jobs", file=sys.stderr)
+            print(f"[telegram] {label}: {len(jobs)} matching jobs", file=sys.stderr)
             for j in jobs:
                 if j["job_id"] not in seen_ids:
                     seen_ids.add(j["job_id"])
@@ -295,11 +303,18 @@ def fetch(keywords: str = "", location: str = "", max_results: int = 60,
 # --------------------------------------------------------------------------- #
 
 SEED_CHANNELS = [
-    "techjobsindia", "bengalurujobs", "startupjobsindia", "remotejobsindia",
-    "softwarejobsindia", "freshersjobsindia", "linkedinjobalerts", "indiastartupjobs",
-    "HiringIndia", "jobsforindia", "techJobsIndia2", "devjobsindia",
+    # India tech job channels (broad candidates — validated via --discover)
+    "JobsForSoftwareEngineers", "IndiaJobsIT", "TechJobsIndia", "BangaloreJobs",
+    "StartupJobsIndia", "RemoteJobsIndia", "FresherJobsIndia", "IndiaStartupJobs",
+    "SoftwareJobsIndia", "HiringIndia", "JobsforindiA", "devjobsindia",
     "pythonJobsIndia", "mlJobsIndia", "backendJobsIndia", "freshersjobs_in",
     "naukrijobsofficial", "hiringfreshers", "campusJobsIndia", "jobsinbengaluru",
+    # Additional broad candidates
+    "techjobsindia", "bengalurujobs", "startupjobsindia", "remotejobsindia",
+    "softwarejobsindia", "freshersjobsindia", "linkedinjobalerts", "indiastartupjobs",
+    "techJobsIndia2", "sde_jobs_india", "india_tech_jobs", "bangalore_tech_jobs",
+    "job_openings_india", "hiring_india_tech", "swe_jobs_india", "fresher_jobs_2025",
+    "softwarejobs_india", "india_startup_hiring", "techrecruiting_india",
 ]
 
 _DISCOVERY_QUERIES = [
@@ -398,6 +413,17 @@ async def _discover_async() -> None:
         f"[discover] Live: {len(live)} | Dead/inaccessible: {len(dead)} | "
         f"Newly discovered: {len(newly_discovered)}"
     )
+    if len(live) == 0:
+        print(
+            "\n⚠️  WARNING: 0 live channels found after validation.\n"
+            "   All seed channels appear dead or inaccessible.\n"
+            "   Telegram scraping will return 0 jobs until live channels are added.\n"
+            "   Options:\n"
+            "     1. Add known-good channel usernames to config/telegram_channels.json\n"
+            "     2. Add private channel numeric IDs (from Telegram app) as {\"id\": -100...}\n"
+            f"     3. Edit manually: {cfg_path}",
+            file=sys.stderr,
+        )
     if dead:
         print(
             f"[discover] Dead channels: {', '.join(dead)}\n"
