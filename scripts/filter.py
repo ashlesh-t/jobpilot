@@ -201,12 +201,16 @@ def deadline_passed(job: dict) -> bool:
     return False  # unparseable format — keep the job
 
 
-def ctc_company_ok(job: dict, prefs: dict) -> tuple[bool, bool]:
+def ctc_company_ok(job: dict, prefs: dict, user_exp: int = 0) -> tuple[bool, bool]:
     """Check CTC threshold and optionally filter service companies.
 
+    For early-career candidates (experience_years <= 2) the CTC filter is soft:
+    jobs below target_ctc_min_lpa are kept but flagged with ctc_flag="below_target"
+    so Claude can deprioritise rather than hard-drop them.
+
     Returns (keep, ctc_unknown).
-    - (False, False): hard drop
-    - (True, False): keep, CTC confirmed ok
+    - (False, False): hard drop (experienced candidates only, CTC confirmed below min)
+    - (True, False): keep, CTC confirmed ok (or soft-flagged for freshers)
     - (True, True): keep, CTC not found in JD — flag for Claude to judge
     """
     company = (job.get("company") or "").lower().strip()
@@ -218,13 +222,22 @@ def ctc_company_ok(job: dict, prefs: dict) -> tuple[bool, bool]:
     if min_ctc <= 0:
         return True, True  # no CTC preference set — keep, unknown
 
+    is_early_career = user_exp <= 2
+
     text = ((job.get("jd_full") or "") + " " + (job.get("experience_req") or "")).lower()
     m = re.search(
         r"(\d+(?:\.\d+)?)\s*(?:[-–]\s*\d+(?:\.\d+)?\s*)?(?:lpa|l\.p\.a|lakhs?)\b", text
     )
     if m:
         found = float(m.group(1))
-        return (found >= min_ctc, False)
+        if found >= min_ctc:
+            return True, False  # CTC meets target — keep
+        if is_early_career:
+            # Soft filter: flag but don't drop — freshers have less negotiating power
+            job["ctc_flag"] = "below_target"
+            return True, False
+        return False, False  # Hard drop for experienced candidates
+
     return True, True  # CTC unknown — keep, flag for Claude
 
 
@@ -235,6 +248,7 @@ def main() -> int:
 
     kept = []
     dropped_seen = 0
+    soft_ctc_flagged = 0
     reasons = {"location": 0, "expired": 0, "experience": 0, "ctc_company": 0}
 
     user_exp = int(prefs.get("experience_years", 0) or 0)
@@ -257,20 +271,23 @@ def main() -> int:
         if exp_req >= exp_cap:
             reasons["experience"] += 1
             continue
-        keep_ctc, ctc_unknown = ctc_company_ok(job, prefs)
+        keep_ctc, ctc_unknown = ctc_company_ok(job, prefs, user_exp)
         if not keep_ctc:
             reasons["ctc_company"] += 1
             continue
         if ctc_unknown:
             job["ctc_unknown"] = True
+        if job.get("ctc_flag") == "below_target":
+            soft_ctc_flagged += 1
         job["location_weight"] = location_weight(job, prefs)
         kept.append(job)
 
     Path(FILTERED_OUT).write_text(json.dumps(kept, indent=2, ensure_ascii=False))
+    soft_note = f" ({soft_ctc_flagged} soft-flagged below-target CTC)" if soft_ctc_flagged else ""
     print(
         f"Filter: {len(jobs)} in → {len(kept)} kept | "
         f"seen={dropped_seen} location={reasons['location']} expired={reasons['expired']} "
-        f"exp={reasons['experience']} ctc={reasons['ctc_company']} → {FILTERED_OUT}"
+        f"exp={reasons['experience']} ctc={reasons['ctc_company']}{soft_note} → {FILTERED_OUT}"
     )
     return len(kept)
 
