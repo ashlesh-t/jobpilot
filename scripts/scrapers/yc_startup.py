@@ -1,78 +1,145 @@
-"""Native YC Work at a Startup scraper — pure Python, NO LLM, NO Apify.
+"""Native YC startup jobs scraper — pure Python, NO LLM, NO Apify.
 
-Fetches engineering job listings from https://www.workatastartup.com using
-their public company search API (no auth required).
+YC Work at a Startup (workatastartup.com) is a React SPA backed by Algolia
+search with a restricted API key — it is not scrapeable without a valid
+authenticated session.
+
+Fallback approach: HN Firebase Jobs API
+  https://hacker-news.firebaseio.com/v0/jobstories.json
+Returns HN job posts from YC-affiliated startups. Each item has a direct
+apply URL and a description in the `text` field. Returns ~30 recent posts
+at any given time, all from real YC-backed companies.
 """
 from __future__ import annotations
 
+import html as _html_mod
+import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import build_job, http_get, matches_keywords, region_ok, split_terms, strip_html  # noqa: E402
+import requests
 
-COMPANIES_API = "https://www.workatastartup.com/companies"
-JOBS_API = "https://www.workatastartup.com/jobs"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import build_job, matches_keywords, region_ok, split_terms  # noqa: E402
+
+_JOBSTORIES_URL = "https://hacker-news.firebaseio.com/v0/jobstories.json"
+_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+
+_YC_BATCH_RE = re.compile(r"\(YC\s+[WSF]\d{2}\)", re.I)
+
+
+def _strip_hn_html(text: str) -> str:
+    text = _html_mod.unescape(text or "")
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _parse_hn_job(item: dict) -> dict | None:
+    """Extract company, role, location from an HN job story."""
+    title = (item.get("title") or "").strip()
+    url = (item.get("url") or "").strip()
+    text = _strip_hn_html(item.get("text") or "")
+    posted_ts = item.get("time", 0)
+
+    if not title:
+        return None
+
+    company = ""
+    role = ""
+    location = "Remote"
+
+    # Pattern: "Company (YC S24) is hiring <Role>" — most common HN job title format
+    m_hiring = re.search(
+        r"^(.+?)\s*(?:\(YC\s+[WSF]\d{2,4}\))?\s+[Ii]s\s+[Hh]iring\s+(?:a\s+|an\s+)?(.+?)(?:\s*[—\-]\s*|\s*\|.*|$)",
+        title, re.I,
+    )
+    if m_hiring:
+        company = m_hiring.group(1).strip()
+        role = m_hiring.group(2).strip()
+    else:
+        # Fallback: "Company — Role" or "Company - Role" or "Company | Role"
+        for sep in (" — ", " – ", " | ", " - "):
+            if sep in title:
+                parts = title.split(sep, 1)
+                company = _YC_BATCH_RE.sub("", parts[0]).strip()
+                role = parts[1].strip()
+                break
+
+    # Last resort: treat whole title as company, use generic role
+    if not company:
+        company = _YC_BATCH_RE.sub("", title).strip()
+        company = re.sub(r"\s+[Ii]s\s+[Hh]iring.*$", "", company).strip()
+    if not role:
+        role = "Software Engineer"
+
+    # Remove any remaining YC batch markers from company
+    company = _YC_BATCH_RE.sub("", company).strip()
+
+    # Posted date from Unix timestamp
+    from datetime import datetime, timezone
+    posted = datetime.fromtimestamp(posted_ts, tz=timezone.utc).strftime("%Y-%m-%d") if posted_ts else ""
+
+    return {
+        "company": company[:80],
+        "role": role[:100],
+        "location": location,
+        "jd": text[:800],
+        "url": url,
+        "posted": posted,
+    }
 
 
 def fetch(keywords="software engineer", max_results=30, focus="both"):
     keyword_terms = split_terms(keywords)
 
-    # Try the jobs search endpoint first (React SPA — send XHR headers, not Accept: json)
-    params = {"query": keywords, "remote": "true", "roles": "eng"}
-    resp = http_get(
-        JOBS_API,
-        params=params,
-        headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json, */*"},
-        timeout=30,
-    )
-    if not resp:
-        # Fallback: companies endpoint
-        params2 = {"has_jobs": "true", "query": keywords, "remote": "true", "roles": "eng"}
-        resp = http_get(COMPANIES_API, params=params2, timeout=30)
-    if not resp:
-        return []
-
     try:
-        data = resp.json()
-    except Exception:
-        print("[yc] API did not return JSON — skipping", file=sys.stderr)
+        resp = requests.get(_JOBSTORIES_URL, timeout=15)
+        if resp.status_code != 200:
+            print(f"[yc] HN jobstories API returned {resp.status_code} — skipping",
+                  file=sys.stderr)
+            return []
+        story_ids = resp.json()
+    except Exception as exc:
+        print(f"[yc] Failed to fetch job story IDs: {exc}", file=sys.stderr)
         return []
 
-    # Response shape: {"companies": [{"name", "jobs": [{"title", "location", "url", "description"}]}]}
-    companies = data if isinstance(data, list) else data.get("companies", [])
     out = []
-    for company in companies:
-        if not isinstance(company, dict):
+    fetched = 0
+    for story_id in story_ids:
+        if len(out) >= max_results:
+            break
+        try:
+            item_resp = requests.get(_ITEM_URL.format(story_id), timeout=10)
+            if item_resp.status_code != 200:
+                continue
+            item = item_resp.json()
+            fetched += 1
+        except Exception:
             continue
-        company_name = company.get("name") or company.get("company_name") or ""
-        jobs = company.get("jobs") or []
-        for job in jobs:
-            if not isinstance(job, dict):
-                continue
-            role = job.get("title") or job.get("role") or ""
-            location = job.get("location") or "Remote"
-            jd = strip_html(job.get("description") or job.get("job_description") or "")
-            url = job.get("url") or job.get("apply_url") or ""
-            if not role:
-                continue
-            if not matches_keywords(f"{role} {jd[:400]}", keyword_terms):
-                continue
-            if not region_ok(location, focus):
-                continue
-            out.append(build_job(
-                company=company_name,
-                role=role,
-                location=location,
-                jd=jd,
-                url=url,
-                source="yc_startup",
-                posted=job.get("created_at", "")[:10],
-            ))
-            if len(out) >= max_results:
-                return out
 
-    print(f"[yc] {len(out)} jobs fetched", file=sys.stderr)
+        parsed = _parse_hn_job(item)
+        if not parsed:
+            continue
+
+        if not matches_keywords(
+            f"{parsed['role']} {parsed['company']} {parsed['jd'][:300]}", keyword_terms
+        ):
+            continue
+        if not region_ok(parsed["location"], focus):
+            continue
+
+        out.append(build_job(
+            company=parsed["company"],
+            role=parsed["role"],
+            location=parsed["location"],
+            jd=parsed["jd"],
+            url=parsed["url"],
+            source="yc_startup",
+            posted=parsed["posted"],
+        ))
+
+    print(f"[yc] {fetched} HN job stories fetched → {len(out)} matched", file=sys.stderr)
     return out
 
 

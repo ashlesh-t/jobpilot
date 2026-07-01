@@ -508,10 +508,15 @@ def build_keywords(prefs: dict) -> str:
 # --------------------------------------------------------------------------- #
 # Native scrapers (free)
 # --------------------------------------------------------------------------- #
-def run_native_scrapers(focus: str, prefs: dict) -> list:
-    """Run all free native scrapers appropriate for the market focus."""
+def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> list:
+    """Run all free native scrapers appropriate for the market focus.
+
+    Sources listed in actors.json `disabled_native_sources` are skipped silently.
+    """
     from scrapers import (arbeitnow, internshala, jobicy, remoteok,  # noqa
                           remotive, weworkremotely)
+
+    disabled_native = set((actors or {}).get("disabled_native_sources", []))
 
     keywords = build_keywords(prefs)
     locations = prefs.get("location_priority") or prefs.get("locations") or ["Bengaluru"]
@@ -526,26 +531,32 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
             print(f"[native] {label} failed: {exc}", file=sys.stderr)
             return []
 
+    # Per-source cap — prevents any single source from flooding the pipeline.
+    per_source_cap = int(prefs.get("per_source_cap", 20))
+
     # India boards (native): Internshala. Run for primary + secondary city.
     if focus in ("india", "both"):
         for loc in [loc for loc in locations[:2] if loc.lower() != "remote"] or [""]:
             results += safe(f"internshala/{loc or 'all'}",
-                            lambda loc=loc: internshala.fetch(keywords, loc, max_results=40,
+                            lambda loc=loc: internshala.fetch(keywords, loc,
+                                                              max_results=per_source_cap,
                                                               focus=focus))
 
         # India-specific free boards: Hasjob + Instahyre
-        try:
-            from scrapers import hasjob  # noqa
-            results += safe("hasjob", lambda: hasjob.fetch(keywords, max_results=25, focus=focus))
-        except ImportError:
-            pass
+        if "hasjob" not in disabled_native:
+            try:
+                from scrapers import hasjob  # noqa
+                results += safe("hasjob", lambda: hasjob.fetch(keywords, max_results=25, focus=focus))
+            except ImportError:
+                pass
 
-        try:
-            from scrapers import instahyre  # noqa
-            results += safe("instahyre",
-                            lambda: instahyre.fetch(keywords, max_results=25, focus=focus))
-        except ImportError:
-            pass
+        if "instahyre" not in disabled_native:
+            try:
+                from scrapers import instahyre  # noqa
+                results += safe("instahyre",
+                                lambda: instahyre.fetch(keywords, max_results=25, focus=focus))
+            except ImportError:
+                pass
 
     # Remote JSON boards — relevant whenever remote is acceptable or focus isn't India-only.
     remote_ok = prefs.get("remote_ok", True)
@@ -559,36 +570,46 @@ def run_native_scrapers(focus: str, prefs: dict) -> list:
         results += safe("arbeitnow",
                         lambda: arbeitnow.fetch(keywords, max_results=cap, focus=focus))
 
-        # YC Work at a Startup (global + both) — high signal for early-stage tech
-        try:
-            from scrapers import yc_startup  # noqa
-            results += safe("yc_startup",
-                            lambda: yc_startup.fetch(keywords, max_results=cap, focus=focus))
-        except ImportError:
-            pass
+        # YC Work at a Startup (global + both) — uses HN Firebase Jobs API
+        if "yc_startup" not in disabled_native:
+            try:
+                from scrapers import yc_startup  # noqa
+                results += safe("yc_startup",
+                                lambda: yc_startup.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
 
-        # Wellfound public listing (no Cloudflare on basic search)
-        try:
-            from scrapers import wellfound_rss  # noqa
-            results += safe("wellfound_rss",
-                            lambda: wellfound_rss.fetch(keywords, max_results=cap, focus=focus))
-        except ImportError:
-            pass
+        # Wellfound public listing (disabled: Cloudflare blocks all requests)
+        if "wellfound_rss" not in disabled_native:
+            try:
+                from scrapers import wellfound_rss  # noqa
+                results += safe("wellfound_rss",
+                                lambda: wellfound_rss.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
 
-    # Hacker News — Who Is Hiring. Cap at 20 to avoid flooding the pipeline.
+    # Hacker News — Who Is Hiring. Configurable via hn_max_results (default 100).
+    hn_cap = int(prefs.get("hn_max_results", 100))
     hn = safe("hackernews", fetch_hn_whoishiring)
-    results += hn[:20]
+    emitting = min(len(hn), hn_cap)
+    if len(hn) > hn_cap:
+        print(f"[hn] Fetched {len(hn)} jobs, emitting {emitting} (hn_max_results={hn_cap})",
+              file=sys.stderr)
+    else:
+        print(f"[hn] Fetched {len(hn)} jobs, emitting all", file=sys.stderr)
+    results += hn[:hn_cap]
 
-    # LinkedIn guest API — free, no auth, no JD but gives title/company/location/URL.
-    try:
-        from scrapers import linkedin_guest  # noqa
-        for loc in [l for l in locations[:2] if l.lower() != "remote"] or [""]:
-            results += safe(
-                f"linkedin_guest/{loc or 'all'}",
-                lambda loc=loc: linkedin_guest.fetch(keywords, loc, max_results=25, focus=focus),
-            )
-    except ImportError:
-        pass  # scraper not installed yet — skip silently
+    # LinkedIn guest API — disabled by default (soft-blocked, returns 0; use Apify on full runs)
+    if "linkedin_guest" not in disabled_native:
+        try:
+            from scrapers import linkedin_guest  # noqa
+            for loc in [l for l in locations[:2] if l.lower() != "remote"] or [""]:
+                results += safe(
+                    f"linkedin_guest/{loc or 'all'}",
+                    lambda loc=loc: linkedin_guest.fetch(keywords, loc, max_results=25, focus=focus),
+                )
+        except ImportError:
+            pass  # scraper not installed yet — skip silently
 
     # Telegram job channels — only if session file exists (opt-in after --auth).
     session_path = jobpilot_dir() / "cache" / "telegram.session"
@@ -723,7 +744,7 @@ def scrape(native_only: bool = False) -> list:
     all_jobs: list = []
 
     # 1) Native first — always free, always runs.
-    all_jobs += run_native_scrapers(focus, prefs)
+    all_jobs += run_native_scrapers(focus, prefs, actors)
 
     # 2) Apify layer — multi-slot key rotation; degrade to native-only if all exhausted.
     if not native_only:

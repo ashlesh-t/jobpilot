@@ -46,11 +46,15 @@ COLUMNS = [
     ("Salary Source", "salary_source", 14),
     ("Apply Link", "application_url", 40),
     ("Apply Type", "apply_type", 14),
+    ("Referral Contact", "referral_contact", 18),
     ("Source Board", "source_board", 14),
     ("Posted Date", "posted_date", 13),
     ("JD Summary", "jd_summary", 55),
     ("Job ID", "job_id", 18),
 ]
+
+REFERRAL_FILL = "FFF2CC"   # light amber — referral rows stand out
+REFERRAL_FONT = "7F6000"
 
 HEADER_FILL = "1F4E79"
 GREEN_FILL = "C6EFCE"
@@ -171,6 +175,8 @@ def cell_value(job: dict, key: str, row_index: int):
         return _join(job.get("your_demand") or job.get("demand_estimate"))
     if key == "why":
         return _join(job.get("why") or job.get("why_score"))
+    if key == "referral_contact":
+        return _join(job.get("referral_contact") or ("✅ yes" if job.get("has_referral") else ""))
     return _join(job.get(key))
 
 
@@ -212,6 +218,7 @@ def build_workbook(jobs: list):
         except (TypeError, ValueError):
             score = 0
         low_conf = (job.get("score_confidence") == "low")
+        has_referral = bool(job.get("has_referral"))
 
         fill = None
         font_color = None
@@ -230,6 +237,10 @@ def build_workbook(jobs: list):
             else:
                 c.alignment = Alignment(vertical="top")
 
+            # Referral rows: amber overlay unless score-colour already set
+            if has_referral and not fill:
+                c.fill = PatternFill("solid", fgColor=REFERRAL_FILL)
+
             if fill:
                 c.fill = PatternFill("solid", fgColor=fill)
                 if font_color:
@@ -246,6 +257,9 @@ def build_workbook(jobs: list):
                 c.font = Font(color="0563C1", underline="single")
             if key == "apply_type" and isinstance(value, str) and value.startswith("⚠️"):
                 c.font = Font(color="C00000", bold=True)
+            # Referral contact cell: bold amber so it catches the eye
+            if key == "referral_contact" and value:
+                c.font = Font(bold=True, color=REFERRAL_FONT)
 
         ws.row_dimensions[r].height = 60
 
