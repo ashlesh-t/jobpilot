@@ -26,27 +26,41 @@ on a schedule via the local control service (§5a).
 
 ## 3. Install
 
-Three paths, pick one:
+JobPilot is two pieces: the **Claude Code skills** (`/job-search`, `/job-setup`, …) and a
+**Python backend** (pipeline scripts + optional web UI). Pick the path that fits — all are
+cross-platform (Linux / macOS / Windows).
 
-**a. Plugin install (recommended)**
-```bash
-claude plugin install github:ashlesh-t/jobpilot
+**a. Claude Code plugin (recommended for the skills)**
 ```
+/plugin marketplace add ashlesh-t/jobpilot
+/plugin install jobpilot@jobpilot
+```
+This registers the skills in Claude Code on any OS. Then install the Python backend once with
+either (b) or (c) below so the scripts have their dependencies.
 
-**b. Clone + setup**
+**b. pipx — the backend + web UI, one command on every OS**
+```bash
+pipx install "claude-jobpilot[server]"   # or: pip install "claude-jobpilot[server]"
+jobpilot setup                            # configure data dir + secrets (cross-platform)
+jobpilot serve                            # optional local web UI → http://127.0.0.1:8787
+```
+On Arch: `yay -S claude-jobpilot` · macOS: `brew install ashlesh-t/tap/jobpilot` · Windows:
+`scoop install jobpilot` — all thin wrappers over the same package (see `packaging/`).
+
+**c. From source (contributors)**
 ```bash
 git clone https://github.com/ashlesh-t/jobpilot ~/projects/jobpilot
 cd ~/projects/jobpilot
-./setup.sh
+./setup.sh                       # Linux/macOS
+python scripts/jobpilot_setup.py # Windows (or any OS — identical, no bash needed)
 ```
-
-**c. Future `.mcpb` bundle** — a one-click `.mcpb` installer is planned; not yet available.
 
 ## 4. One-time setup
 
-**a. Run `./setup.sh`** — creates `~/.claude/job-hunt-ai/`, installs Python deps, initialises
-the SQLite cache, and runs an interactive wizard that collects your Apify token, Telegram bot
-token, and chat ID (validates each one live before saving).
+**a. Configure JobPilot** — `jobpilot setup` (or `./setup.sh` / `python scripts/jobpilot_setup.py`)
+creates `~/.claude/job-hunt-ai/`, initialises the SQLite cache (via Python's stdlib, so no
+`sqlite3` CLI is needed on Windows), and runs an interactive wizard that collects your Apify
+token, Telegram bot token, and chat ID (validates each live before saving).
 
 **b. Connect Google Drive** in Claude Desktop → Settings → Connections.
 

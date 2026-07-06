@@ -29,6 +29,17 @@ user chose — so it must never require interaction.
   mode (this is how the local service's "Full / Native" buttons work).
 - Any other text — a relevance/scoring hint applied in Step B1/B3 (e.g. "prioritise remote ML").
 
+**Repo path resolution (read this first).** Every `scripts/…` and `config/…` path in this
+skill is relative to the JobPilot **repo root**. Resolve that root once, at the start, and use
+it for every shell command *and* Read-tool call:
+- If the `CLAUDE_PLUGIN_ROOT` environment variable is set (JobPilot installed as a Claude Code
+  plugin), the repo root is `${CLAUDE_PLUGIN_ROOT}`. In shell commands write
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/apify_scraper.py"`; for Read-tool calls use that
+  absolute path.
+- Otherwise (git clone / headless service run) the repo root is the current working directory —
+  `scripts/…` and `config/…` work as written.
+Data paths under `~/.claude/job-hunt-ai/…` and `/tmp/…` are absolute and never need the prefix.
+
 ---
 
 ## Step 0 — Run mode, keyword enrichment, lessons cache
