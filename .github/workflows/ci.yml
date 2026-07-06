@@ -1,0 +1,67 @@
+name: CI
+
+# Runs on every push to main/development and on every PR into them.
+# Two guarantees:
+#   1. the test suite passes on Linux + macOS (POSIX — the pipeline uses /tmp paths)
+#   2. the package builds and the `jobpilot` CLI works on Linux + macOS + Windows
+#      (this is what the v1.6.0 cross-platform install promises)
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- Full test suite (POSIX) ---------------------------------------------
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies (core + server + pytest)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-server.txt
+      - name: Byte-compile
+        run: python -m compileall -q jobpilot scripts engines server tests
+      - name: Validate plugin manifests are valid JSON
+        run: |
+          python -c "import json; json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); print('manifests OK')"
+      - name: Run tests
+        run: pytest -q
+
+  # ---- Packaging smoke test (Linux + macOS + Windows) ----------------------
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+      - name: Install the built wheel (core deps only)
+        shell: bash
+        run: pip install dist/*.whl
+      - name: Smoke-test the jobpilot CLI
+        run: |
+          jobpilot --version
+          jobpilot doctor
