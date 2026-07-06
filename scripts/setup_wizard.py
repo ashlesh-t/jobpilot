@@ -309,7 +309,8 @@ def step_telegram_bot(existing: str) -> tuple[str, str]:
     print()
     print(f"    Open this URL in a browser (replace <TOKEN> with your bot token):")
     print(f"    {cyan('https://api.telegram.org/bot<TOKEN>/getUpdates')}")
-    print(f"    Look for  {bold('\"chat\":{\"id\":123456789}')}")
+    chat_sample = '"chat":{"id":123456789}'
+    print(f"    Look for  {bold(chat_sample)}")
     print()
 
     while True:
