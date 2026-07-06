@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-jobpilot"
+version = "1.6.0"
+description = "Automated job-hunt pipeline for Claude Code: scrape → score → tailor → notify, with an optional local web UI + scheduler."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "ashlesh-t", email = "ashleshat5@gmail.com" }]
+keywords = ["jobs", "job-search", "resume", "scraping", "automation", "claude", "telegram"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+]
+
+# Core pipeline dependencies (mirror requirements.txt).
+dependencies = [
+  "apify-client>=1.8",
+  "python-dotenv>=1.0",
+  "keyring>=25.0",
+  "requests>=2.31",
+  "python-docx>=1.1",
+  "PyPDF2>=3.0",
+  "openpyxl>=3.1",
+  "telethon>=1.36",
+  "tldextract>=5.1",
+  "httpx>=0.27",
+  "python-whois>=0.9",
+  "confusable-homoglyphs>=3.0",
+  "urlextract>=1.9",
+]
+
+[project.optional-dependencies]
+# The local control service + web UI (mirror requirements-server.txt).
+server = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "sse-starlette>=2.0",
+  "apscheduler>=3.10",
+  "claude-agent-sdk>=0.1",
+]
+tray = ["pystray>=0.19", "Pillow>=10.0"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/ashlesh-t/jobpilot"
+Repository = "https://github.com/ashlesh-t/jobpilot"
+
+[project.scripts]
+jobpilot = "jobpilot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jobpilot"]
+
+# Bundle the runtime tree inside the package so a pip/pipx install has everything on disk
+# in the same relative layout the code expects (jobpilot.paths resolves it).
+[tool.hatch.build.targets.wheel.force-include]
+"engines" = "jobpilot/bundle/engines"
+"server" = "jobpilot/bundle/server"
+"scripts" = "jobpilot/bundle/scripts"
+"skills" = "jobpilot/bundle/skills"
+"config" = "jobpilot/bundle/config"
+"schema" = "jobpilot/bundle/schema"
+"requirements.txt" = "jobpilot/bundle/requirements.txt"
+"requirements-server.txt" = "jobpilot/bundle/requirements-server.txt"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "jobpilot/", "engines/", "server/", "scripts/", "skills/", "config/", "schema/",
+  "requirements.txt", "requirements-server.txt", "README.md", "GETTING_STARTED.md",
+  "CHANGELOG.md", "LICENSE", ".claude-plugin/",
+]

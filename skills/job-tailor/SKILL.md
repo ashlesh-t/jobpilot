@@ -7,6 +7,10 @@ description: Tailor your resume to a single job and ATS-score it. Invoke for /jo
 
 Tailor the user's resume to one specific job posting.
 
+> **Repo paths:** `scripts/…` and `config/…` are relative to the JobPilot repo root. If the
+> `CLAUDE_PLUGIN_ROOT` env var is set (installed as a plugin), prefix them with it; from a git
+> clone the current directory is the root. `~/.claude/…` paths are absolute.
+
 ## Steps
 
 1. **Resolve the JD** from the argument:

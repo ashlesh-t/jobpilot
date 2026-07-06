@@ -15,6 +15,12 @@ __pycache__/
 *.pyc
 .venv/
 
+# Build artifacts (pyproject / wheel)
+dist/
+build/
+*.egg-info/
+jobpilot/bundle/
+
 # Pipeline temp files
 /tmp/jobpilot_*.json
 
@@ -25,4 +31,4 @@ venv/
 # Use .claude/* (not .claude/) so we can un-ignore settings.json
 .claude/*
 !.claude/settings.json
-.claude-plugin/
+# NOTE: .claude-plugin/ holds the committed plugin + marketplace manifest — do NOT ignore it.

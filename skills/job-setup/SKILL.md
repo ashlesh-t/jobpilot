@@ -8,6 +8,11 @@ description: One-time JobPilot configuration wizard. Invoke for /job-setup. Runs
 Configure JobPilot for the user. Run this once at install, or whenever criteria change.
 **Stop at the first failing pre-flight check** and print a single clear fix instruction.
 
+> **Repo paths:** `scripts/…` and `config/…` are relative to the JobPilot repo root. If the
+> `CLAUDE_PLUGIN_ROOT` env var is set (installed as a plugin), prefix them with it
+> (e.g. `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/jp_secrets.py"`); from a git clone the current
+> directory is the root and paths work as written. `~/.claude/…` paths are absolute.
+
 ---
 
 ## Pre-flight checks

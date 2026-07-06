@@ -8,6 +8,10 @@ description: Record outcomes for jobs you applied to (applied, rejected, intervi
 Record what happened after you applied to jobs. Keeps the feedback loop alive so
 JobPilot can learn which companies and roles are realistic for your profile.
 
+> **Repo paths:** `scripts/…` are relative to the JobPilot repo root. If the
+> `CLAUDE_PLUGIN_ROOT` env var is set (installed as a plugin), prefix them with it; from a git
+> clone the current directory is the root. `~/.claude/…` paths are absolute.
+
 ---
 
 ## Step 1 — Find recent jobs to tag

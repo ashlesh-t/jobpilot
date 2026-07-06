@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.6.0 — 2026-07-06
+
+### Release title: "Install Anywhere — Plugin, pipx & Cross-Platform Setup"
+
+Makes JobPilot genuinely installable across Linux/macOS/**Windows**, three ways, without the
+old bash-only `setup.sh` limitation.
+
+### What's new
+
+**Real Claude Code plugin** (`/plugin install`)
+- Added `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` (validated with
+  `claude plugin validate`). Users register the skills cross-platform with
+  `/plugin marketplace add ashlesh-t/jobpilot` → `/plugin install jobpilot@jobpilot`.
+- Skills now resolve repo paths via `${CLAUDE_PLUGIN_ROOT}` when installed as a plugin, and
+  fall back to the working directory from a git clone — so `scripts/…` and `config/…` work in
+  both modes.
+
+**pipx / PyPI package** (`pipx install "claude-jobpilot[server]"`)
+- New `pyproject.toml` (dist name `claude-jobpilot`, command `jobpilot`) with a `[server]`
+  extra for the web UI. The runtime tree is bundled inside the package so an installed copy has
+  everything on disk in the layout the code expects (`jobpilot/paths.py` resolves it) — no
+  import refactor.
+- New `jobpilot` CLI: `jobpilot setup` / `serve` / `doctor` / `--version`. Verified end-to-end
+  from a clean wheel install (setup builds the data dir + SQLite; serve boots the FastAPI UI).
+
+**Cross-platform setup (Windows parity)**
+- New `scripts/jobpilot_setup.py` — a stdlib-only port of `setup.sh` that creates the SQLite
+  cache with Python's `sqlite3` module (no external `sqlite3` CLI). `setup.sh` is now a thin
+  shim to it; Windows users run `python scripts/jobpilot_setup.py`.
+
+**Native package wrappers** (thin, over the one PyPI package)
+- `packaging/aur/PKGBUILD` (`yay -S claude-jobpilot`), `packaging/homebrew/jobpilot.rb`
+  (`brew install ashlesh-t/tap/jobpilot`), `packaging/scoop/jobpilot.json`
+  (`scoop install jobpilot`) — see `packaging/README.md`. Publish + verify per-OS after the
+  first PyPI release.
+
+**Release automation**
+- `.github/workflows/release.yml` publishes the sdist + wheel to PyPI on a `v*` tag via Trusted
+  Publishing (no stored token).
+
+### Notes
+- The old README `claude plugin install github:…` one-liner (which never worked — no manifest
+  existed) is replaced by the marketplace flow above.
+- PyPI name: the package is `claude-jobpilot` (the bare `jobpilot` name was taken); the
+  installed command is still `jobpilot`.
+
+---
+
 ## v1.5.1 — 2026-07-06
 
 ### Release title: "Ship It, Wired Up" (patch)

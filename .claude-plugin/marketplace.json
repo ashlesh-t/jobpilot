@@ -1,0 +1,17 @@
+{
+  "name": "jobpilot",
+  "owner": {
+    "name": "ashlesh-t",
+    "url": "https://github.com/ashlesh-t"
+  },
+  "metadata": {
+    "description": "JobPilot — an automated, resume-aware job-hunting pipeline for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "jobpilot",
+      "source": "./",
+      "description": "Automated job-hunt pipeline: scrape → score → tailor → notify. Adds /job-setup, /job-search, /job-tailor, /jobpilot-clear, /job-feedback."
+    }
+  ]
+}

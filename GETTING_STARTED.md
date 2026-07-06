@@ -28,27 +28,43 @@ You also need two free accounts: **Apify** and a **Telegram bot**. Steps 3 and 4
 
 ---
 
-## 2. Get the code and run setup
+## 2. Install JobPilot
 
-```bash
-# put the repo here
-mkdir -p ~/projects && cd ~/projects
-git clone https://github.com/ashlesh-t/jobpilot
-cd jobpilot
+Two pieces install independently, and everything below works on **Linux, macOS, and Windows**.
 
-# one-time setup: creates ~/.claude/job-hunt-ai/, installs deps, inits the database, syncs slash commands
-chmod +x setup.sh
-./setup.sh
+**a. Register the Claude Code skills** (in Claude Code / Claude Desktop):
+```
+/plugin marketplace add ashlesh-t/jobpilot
+/plugin install jobpilot@jobpilot
 ```
 
-`setup.sh` creates your **data directory** at `~/.claude/job-hunt-ai/` (kept separate from the
-code), installs the core Python dependencies from **`requirements.txt`**, and syncs the slash
-commands to `.claude/commands/`. Re-run `./setup.sh` anytime you pull an update — it's idempotent.
+**b. Install the Python backend** — pick one:
 
-> **Two requirements files.** `requirements.txt` holds the core pipeline dependencies that
-> `setup.sh` installs — that's all you need for the chat-driven `/job-setup` and `/job-search`
-> flows. The optional local web UI / control service has its own, heavier dependencies in
-> **`requirements-server.txt`**; install those only if you use it (see §11).
+*Easiest (any OS):* [pipx](https://pipx.pypa.io) gives an isolated `jobpilot` command.
+```bash
+pipx install "claude-jobpilot[server]"   # omit [server] if you won't use the web UI
+jobpilot setup                            # configure data dir + secrets (cross-platform)
+```
+On Arch you can instead `yay -S claude-jobpilot`; macOS `brew install ashlesh-t/tap/jobpilot`;
+Windows `scoop install jobpilot` — all install the same package.
+
+*From source (contributors):*
+```bash
+mkdir -p ~/projects && cd ~/projects
+git clone https://github.com/ashlesh-t/jobpilot && cd jobpilot
+./setup.sh                        # Linux/macOS
+python scripts/jobpilot_setup.py  # Windows — identical, no bash or sqlite3 CLI needed
+```
+
+Setup creates your **data directory** at `~/.claude/job-hunt-ai/` (kept separate from the code),
+initialises the SQLite cache using Python's standard library, and syncs the slash commands.
+Re-run it anytime — it's idempotent.
+
+> **Two requirements files (source installs).** `requirements.txt` holds the core pipeline
+> dependencies — all you need for the chat-driven `/job-setup` and `/job-search` flows. The
+> optional local web UI / control service has its own, heavier dependencies in
+> **`requirements-server.txt`** (§11). With pipx these map to the `[server]` extra:
+> `pipx install "claude-jobpilot[server]"`.
 
 ---
 
