@@ -150,9 +150,10 @@ def _effective(job: dict) -> float:
 
 
 def build_digest(jobs: list, total_found: int, survived_filter: int, tailored_count: int,
-                 apify_skipped: bool = False) -> str:
+                 apify_skipped: bool = False, run_mode: str = "full") -> str:
     date = datetime.now(IST).strftime("%Y-%m-%d")
-    lines = [f"JobPilot — {date}, {slot_now()}", DIVIDER, "Top matches:"]
+    mode_label = "native-only" if run_mode == "native" else "full (native + Apify)"
+    lines = [f"JobPilot — {date}, {slot_now()} [{mode_label}]", DIVIDER, "Top matches:"]
     top = sorted(jobs, key=_effective, reverse=True)[:5]
     for rank, job in enumerate(top, 1):
         url = str(job.get("application_url", "")).lower()
@@ -179,9 +180,12 @@ def build_digest(jobs: list, total_found: int, survived_filter: int, tailored_co
         f"{total_found} found -> {survived_filter} matched -> "
         f"{tailored_count} resumes tailored"
     )
-    if apify_skipped:
-        lines.append("LinkedIn/Glassdoor/Naukri skipped — Apify credits exhausted.")
-    lines.append("Report + tailored resumes uploaded to Drive.")
+    if run_mode == "native":
+        lines.append("⚠️ Native-only run: LinkedIn/Glassdoor/Naukri/Cutshort/Wellfound skipped.")
+        lines.append("   Next run will be full (native + Apify).")
+    elif apify_skipped:
+        lines.append("⚠️ Apify credits exhausted — LinkedIn/Glassdoor/Naukri skipped this run.")
+    lines.append("Report + tailored resumes sent via Telegram.")
     lines.append(DIVIDER)
     return "\n".join(lines)
 
@@ -240,6 +244,7 @@ def main() -> None:
     digest_override = _arg("--digest")
     report_override = _arg("--report") or _arg("--xlsx") or _arg("--csv")
     apify_skipped = "--apify-skipped" in args
+    run_mode = _arg("--run-mode") or "full"
 
     report_path = Path(os.path.expanduser(report_override)) if report_override else latest_report()
     jobs = load_jobs_for_digest()
@@ -261,7 +266,7 @@ def main() -> None:
     if tailored:
         print(f"[telegram] sent {tailored} tailored resume(s)")
 
-    digest = digest_override or build_digest(jobs, raw, survived, tailored, apify_skipped)
+    digest = digest_override or build_digest(jobs, raw, survived, tailored, apify_skipped, run_mode)
     try:
         send_message(digest)
         print("[telegram] digest sent")

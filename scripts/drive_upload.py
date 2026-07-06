@@ -1,8 +1,10 @@
-"""Google Drive uploader — manifest approach.
+"""Google Drive uploader — DEPRECATED (issue #12).
 
-Writes a JSON manifest listing files to upload. The calling Claude skill reads this manifest
-and uploads each file via the Google Drive MCP connector (MCP tools cannot be called from
-Python directly).
+Drive upload is removed from the pipeline because base64 encoding of files > ~10 KB over the
+MCP boundary is truncated, producing invalid payloads that the Drive MCP rejects.
+
+Telegram is now the sole delivery mechanism (XLSX report + tailored resumes).
+This file is kept for reference only and is no longer called by the /job-search skill.
 """
 from __future__ import annotations
 

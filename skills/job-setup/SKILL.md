@@ -164,10 +164,13 @@ have **at most 4 explicit options** (the tool auto-adds "Other" for free-text, g
   (user types DevOps, Data Engineering etc. via "Other"). Store as `role_types`.
 
 - **Experience range** — single-select, max 3 options:
-  - 0–1 yr fresher — `experience_years = 0`; no hard CTC filter
-  - 1–2 yr — `experience_years = 1`
-  - 2–3 yr — `experience_years = 2`
+  - 0–1 yr fresher — `experience_years = 0`; CTC filter is soft (flag, not drop)
+  - 1–2 yr — `experience_years = 1`; CTC filter is soft (flag, not drop)
+  - 2–3 yr — `experience_years = 2`; CTC filter is soft (flag, not drop)
   Store the lower bound as integer `experience_years`.
+  Note: for experience_years ≤ 2 the CTC filter never hard-drops jobs. Jobs below
+  `target_ctc_min_lpa` are kept but tagged `ctc_flag: "below_target"` for Claude
+  to use as a deprioritisation signal during scoring — not a gate.
 
 **Batch 3a — CTC, Availability, Degree, Tailoring Threshold** (one AskUserQuestion call, up to 4 questions)
 
@@ -175,9 +178,13 @@ Use the AskUserQuestion tool with these four questions together:
 
 - **"What is your minimum target CTC?"**
   Header: `Min CTC`
-  Options: `< 3 LPA`, `3–6 LPA`, `6–10 LPA`, `10+ LPA`
+  Options: `< 6 LPA`, `6-10 LPA`, `10+ LPA`, `15+ LPA` , `20+LPA` ,`30+LPA`,`40+ LPA` 
   (+ Other for exact figure). Parse the integer from the answer and store as `target_ctc_min_lpa`.
-  Note: for freshers (`experience_years == 0`) CTC is not a hard filter — it's used for scoring reference only.
+  Note: for early-career candidates (experience_years ≤ 2) `target_ctc_min_lpa` is a
+  **soft signal**, not a hard gate. Jobs below this threshold are kept and tagged
+  `ctc_flag: "below_target"` so Claude can deprioritise them during scoring without
+  eliminating potentially good roles where CTC isn't listed or is negotiable.
+  Hard CTC filtering only applies once experience_years > 2.
 
 - **"When can you start? (availability)"**
   Header: `Availability`

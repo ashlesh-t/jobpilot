@@ -21,5 +21,7 @@
   "score_threshold": 65,
   "top_n_tailor": 5,
   "top_n_report": 50,
+  "hn_max_results": 100,
+  "per_source_cap": 20,
   "schedule_slots_ist": ["09:30", "14:00"]
 }
