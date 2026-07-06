@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from secrets import get_secret_optional, set_secret  # noqa: E402
+from jp_secrets import get_secret_optional, set_secret  # noqa: E402
 
 import requests
 

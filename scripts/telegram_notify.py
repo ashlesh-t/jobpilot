@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from secrets import get_secret, get_secret_optional  # noqa: E402
+from jp_secrets import get_secret, get_secret_optional  # noqa: E402
 
 import requests
 

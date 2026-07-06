@@ -23,5 +23,11 @@
   "top_n_report": 50,
   "hn_max_results": 100,
   "per_source_cap": 20,
-  "schedule_slots_ist": ["09:30", "14:00"]
+  "schedule_slots_ist": ["09:30", "14:00"],
+  "engine": {
+    "provider": "claude_code",
+    "model": "",
+    "permission_mode": "acceptEdits"
+  },
+  "notify_channels": ["telegram"]
 }

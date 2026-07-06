@@ -56,7 +56,7 @@ def _load_config() -> dict:
 def _load_secrets() -> tuple[int | None, str | None]:
     """Return (api_id, api_hash) from secrets store."""
     try:
-        from secrets import get_secret_optional  # noqa
+        from jp_secrets import get_secret_optional  # noqa
         api_id_raw = get_secret_optional("TELEGRAM_API_ID")
         api_hash = get_secret_optional("TELEGRAM_API_HASH")
         api_id = int(api_id_raw) if api_id_raw else None

@@ -9,7 +9,7 @@
       "Bash(python3 scripts/drive_upload.py*)",
       "Bash(python3 scripts/resume_tailor.py*)",
       "Bash(python3 scripts/resume_parser.py*)",
-      "Bash(python3 scripts/secrets.py*)",
+      "Bash(python3 scripts/jp_secrets.py*)",
       "Bash(python3 scripts/scrapers/telegram_channels.py*)",
       "Bash(python3 scripts/feedback.py*)",
       "Bash(python3 -c *)",

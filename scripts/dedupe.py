@@ -13,6 +13,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
+
 RAW_IN = "/tmp/jobpilot_raw.json"
 DEDUPED_OUT = "/tmp/jobpilot_deduped.json"
 
@@ -107,6 +110,11 @@ def main() -> int:
         f"Dedupe: {before} raw -> {after} kept "
         f"({removed_seen} already-seen, {removed_batch} in-batch duplicates) -> {DEDUPED_OUT}"
     )
+    run_events.emit("dedupe", "done",
+                    f"{before} raw -> {after} kept "
+                    f"({removed_seen} seen, {removed_batch} in-batch dupes)",
+                    before=before, after=after,
+                    removed_seen=removed_seen, removed_batch=removed_batch)
     return after
 
 

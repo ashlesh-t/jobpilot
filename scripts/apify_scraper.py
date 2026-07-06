@@ -28,8 +28,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scrapers"))
-from secrets import get_secret_optional, set_secret  # noqa: E402
+from jp_secrets import get_secret_optional, set_secret  # noqa: E402
 from scrapers._common import make_job_id  # noqa: E402
+import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 RAW_OUT = "/tmp/jobpilot_raw.json"
@@ -526,9 +527,13 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
         try:
             jobs = fn()
             print(f"[native] {label}: {len(jobs)} jobs", file=sys.stderr)
+            run_events.emit("scrape", "progress", f"{label}: {len(jobs)} jobs",
+                            source=label, count=len(jobs), layer="native")
             return jobs
         except Exception as exc:  # noqa: BLE001
             print(f"[native] {label} failed: {exc}", file=sys.stderr)
+            run_events.emit("scrape", "error", f"{label} failed: {exc}",
+                            source=label, count=0, layer="native")
             return []
 
     # Per-source cap — prevents any single source from flooding the pipeline.
@@ -743,6 +748,10 @@ def scrape(native_only: bool = False) -> list:
 
     all_jobs: list = []
 
+    run_events.emit("scrape", "started",
+                    f"scraping (focus={focus}, mode={'native-only' if native_only else 'full'})",
+                    focus=focus, native_only=native_only)
+
     # 1) Native first — always free, always runs.
     all_jobs += run_native_scrapers(focus, prefs, actors)
 
@@ -775,6 +784,9 @@ def scrape(native_only: bool = False) -> list:
 
             all_jobs += apify_jobs
             apify_ran = True
+            run_events.emit("scrape", "progress",
+                            f"apify slot {slot}: {len(apify_jobs)} jobs",
+                            source="apify", count=len(apify_jobs), layer="apify", slot=slot)
             # Persist any newly discovered exhausted slots (e.g. secondary slots that failed)
             run_state["exhausted_slots"] = [s for s in exhausted if s != slot]
             save_run_state(run_state)
@@ -809,6 +821,8 @@ def main() -> int:
         by_board[j["source_board"]] = by_board.get(j["source_board"], 0) + 1
     breakdown = ", ".join(f"{k}={v}" for k, v in sorted(by_board.items()))
     print(f"Scraped {len(jobs)} raw jobs ({breakdown}) -> {RAW_OUT}")
+    run_events.emit("scrape", "done", f"{len(jobs)} raw jobs ({breakdown})",
+                    total=len(jobs), by_board=by_board)
     return len(jobs)
 
 
