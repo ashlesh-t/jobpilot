@@ -273,6 +273,43 @@ def main() -> None:
     except Exception as exc:
         print(f"[telegram] digest send failed: {exc}", file=sys.stderr)
 
+    fan_out_extra_channels(digest, report_path)
+
+
+def fan_out_extra_channels(digest: str, report_path: Path | None) -> None:
+    """Deliver the same digest + report + resumes to any non-Telegram channels
+    configured in preferences.notify_channels (e.g. Discord).
+
+    Telegram is handled above by this script directly; here we only cover the
+    *additional* channels so the UI's channel toggles take effect on real runs.
+    Never raises — an extra-channel failure must not affect the Telegram delivery.
+    """
+    try:
+        prefs = json.loads((jobpilot_dir() / "options" / "preferences.json").read_text())
+    except Exception:
+        return
+    channels = [c for c in (prefs.get("notify_channels") or []) if c != "telegram"]
+    if not channels:
+        return
+    try:
+        import notify  # scripts/notify package
+    except Exception as exc:
+        print(f"[notify] extra channels requested but notify package unavailable: {exc}",
+              file=sys.stderr)
+        return
+
+    documents: list[tuple] = []
+    if report_path and report_path.exists():
+        documents.append((str(report_path), f"JobPilot report — {report_path.name}"))
+    tailored_dir = jobpilot_dir() / "resumes" / "tailored"
+    if tailored_dir.exists():
+        for pdf in sorted(tailored_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime):
+            documents.append((str(pdf), f"Tailored resume: {pdf.stem}"))
+
+    results = notify.fan_out(channels, digest=digest, documents=documents)
+    for chan, outcome in results.items():
+        print(f"[notify] {chan}: {outcome}")
+
 
 if __name__ == "__main__":
     main()

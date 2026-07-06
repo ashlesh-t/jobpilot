@@ -1,0 +1,21 @@
+# Optional local control service + web UI (server/).
+# Install only if you run `python -m server`:
+#   pip install -r requirements-server.txt
+# The core chat-driven pipeline (requirements.txt) does NOT need any of these.
+
+fastapi>=0.110
+uvicorn[standard]>=0.27
+sse-starlette>=2.0
+apscheduler>=3.10
+
+# Metered engine only (Anthropic API). The default Claude Code subscription engine
+# uses the `claude` CLI instead and does NOT need this. Safe to omit if it won't
+# resolve on your platform — the engine reports itself unavailable and is greyed out.
+claude-agent-sdk>=0.1
+
+# Optional tray launcher: `python -m server.tray`
+pystray>=0.19
+Pillow>=10.0
+
+# Test suite
+pytest>=8.0

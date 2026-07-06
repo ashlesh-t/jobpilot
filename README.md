@@ -74,8 +74,8 @@ you pick an execution engine, wires up Discord/Telegram in the browser, and show
 harness-style view** of each run (stages lighting up, per-source counts, the final digest).
 
 ```bash
-pip install -r requirements.txt      # installs fastapi/uvicorn/apscheduler/…
-python -m server                     # → http://127.0.0.1:8787
+pip install -r requirements-server.txt   # fastapi/uvicorn/apscheduler/… (separate from core)
+python -m server                         # → http://127.0.0.1:8787
 ```
 
 - **Engine choice (Setup tab).** *Claude Code* runs the pipeline under your Pro/Max
