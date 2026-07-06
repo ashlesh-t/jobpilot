@@ -4,7 +4,7 @@
 # JobPilot — Claude Code plugin manifest
 name = "jobpilot"
 display_name = "JobPilot"
-version = "0.1.0"
+version = "1.5.1"
 description = "Automated job-hunt pipeline: scrape -> score -> notify via Telegram"
 author = "Ashlesh"
 license = "MIT"

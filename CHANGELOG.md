@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.5.1 — 2026-07-06
+
+### Release title: "Ship It, Wired Up" (patch)
+
+Post-release audit fixes for the v1.5.0 shipping layer. No breaking changes.
+
+### Fixes
+- **Discord now works on real runs.** The delivery path (`scripts/telegram_notify.py`,
+  called by `/job-search` step B7) previously only sent to Telegram — the `notify_channels`
+  Discord toggle in the UI had no effect on an actual run. It now fans the same digest +
+  XLSX report + tailored resumes out to every non-Telegram channel in `notify_channels`,
+  guarded so an extra-channel failure never affects Telegram delivery.
+- **`setup.sh` no longer risks breaking on optional service deps.** The FastAPI/uvicorn/
+  APScheduler/`claude-agent-sdk` dependencies were moved out of `requirements.txt` into a
+  new **`requirements-server.txt`**, so the core chat-driven install can't fail because an
+  optional service dependency won't resolve. Install the service with
+  `pip install -r requirements-server.txt`.
+- **Anthropic API engine no longer hardcodes a model.** `claude_api` defaulted to a fixed
+  model id and passed it unconditionally; an invalid id would have broken every metered run.
+  It now uses the Agent SDK's default and only pins a model if `preferences.engine.model`
+  is set explicitly.
+- **`.env.example` refreshed** — removed the stale Google-Drive-upload service-account entry
+  (Drive upload was removed in v1.4-era issue #12) and added the new optional secrets:
+  `ANTHROPIC_API_KEY`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`,
+  `GEMINI_API_KEY`.
+- **`plugin.toml` version** bumped `0.1.0` → `1.5.1` (it had never tracked the releases).
+- Docs updated to install the service from `requirements-server.txt`.
+
+### Testing
+Adds `tests/test_delivery.py` (fan-out excludes Telegram, forwards the digest, no-ops when
+only Telegram is configured, and never raises on missing prefs). Full suite now 20 tests, all
+green with no LLM or network.
+
+---
+
 ## v1.5.0 — 2026-07-06
 
 ### Release title: "Ship It — Local Automation Service, Web UI & Multi-Engine"

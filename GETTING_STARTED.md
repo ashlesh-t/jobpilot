@@ -42,8 +42,13 @@ chmod +x setup.sh
 ```
 
 `setup.sh` creates your **data directory** at `~/.claude/job-hunt-ai/` (kept separate from the
-code), installs Python dependencies, and syncs the slash commands to `.claude/commands/`. Re-run
-`./setup.sh` anytime you pull an update — it's idempotent.
+code), installs the core Python dependencies from **`requirements.txt`**, and syncs the slash
+commands to `.claude/commands/`. Re-run `./setup.sh` anytime you pull an update — it's idempotent.
+
+> **Two requirements files.** `requirements.txt` holds the core pipeline dependencies that
+> `setup.sh` installs — that's all you need for the chat-driven `/job-setup` and `/job-search`
+> flows. The optional local web UI / control service has its own, heavier dependencies in
+> **`requirements-server.txt`**; install those only if you use it (see §11).
 
 ---
 
@@ -243,8 +248,8 @@ harness-style view** of each run.
 
 ```bash
 cd ~/projects/jobpilot
-pip install -r requirements.txt      # adds fastapi / uvicorn / apscheduler / …
-python -m server                     # open http://127.0.0.1:8787
+pip install -r requirements-server.txt   # fastapi / uvicorn / apscheduler / … (separate from core deps)
+python -m server                         # open http://127.0.0.1:8787
 ```
 
 - **Setup tab** — choose the engine. *Claude Code* runs under your Pro/Max subscription (no
@@ -271,7 +276,7 @@ python -m server                     # open http://127.0.0.1:8787
 | Claude asks me questions during /job-setup | This is expected. Claude is reading your resume and clarifying missing details. Answer them for a complete profile. |
 | `tectonic: command not found` | Install tectonic, or it falls back to DOCX automatically. |
 | Digest sent but no report/resumes attached | The XLSX/resumes are sent as Telegram documents right before the digest — check the bot chat for the file messages. On Discord, files > 25 MB are rejected by the webhook. |
-| Control service won't start | `pip install -r requirements.txt` (needs fastapi/uvicorn); the port defaults to 8787 — set `JOBPILOT_PORT` if it's taken. |
+| Control service won't start | `pip install -r requirements-server.txt` (needs fastapi/uvicorn); the port defaults to 8787 — set `JOBPILOT_PORT` if it's taken. |
 | Want to re-see old jobs | Run `/jobpilot-clear` (type CONFIRM) to wipe the seen-job cache. |
 | profile.json looks wrong (bad education, empty projects) | Run `/job-setup` again. Claude will re-read the resume and ask you to correct it. |
 

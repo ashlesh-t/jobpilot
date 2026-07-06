@@ -20,7 +20,6 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
 
 ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"]
-DEFAULT_MODEL = "claude-fable-5"
 
 
 class ClaudeApiEngine(RunEngine):
@@ -29,7 +28,10 @@ class ClaudeApiEngine(RunEngine):
     metered = True
 
     def __init__(self, model: str | None = None, permission_mode: str = "acceptEdits"):
-        self.model = model or DEFAULT_MODEL
+        # Empty → let the Agent SDK pick its default model. Set an explicit id in
+        # preferences.engine.model only if you want to pin one; passing an invalid
+        # id would otherwise break every run.
+        self.model = (model or "").strip()
         self.permission_mode = permission_mode
 
     # ------------------------------------------------------------------ #
@@ -75,19 +77,22 @@ class ClaudeApiEngine(RunEngine):
 
         from claude_agent_sdk import ClaudeAgentOptions, query  # noqa
 
-        options = ClaudeAgentOptions(
+        opt_kwargs = dict(
             system_prompt=self._system_prompt(),
             allowed_tools=ALLOWED_TOOLS,
             permission_mode=self.permission_mode,
             cwd=str(REPO_DIR),
-            model=self.model,
         )
+        if self.model:                       # only pin a model if explicitly configured
+            opt_kwargs["model"] = self.model
+        options = ClaudeAgentOptions(**opt_kwargs)
         prompt = (
             f"Run the {program} pipeline now, end to end, for the configured user. "
             "Follow the system prompt's steps exactly."
         )
 
-        on_event(RunEvent("log", "started", f"agent-sdk model={self.model}", origin="engine"))
+        on_event(RunEvent("log", "started",
+                          f"agent-sdk model={self.model or 'sdk-default'}", origin="engine"))
         final_text = ""
         try:
             async for message in query(prompt=prompt, options=options):
