@@ -15,7 +15,7 @@ Configure JobPilot for the user. Run this once at install, or whenever criteria 
 ### A. Secrets check
 Run via bash:
 ```bash
-python3 scripts/secrets.py APIFY_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+python3 scripts/jp_secrets.py APIFY_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 ```
 If any key prints `MISSING`:
 > "Some required secrets are not set. Run `./setup.sh` from the jobpilot directory
@@ -317,7 +317,7 @@ Output the following instructions as plain chat text (not in AskUserQuestion —
 > ```bash
 > cd ~/my_works/jobpilot && python3 -c "
 > import sys; sys.path.insert(0, 'scripts')
-> from secrets import set_secret
+> from jp_secrets import set_secret
 > set_secret('TELEGRAM_API_ID', '<YOUR_API_ID>')
 > set_secret('TELEGRAM_API_HASH', '<YOUR_API_HASH>')
 > print('Secrets saved.')
@@ -326,7 +326,7 @@ Output the following instructions as plain chat text (not in AskUserQuestion —
 >
 > **Windows** — run in Command Prompt or PowerShell:
 > ```bat
-> cd %USERPROFILE%\my_works\jobpilot && python -c "import sys; sys.path.insert(0, 'scripts'); from secrets import set_secret; set_secret('TELEGRAM_API_ID', '<YOUR_API_ID>'); set_secret('TELEGRAM_API_HASH', '<YOUR_API_HASH>'); print('Secrets saved.')"
+> cd %USERPROFILE%\my_works\jobpilot && python -c "import sys; sys.path.insert(0, 'scripts'); from jp_secrets import set_secret; set_secret('TELEGRAM_API_ID', '<YOUR_API_ID>'); set_secret('TELEGRAM_API_HASH', '<YOUR_API_HASH>'); print('Secrets saved.')"
 > ```
 >
 > Replace `<YOUR_API_ID>` with the number and `<YOUR_API_HASH>` with the hex string from my.telegram.org.

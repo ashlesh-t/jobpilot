@@ -16,6 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
+
 DEDUPED_IN = "/tmp/jobpilot_deduped.json"
 FILTERED_OUT = "/tmp/jobpilot_filtered.json"
 
@@ -289,6 +292,12 @@ def main() -> int:
         f"seen={dropped_seen} location={reasons['location']} expired={reasons['expired']} "
         f"exp={reasons['experience']} ctc={reasons['ctc_company']}{soft_note} → {FILTERED_OUT}"
     )
+    run_events.emit("filter", "done",
+                    f"{len(jobs)} in -> {len(kept)} kept "
+                    f"(seen={dropped_seen}, loc={reasons['location']}, "
+                    f"exp={reasons['experience']}, ctc={reasons['ctc_company']})",
+                    kept=len(kept), dropped_seen=dropped_seen, reasons=reasons,
+                    soft_ctc_flagged=soft_ctc_flagged)
     return len(kept)
 
 

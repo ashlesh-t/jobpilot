@@ -8,8 +8,10 @@ before, follow this top to bottom and you'll have JobPilot running in ~15 minute
 ## 0. What you'll end up with
 
 A scheduled task that, once a day, quietly scrapes multiple job sources, has Claude score
-each posting against your resume with real judgment, and sends you a Telegram message with
-your top matches plus a CSV. You do nothing day-to-day except read Telegram.
+each posting against your resume with real judgment, and sends you a Telegram (or Discord)
+message with your top matches, a styled XLSX report, and tailored resumes. You do nothing
+day-to-day except read the digest. Prefer a UI? A local web app (§11) does the same with a
+live view of each run.
 
 ---
 
@@ -113,7 +115,7 @@ bot token, and chat ID, validated each one, and saved them to `~/.claude/job-hun
 To verify everything was stored:
 ```bash
 cd ~/projects/jobpilot
-python3 scripts/secrets.py
+python3 scripts/jp_secrets.py
 # Expect: APIFY_TOKEN: FOUND / TELEGRAM_BOT_TOKEN: FOUND / TELEGRAM_CHAT_ID: FOUND
 ```
 
@@ -203,17 +205,20 @@ Remote OK and We Work Remotely are always active at no cost — no setup needed.
 
 ---
 
-## 9. (Optional) Google Drive uploads
+## 9. Delivery: Telegram (and optionally Discord)
 
-If you already connected Google Drive in step 6a, Drive uploads are automatic — `/job-search`
-uses the Drive MCP connector to push the CSV and tailored resumes to a folder called
-`JobPilot Reports` in your Drive. Nothing extra to configure.
+Every run delivers the same package — a plain-text digest of the top matches, the styled XLSX
+report, and any tailored resumes — straight to your chat. Telegram is on by default. To add
+Discord, paste a channel webhook URL in the control-service UI (§11) or set the
+`DISCORD_WEBHOOK_URL` secret, then add `"discord"` to `notify_channels` in preferences.
 
-If you skipped Drive, that's fine — you'll still get the CSV and resumes via Telegram.
+> There is no Google Drive upload step — that was removed (base64 over the MCP boundary
+> truncated files > ~10 KB). Google Drive is still used only as the *source* of your resume
+> (step 6). Delivery is entirely via Telegram/Discord.
 
 ---
 
-## 10. Schedule it
+## 10. Schedule it (chat-driven)
 
 In Claude Desktop: **Schedule → New Task**, set it to **09:30 IST, weekdays**, and paste:
 
@@ -221,25 +226,52 @@ In Claude Desktop: **Schedule → New Task**, set it to **09:30 IST, weekdays**,
 Run the JobPilot job search pipeline. Load skills from ~/projects/jobpilot. Execute /job-search fully autonomously:
 1. Run scripts/apify_scraper.py, dedupe.py, filter.py via bash (Layer A — no LLM)
 2. Claude scores, filters, and researches salary on survivors (Layer B — no Python scripts needed)
-3. Write CSV report, tailor resumes for top matches, push to Telegram and Google Drive
+3. Write the XLSX report, tailor resumes for top matches, push to Telegram/Discord
 Do not pause for confirmation. If any script fails, log the error and continue.
 ```
 
-One run per day keeps you inside Apify's free tier.
+One full run per day keeps you inside Apify's free tier (the pipeline alternates full ⇄ native
+automatically).
 
 ---
 
-## 11. Troubleshooting
+## 11. (Optional) Local control service + web UI
+
+Prefer buttons over a chat? Run JobPilot as a small local web app that schedules runs, lets you
+pick an execution engine, wires up Discord/Telegram in the browser, and shows a **live,
+harness-style view** of each run.
+
+```bash
+cd ~/projects/jobpilot
+pip install -r requirements.txt      # adds fastapi / uvicorn / apscheduler / …
+python -m server                     # open http://127.0.0.1:8787
+```
+
+- **Setup tab** — choose the engine. *Claude Code* runs under your Pro/Max subscription (no
+  per-token cost, needs the `claude` CLI logged in). *Anthropic API* runs it metered
+  (`ANTHROPIC_API_KEY`). *Gemini/Antigravity* is interface-ready for a later release. Any engine
+  that isn't usable is greyed out with the reason. Enter secrets and search preferences here too.
+- **Live Run tab** — press "Run now" and watch each stage light up with per-source counts, then
+  the top matches and the exact digest.
+- **Schedule tab** — add IST time slots; `python -m server install-service` writes a
+  systemd/launchd unit so it survives reboot.
+- **Connections tab** — Telegram sign-in is a phone → OTP form (no terminal); Discord is a
+  webhook paste + test; a ✅/⚠️/❌ health check shows which sources are live.
+
+---
+
+## 12. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `Secret 'X' not found` | The value isn't in `~/.claude/job-hunt-ai/.env` or the keyring. Re-check step 5; run `python3 scripts/secrets.py`. |
+| `Secret 'X' not found` | The value isn't in `~/.claude/job-hunt-ai/.env` or the keyring. Re-check step 5; run `python3 scripts/jp_secrets.py`. |
 | Telegram test sends nothing | Wrong `TELEGRAM_CHAT_ID`, or you never messaged the bot first (step 4b). |
 | `0 raw jobs scraped` | Missing/invalid `APIFY_TOKEN`, exhausted Apify credit, or the actor IDs in `config/actors.json` changed — verify them in the Apify Store. Free sources (Remote OK, WWR) still run without a token. |
 | Scores look very low | `profile_verified` is likely `false` in `profile.json` — run `/job-setup` and let Claude read your resume interactively. Scores depend on a complete profile. |
 | Claude asks me questions during /job-setup | This is expected. Claude is reading your resume and clarifying missing details. Answer them for a complete profile. |
 | `tectonic: command not found` | Install tectonic, or it falls back to DOCX automatically. |
-| Drive upload skipped | Google Drive not connected in Claude Desktop. Go to Settings → Connections and connect it. |
+| Digest sent but no report/resumes attached | The XLSX/resumes are sent as Telegram documents right before the digest — check the bot chat for the file messages. On Discord, files > 25 MB are rejected by the webhook. |
+| Control service won't start | `pip install -r requirements.txt` (needs fastapi/uvicorn); the port defaults to 8787 — set `JOBPILOT_PORT` if it's taken. |
 | Want to re-see old jobs | Run `/jobpilot-clear` (type CONFIRM) to wipe the seen-job cache. |
 | profile.json looks wrong (bad education, empty projects) | Run `/job-setup` again. Claude will re-read the resume and ask you to correct it. |
 
@@ -257,5 +289,5 @@ One run per day keeps you inside Apify's free tier.
 ├── resumes/base.pdf                 # your master resume (cached from Drive)
 ├── resumes/base.tex                 # LaTeX source (optional, enables PDF tailoring)
 ├── resumes/tailored/                # generated tailored resumes (PDF or DOCX)
-└── reports/YYYY-MM-DD-<slot>.csv    # generated reports
+└── reports/YYYY-MM-DD-<slot>-<mode>.xlsx  # generated reports
 ```

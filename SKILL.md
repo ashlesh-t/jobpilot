@@ -1,13 +1,15 @@
 ---
 name: jobpilot
-description: Top-level overview of the JobPilot automated job-hunt pipeline. Scrapes ~10 job sources via Apify, scores postings against your resume, writes a CSV report, tailors resumes for top matches, and pushes a Telegram digest on a schedule.
+description: Top-level overview of the JobPilot automated job-hunt pipeline. Scrapes ~12 job sources (native + Apify), scores postings against your resume, writes a styled XLSX report, tailors resumes for top matches, and pushes a Telegram/Discord digest on a schedule. Optionally driven headless by a local control service + web UI.
 ---
 
 # JobPilot
 
 JobPilot is a personal, automated job-hunting pipeline for Claude Code. It scrapes job
-boards via Apify, scores each posting against your resume, generates a CSV report, tailors
-resumes for the strongest matches, and pushes a Telegram notification on a scheduled cadence.
+boards (free native scrapers first, Apify for anti-bot sources), scores each posting against
+your resume, generates a styled XLSX report, tailors resumes for the strongest matches, and
+pushes a Telegram/Discord notification on a scheduled cadence. It can run from a Claude Code
+chat or headless via the local control service (`server/`, see the README).
 
 ## Two-layer architecture (token strategy)
 
@@ -40,12 +42,12 @@ enough to live inside a Pro subscription.
   - `cache/jobs.sqlite` — seen-jobs + score cache
   - `cache/profile.json` — parsed resume
   - `resumes/` — `base.tex` / `base.docx` and `tailored/` outputs
-  - `reports/` — generated CSVs
+  - `reports/` — generated XLSX reports
   - `.env` — secrets
 
 ## Rule for every Layer-A script
 
 Scripts under `scripts/` named `apify_scraper.py`, `dedupe.py`, and `filter.py` run via bash
 and must never invoke the LLM. They only read config, call REST APIs, and read/write the cache
-and `/tmp` JSON files. Secrets are always loaded through `scripts/secrets.py`, never read from
+and `/tmp` JSON files. Secrets are always loaded through `scripts/jp_secrets.py`, never read from
 env vars directly.

@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JobPilot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'media', theme: { extend: {
+      fontFamily: { sans: ['Inter','ui-sans-serif','system-ui','sans-serif'] },
+      colors: { brand: { 50:'#eef2ff',100:'#e0e7ff',400:'#818cf8',500:'#6366f1',600:'#4f46e5',700:'#4338ca' } }
+    }}};
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak]{display:none!important}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    ::-webkit-scrollbar{width:9px;height:9px}
+    ::-webkit-scrollbar-thumb{background:rgba(120,120,140,.35);border-radius:6px}
+    .fade-in{animation:fi .25s ease}
+    @keyframes fi{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  </style>
+</head>
+<body class="h-full bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200 font-sans antialiased">
+<div x-data="app()" x-init="init()" x-cloak class="min-h-full">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-20 backdrop-blur bg-white/80 dark:bg-slate-950/80 border-b border-slate-200 dark:border-slate-800">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center gap-4">
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-indigo-700 grid place-items-center text-white text-lg shadow-lg shadow-brand-500/30">✈</div>
+        <div>
+          <div class="font-semibold leading-none">JobPilot</div>
+          <div class="text-[11px] text-slate-400 leading-none mt-0.5">local control</div>
+        </div>
+      </div>
+      <nav class="ml-6 flex gap-1">
+        <template x-for="t in tabs" :key="t.id">
+          <button @click="tab=t.id"
+            class="px-3.5 py-1.5 rounded-lg text-sm font-medium transition"
+            :class="tab===t.id ? 'bg-brand-600 text-white shadow' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'">
+            <span x-text="t.label"></span>
+          </button>
+        </template>
+      </nav>
+      <div class="ml-auto flex items-center gap-2 text-xs">
+        <span class="w-2 h-2 rounded-full" :class="health?'bg-emerald-500':'bg-rose-500'"></span>
+        <span class="text-slate-400" x-text="health?'service up':'service down'"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-5 py-7">
+
+    <!-- ============================ LIVE RUN ============================ -->
+    <section x-show="tab==='run'" class="space-y-6">
+      <div class="flex flex-wrap items-end gap-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Engine</label>
+          <select x-model="run.engine" class="input">
+            <template x-for="e in engines" :key="e.name">
+              <option :value="e.name" :disabled="!e.available" x-text="e.label + (e.available?'':' — '+e.reason)"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Mode</label>
+          <select x-model="run.mode" class="input">
+            <option value="auto">Auto (skill decides)</option>
+            <option value="full">Full (native + Apify)</option>
+            <option value="native">Native-only (free)</option>
+          </select>
+        </div>
+        <button @click="startRun()" :disabled="run.running"
+          class="btn-primary" :class="run.running && 'opacity-60 cursor-not-allowed'">
+          <span x-show="!run.running">▶ Run now</span>
+          <span x-show="run.running" class="flex items-center gap-2"><span class="spinner"></span> Running…</span>
+        </button>
+        <div class="text-xs text-slate-400" x-show="run.id">run <span class="mono" x-text="run.id"></span></div>
+      </div>
+
+      <div class="grid md:grid-cols-5 gap-6">
+        <!-- Stage timeline -->
+        <div class="md:col-span-3 card">
+          <div class="card-title">Pipeline</div>
+          <ol class="space-y-1.5">
+            <template x-for="s in stageList" :key="s.key">
+              <li class="flex items-start gap-3 fade-in">
+                <div class="mt-0.5 w-5 h-5 rounded-full grid place-items-center text-[11px] shrink-0"
+                  :class="stageClass(s.key)">
+                  <span x-text="stageIcon(s.key)"></span>
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium" x-text="s.label"></span>
+                    <span class="text-[11px] text-slate-400" x-text="stages[s.key]?.status||''"></span>
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400 truncate" x-text="stages[s.key]?.msg||''"></div>
+                  <!-- per-source chips under scrape -->
+                  <div x-show="s.key==='scrape' && sources.length" class="flex flex-wrap gap-1.5 mt-1.5">
+                    <template x-for="src in sources" :key="src.name">
+                      <span class="px-2 py-0.5 rounded-md text-[11px] mono"
+                        :class="src.count>0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'"
+                        x-text="src.name+' '+src.count"></span>
+                    </template>
+                  </div>
+                </div>
+              </li>
+            </template>
+          </ol>
+        </div>
+
+        <!-- Live log -->
+        <div class="md:col-span-2 card flex flex-col">
+          <div class="card-title flex items-center justify-between">
+            <span>Activity</span>
+            <button @click="log=[]" class="text-[11px] text-slate-400 hover:text-slate-600">clear</button>
+          </div>
+          <div class="flex-1 overflow-y-auto max-h-[420px] space-y-1 pr-1" id="logbox">
+            <template x-for="(l,i) in log" :key="i">
+              <div class="text-[11.5px] leading-snug mono fade-in"
+                :class="l.err?'text-rose-500':'text-slate-500 dark:text-slate-400'"
+                x-text="l.text"></div>
+            </template>
+            <div x-show="!log.length" class="text-xs text-slate-400">No activity yet. Press “Run now”.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top matches -->
+      <div class="card" x-show="topJobs.length">
+        <div class="card-title">Top matches</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-xs text-slate-400 text-left">
+              <tr><th class="py-1.5 pr-3">#</th><th class="pr-3">Role</th><th class="pr-3">Company</th><th class="pr-3">Location</th><th class="pr-3">Score</th><th class="pr-3">Salary</th><th></th></tr>
+            </thead>
+            <tbody>
+              <template x-for="(j,i) in topJobs" :key="i">
+                <tr class="border-t border-slate-100 dark:border-slate-800">
+                  <td class="py-1.5 pr-3 text-slate-400" x-text="i+1"></td>
+                  <td class="pr-3 font-medium" x-text="j.role"></td>
+                  <td class="pr-3" x-text="j.company"></td>
+                  <td class="pr-3 text-slate-500" x-text="j.location"></td>
+                  <td class="pr-3"><span class="px-1.5 py-0.5 rounded mono text-xs" :class="scoreClass(j.score)" x-text="Math.round(j.score)"></span></td>
+                  <td class="pr-3 text-slate-500" x-text="j.salary||'—'"></td>
+                  <td><a :href="j.url" target="_blank" class="text-brand-500 hover:underline text-xs" x-show="j.url">apply ↗</a></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ SETUP ============================ -->
+    <section x-show="tab==='setup'" class="space-y-6">
+      <div class="card">
+        <div class="card-title">Execution engine</div>
+        <p class="text-xs text-slate-400 mb-4">Choose how Layer B runs. Claude Code uses your Pro/Max subscription (no per-token cost); the API is metered.</p>
+        <div class="grid sm:grid-cols-3 gap-3">
+          <template x-for="e in engines" :key="e.name">
+            <button @click="e.available && (config.engine.provider=e.name)"
+              class="text-left p-4 rounded-xl border transition"
+              :class="[config.engine.provider===e.name?'border-brand-500 ring-2 ring-brand-500/30':'border-slate-200 dark:border-slate-800', e.available?'hover:border-brand-400':'opacity-60 cursor-not-allowed']">
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-sm" x-text="e.label"></span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded" :class="e.available?'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300':'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'" x-text="e.available?'ready':'setup'"></span>
+              </div>
+              <div class="text-[11px] text-slate-400 mt-1" x-text="e.metered?'metered (per-token)':'subscription (free)'"></div>
+              <div class="text-[11px] text-slate-400 mt-1" x-show="!e.available" x-text="e.reason"></div>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6">
+        <div class="card">
+          <div class="card-title">API keys & secrets</div>
+          <p class="text-xs text-slate-400 mb-3">Stored via your OS keyring / local .env — never leave this machine.</p>
+          <template x-for="s in secretFields" :key="s.key">
+            <div class="mb-3">
+              <label class="block text-xs text-slate-400 mb-1" x-text="s.label"></label>
+              <div class="flex gap-2">
+                <input type="password" class="input flex-1" :placeholder="s.key" x-model="secretVals[s.key]">
+                <button @click="saveSecret(s.key)" class="btn-ghost text-xs">Save</button>
+              </div>
+            </div>
+          </template>
+          <div class="text-xs mt-1" :class="secretMsgErr?'text-rose-500':'text-emerald-500'" x-text="secretMsg"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Search preferences</div>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Locations (comma-separated)</label>
+              <input class="input w-full" x-model="prefsForm.locations">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Market focus</label>
+                <select class="input w-full" x-model="prefsForm.job_market_focus">
+                  <option value="india">India</option><option value="both">Both</option><option value="global">Global</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Experience (yrs)</label>
+                <input type="number" min="0" class="input w-full" x-model.number="prefsForm.experience_years">
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Role types (comma-separated)</label>
+              <input class="input w-full" x-model="prefsForm.role_types">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Min CTC (LPA)</label>
+                <input type="number" min="0" class="input w-full" x-model.number="prefsForm.target_ctc_min_lpa">
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Tailor threshold</label>
+                <input type="number" min="0" max="100" class="input w-full" x-model.number="prefsForm.score_threshold">
+              </div>
+            </div>
+            <label class="flex items-center gap-2 text-sm"><input type="checkbox" x-model="prefsForm.remote_ok"> Remote OK</label>
+            <button @click="saveConfig()" class="btn-primary w-full mt-1">Save engine + preferences</button>
+            <div class="text-xs" :class="cfgMsgErr?'text-rose-500':'text-emerald-500'" x-text="cfgMsg"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ SCHEDULE ============================ -->
+    <section x-show="tab==='schedule'" class="space-y-6">
+      <div class="card max-w-xl">
+        <div class="card-title">Scheduled runs (IST)</div>
+        <p class="text-xs text-slate-400 mb-4">The service fires <span class="mono">/job-search</span> at each slot. The skill alternates full ⇄ native automatically to stretch Apify credit.</p>
+        <div class="flex flex-wrap gap-2 mb-4">
+          <template x-for="(s,i) in schedule.slots" :key="i">
+            <span class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm mono flex items-center gap-2">
+              <span x-text="s"></span>
+              <button @click="schedule.slots.splice(i,1)" class="text-slate-400 hover:text-rose-500">✕</button>
+            </span>
+          </template>
+          <span x-show="!schedule.slots.length" class="text-xs text-slate-400">No slots — runs only when you press “Run now”.</span>
+        </div>
+        <div class="flex gap-2">
+          <input type="time" x-model="newSlot" class="input">
+          <button @click="addSlot()" class="btn-ghost text-sm">Add slot</button>
+          <button @click="saveSchedule()" class="btn-primary text-sm ml-auto">Save schedule</button>
+        </div>
+        <div class="text-xs mt-2 text-emerald-500" x-text="schedMsg"></div>
+        <div class="mt-4 border-t border-slate-100 dark:border-slate-800 pt-3" x-show="schedule.jobs?.length">
+          <div class="text-xs text-slate-400 mb-1">Next runs</div>
+          <template x-for="j in schedule.jobs" :key="j.id">
+            <div class="text-xs mono text-slate-500" x-text="j.id + ' → ' + (j.next_run||'—')"></div>
+          </template>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Run history</div>
+        <div x-show="!history.length" class="text-xs text-slate-400">No runs yet.</div>
+        <template x-for="h in history" :key="h.id">
+          <div class="flex items-center gap-3 py-1.5 border-t border-slate-100 dark:border-slate-800 text-sm first:border-0">
+            <span class="w-2 h-2 rounded-full" :class="h.status==='done'?'bg-emerald-500':h.status==='error'?'bg-rose-500':'bg-amber-500'"></span>
+            <span class="mono text-xs" x-text="h.id"></span>
+            <span class="text-slate-400 text-xs" x-text="h.engine + ' · ' + h.mode"></span>
+            <span class="ml-auto text-xs text-slate-500" x-text="h.summary?.slice(0,60)||h.status"></span>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- ============================ CONNECTIONS ============================ -->
+    <section x-show="tab==='conn'" class="space-y-6">
+      <div class="grid md:grid-cols-2 gap-6">
+        <!-- Telegram -->
+        <div class="card">
+          <div class="card-title flex items-center justify-between">
+            <span>Telegram channels</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded" :class="tg.status.session_exists?'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300':'bg-slate-100 text-slate-500 dark:bg-slate-800'" x-text="tg.status.session_exists?'connected':'not connected'"></span>
+          </div>
+          <p class="text-xs text-slate-400 mb-3">Reads public India job channels via your account (read-only). Needs API creds from my.telegram.org.</p>
+          <template x-if="!tg.status.api_creds_set">
+            <div class="text-xs text-amber-500 mb-2">Set TELEGRAM_API_ID and TELEGRAM_API_HASH in Setup → secrets first.</div>
+          </template>
+          <div class="space-y-2" x-show="tg.step==='phone'">
+            <input class="input w-full" placeholder="+91XXXXXXXXXX" x-model="tg.phone">
+            <button @click="tgStart()" class="btn-primary w-full text-sm" :disabled="!tg.status.api_creds_set">Send code</button>
+          </div>
+          <div class="space-y-2" x-show="tg.step==='code'">
+            <input class="input w-full" placeholder="OTP code" x-model="tg.code">
+            <button @click="tgCode()" class="btn-primary w-full text-sm">Verify code</button>
+          </div>
+          <div class="space-y-2" x-show="tg.step==='password'">
+            <input type="password" class="input w-full" placeholder="2FA password" x-model="tg.password">
+            <button @click="tgPassword()" class="btn-primary w-full text-sm">Submit password</button>
+          </div>
+          <div class="text-xs mt-2" :class="tg.err?'text-rose-500':'text-emerald-500'" x-text="tg.msg"></div>
+        </div>
+
+        <!-- Discord -->
+        <div class="card">
+          <div class="card-title">Discord</div>
+          <p class="text-xs text-slate-400 mb-3">Paste a channel webhook URL (Server Settings → Integrations → Webhooks). Digest + report land there.</p>
+          <input class="input w-full mb-2" placeholder="https://discord.com/api/webhooks/…" x-model="discord.url">
+          <button @click="saveDiscord()" class="btn-primary w-full text-sm">Save & send test</button>
+          <div class="text-xs mt-2" :class="discord.err?'text-rose-500':'text-emerald-500'" x-text="discord.msg"></div>
+          <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <label class="block text-xs text-slate-400 mb-1">Active delivery channels</label>
+            <div class="flex gap-3 text-sm">
+              <label class="flex items-center gap-1.5"><input type="checkbox" value="telegram" x-model="channels"> Telegram</label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" value="discord" x-model="channels"> Discord</label>
+              <button @click="saveChannels()" class="btn-ghost text-xs ml-auto">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Doctor -->
+      <div class="card">
+        <div class="card-title flex items-center justify-between">
+          <span>Health check</span>
+          <div class="flex gap-2">
+            <button @click="runDoctor(false)" class="btn-ghost text-xs">Quick</button>
+            <button @click="runDoctor(true)" class="btn-ghost text-xs">Live (probe sources)</button>
+          </div>
+        </div>
+        <div x-show="doctor.loading" class="text-xs text-slate-400">Checking…</div>
+        <div class="overflow-x-auto" x-show="doctor.rows.length">
+          <table class="w-full text-sm">
+            <tbody>
+              <template x-for="(r,i) in doctor.rows" :key="i">
+                <tr class="border-t border-slate-100 dark:border-slate-800 first:border-0">
+                  <td class="py-1.5 pr-3 w-6" x-text="r.status==='ok'?'✅':r.status==='warn'?'⚠️':'❌'"></td>
+                  <td class="pr-3 font-medium" x-text="r.name"></td>
+                  <td class="pr-3 text-xs text-slate-400" x-text="r.category"></td>
+                  <td class="text-xs text-slate-500" x-text="r.detail"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="max-w-6xl mx-auto px-5 pb-8 text-[11px] text-slate-400">JobPilot local service · backend is the source of truth — this view mirrors it.</div>
+</div>
+
+<style type="text/tailwindcss">
+  .card{@apply bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm;}
+  .card-title{@apply text-sm font-semibold mb-3;}
+  .input{@apply bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40;}
+  .btn-primary{@apply bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-4 py-2 text-sm font-medium shadow transition;}
+  .btn-ghost{@apply bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg px-3 py-2 font-medium transition;}
+  .spinner{@apply w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full inline-block; animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+
+<script>
+function app(){
+  return {
+    tabs:[{id:'run',label:'Live Run'},{id:'setup',label:'Setup'},{id:'schedule',label:'Schedule'},{id:'conn',label:'Connections'}],
+    tab:'run', health:true,
+    engines:[], config:{engine:{provider:'claude_code'}}, channels:['telegram'],
+    // run state
+    run:{engine:'claude_code',mode:'auto',running:false,id:''},
+    stageList:[
+      {key:'scrape',label:'Scrape'},{key:'dedupe',label:'Dedupe'},{key:'filter',label:'Filter'},
+      {key:'relevance',label:'Relevance'},{key:'score',label:'Score'},{key:'salary',label:'Salary'},
+      {key:'report',label:'Report'},{key:'tailor',label:'Tailor resumes'},{key:'notify',label:'Notify'},
+    ],
+    stages:{}, sources:[], log:[], topJobs:[],
+    // setup
+    secretFields:[
+      {key:'ANTHROPIC_API_KEY',label:'Anthropic API key (for metered engine)'},
+      {key:'APIFY_TOKEN',label:'Apify token (paid sources)'},
+      {key:'TELEGRAM_BOT_TOKEN',label:'Telegram bot token (notifications)'},
+      {key:'TELEGRAM_CHAT_ID',label:'Telegram chat ID'},
+      {key:'TELEGRAM_API_ID',label:'Telegram API ID (channel scraper)'},
+      {key:'TELEGRAM_API_HASH',label:'Telegram API hash (channel scraper)'},
+      {key:'GEMINI_API_KEY',label:'Gemini API key (future)'},
+    ],
+    secretVals:{}, secretMsg:'', secretMsgErr:false,
+    prefsForm:{locations:'',role_types:'',job_market_focus:'india',experience_years:0,target_ctc_min_lpa:0,score_threshold:65,remote_ok:true},
+    cfgMsg:'', cfgMsgErr:false,
+    // schedule
+    schedule:{slots:[],jobs:[]}, newSlot:'09:30', schedMsg:'', history:[],
+    // connections
+    tg:{step:'phone',phone:'',code:'',password:'',token:'',msg:'',err:false,status:{}},
+    discord:{url:'',msg:'',err:false},
+    doctor:{rows:[],loading:false},
+
+    async init(){
+      await this.loadAll();
+      setInterval(()=>this.ping(), 8000);
+    },
+    async ping(){ try{const r=await fetch('/health');this.health=r.ok;}catch(e){this.health=false;} },
+    async loadAll(){
+      try{
+        const [eng,cfg,sch] = await Promise.all([
+          fetch('/engines').then(r=>r.json()),
+          fetch('/config').then(r=>r.json()),
+          fetch('/schedule').then(r=>r.json()),
+        ]);
+        this.engines = eng.engines;
+        this.config = cfg;
+        this.run.engine = cfg.engine.provider;
+        this.channels = cfg.notify_channels || ['telegram'];
+        this.schedule = sch;
+        this.hydratePrefs(cfg.preferences||{});
+        this.loadHistory();
+        this.tgStatus();
+      }catch(e){ this.health=false; }
+    },
+    hydratePrefs(p){
+      this.prefsForm.locations = (p.locations||[]).join(', ');
+      this.prefsForm.role_types = (p.role_types||[]).join(', ');
+      this.prefsForm.job_market_focus = p.job_market_focus||'india';
+      this.prefsForm.experience_years = p.experience_years||0;
+      this.prefsForm.target_ctc_min_lpa = p.target_ctc_min_lpa||0;
+      this.prefsForm.score_threshold = p.score_threshold||65;
+      this.prefsForm.remote_ok = p.remote_ok!==false;
+    },
+    async loadHistory(){ try{const r=await fetch('/runs').then(r=>r.json()); this.history=r.history||[];}catch(e){} },
+
+    // ---- run + SSE ----
+    stageClass(k){const s=this.stages[k];
+      if(!s) return 'bg-slate-200 text-slate-400 dark:bg-slate-800';
+      if(s.status==='error') return 'bg-rose-500 text-white';
+      if(s.status==='done') return 'bg-emerald-500 text-white';
+      return 'bg-brand-500 text-white animate-pulse';},
+    stageIcon(k){const s=this.stages[k];
+      if(!s) return '○'; if(s.status==='error') return '!'; if(s.status==='done') return '✓'; return '·';},
+    scoreClass(v){v=Math.round(v||0);
+      return v>=75?'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+        :v>=60?'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+        :'bg-slate-100 text-slate-500 dark:bg-slate-800';},
+    pushLog(text,err=false){ this.log.push({text,err}); if(this.log.length>400)this.log.shift();
+      this.$nextTick(()=>{const b=document.getElementById('logbox'); if(b)b.scrollTop=b.scrollHeight;});},
+
+    async startRun(){
+      this.stages={}; this.sources=[]; this.log=[]; this.topJobs=[]; this.run.running=true;
+      try{
+        const r = await fetch('/runs',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({mode:this.run.mode,engine:this.run.engine})});
+        if(!r.ok){ const e=await r.json(); this.pushLog('start failed: '+(e.detail||r.status),true); this.run.running=false; return; }
+        const {run_id} = await r.json(); this.run.id=run_id;
+        this.streamEvents(run_id);
+      }catch(e){ this.pushLog('start error: '+e,true); this.run.running=false; }
+    },
+    streamEvents(id){
+      const es = new EventSource('/runs/'+id+'/events');
+      es.onmessage = (m)=>{ const ev=JSON.parse(m.data); this.applyEvent(ev); };
+      es.addEventListener('end', ()=>{ es.close(); this.finishRun(id); });
+      es.addEventListener('ping', ()=>{});
+      es.onerror = ()=>{ /* keep trying; server may still be streaming */ };
+    },
+    applyEvent(ev){
+      if(ev.msg) this.pushLog('['+ev.stage+'] '+ev.msg, ev.status==='error');
+      if(ev.stage && ev.stage!=='log' && ev.stage!=='done'){
+        this.stages[ev.stage] = {status:ev.status, msg:ev.msg};
+      }
+      if(ev.stage==='scrape' && ev.data && ev.data.source){
+        const name=ev.data.source, count=ev.data.count||0;
+        const ex=this.sources.find(s=>s.name===name);
+        if(ex) ex.count=count; else this.sources.push({name,count});
+      }
+      if(ev.stage==='done'){ /* handled by end event */ }
+    },
+    async finishRun(id){
+      this.run.running=false;
+      try{ const r=await fetch('/runs/'+id).then(r=>r.json());
+        this.topJobs=(r.artifacts&&r.artifacts.top_jobs)||[];
+      }catch(e){}
+      this.loadHistory();
+    },
+
+    // ---- setup ----
+    async saveSecret(key){
+      const val=this.secretVals[key]; if(!val){return;}
+      try{ const r=await fetch('/secrets',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({key,value:val})}).then(r=>r.json());
+        this.secretMsg=key+' saved ('+r.backend+')'; this.secretMsgErr=false; this.secretVals[key]='';
+        this.loadAll();
+      }catch(e){ this.secretMsg='save failed'; this.secretMsgErr=true; }
+    },
+    async saveConfig(){
+      const prefs={
+        locations:this.csv(this.prefsForm.locations),
+        role_types:this.csv(this.prefsForm.role_types),
+        job_market_focus:this.prefsForm.job_market_focus,
+        experience_years:this.prefsForm.experience_years,
+        target_ctc_min_lpa:this.prefsForm.target_ctc_min_lpa,
+        score_threshold:this.prefsForm.score_threshold,
+        remote_ok:this.prefsForm.remote_ok,
+      };
+      try{ await fetch('/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({engine:{provider:this.config.engine.provider},preferences:prefs})});
+        this.cfgMsg='Saved.'; this.cfgMsgErr=false; this.loadAll();
+      }catch(e){ this.cfgMsg='save failed'; this.cfgMsgErr=true; }
+    },
+    csv(s){return (s||'').split(',').map(x=>x.trim()).filter(Boolean);},
+
+    // ---- schedule ----
+    addSlot(){ if(this.newSlot && !this.schedule.slots.includes(this.newSlot)) this.schedule.slots.push(this.newSlot); this.schedule.slots.sort(); },
+    async saveSchedule(){
+      try{ const r=await fetch('/schedule',{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({slots:this.schedule.slots})}).then(r=>r.json());
+        this.schedule.jobs=r.jobs; this.schedMsg='Schedule saved.';
+        setTimeout(()=>this.schedMsg='',3000);
+      }catch(e){ this.schedMsg='save failed'; }
+    },
+    async saveChannels(){
+      await fetch('/config',{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({notify_channels:this.channels})});
+    },
+
+    // ---- connections ----
+    async tgStatus(){ try{ this.tg.status=await fetch('/auth/telegram/status').then(r=>r.json()); }catch(e){} },
+    async tgStart(){
+      this.tg.msg=''; this.tg.err=false;
+      const r=await fetch('/auth/telegram/start',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({phone:this.tg.phone})}).then(r=>r.json());
+      if(!r.ok){ this.tg.msg=r.error; this.tg.err=true; return; }
+      if(r.already){ this.tg.msg='Already connected as '+r.username; this.tgStatus(); return; }
+      this.tg.token=r.token; this.tg.step='code'; this.tg.msg='Code sent to your Telegram app.';
+    },
+    async tgCode(){
+      const r=await fetch('/auth/telegram/code',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:this.tg.token,code:this.tg.code})}).then(r=>r.json());
+      if(!r.ok){ this.tg.msg=r.error; this.tg.err=true; return; }
+      if(r.need_password){ this.tg.step='password'; this.tg.msg='Enter your 2FA password.'; return; }
+      this.tg.step='phone'; this.tg.msg='Connected as '+(r.username||'you'); this.tg.err=false; this.tgStatus();
+    },
+    async tgPassword(){
+      const r=await fetch('/auth/telegram/password',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:this.tg.token,password:this.tg.password})}).then(r=>r.json());
+      if(!r.ok){ this.tg.msg=r.error; this.tg.err=true; return; }
+      this.tg.step='phone'; this.tg.msg='Connected as '+(r.username||'you'); this.tg.err=false; this.tgStatus();
+    },
+    async saveDiscord(){
+      this.discord.msg=''; this.discord.err=false;
+      const r=await fetch('/notify/discord',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({webhook_url:this.discord.url})}).then(r=>r.json());
+      if(r.ok){ this.discord.msg='Saved — test message sent.'; if(!this.channels.includes('discord'))this.channels.push('discord'); this.saveChannels(); }
+      else{ this.discord.msg=r.error; this.discord.err=true; }
+    },
+    async runDoctor(live){
+      this.doctor.loading=true; this.doctor.rows=[];
+      try{ const r=await fetch('/doctor'+(live?'?live=true':'')).then(r=>r.json()); this.doctor.rows=r.rows; }
+      catch(e){} finally{ this.doctor.loading=false; }
+    },
+  };
+}
+</script>
+</body>
+</html>

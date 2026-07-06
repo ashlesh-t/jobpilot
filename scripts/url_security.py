@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from secrets import get_secret_optional  # noqa: E402
+from jp_secrets import get_secret_optional  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Constants

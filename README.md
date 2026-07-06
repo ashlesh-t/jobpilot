@@ -6,11 +6,13 @@ Automated, personal job-hunting pipeline for Claude Code.
 
 ## 1. What it does
 
-JobPilot scrapes roughly ten job sources (LinkedIn, Indeed, Glassdoor, Google Jobs, Naukri,
-plus Greenhouse / Lever / Ashby / Workday application pages and Hacker News "Who is hiring")
-through Apify and free APIs, then scores every posting against your resume. The strongest
-matches get a tailored resume and land in a dated CSV report. A Telegram digest of the top
-picks is pushed automatically on whatever schedule you set.
+JobPilot scrapes roughly a dozen job sources (LinkedIn, Indeed, Glassdoor, Google Jobs, Naukri,
+Internshala, Wellfound, plus Hacker News "Who is hiring", YC, and Telegram job channels)
+through Apify and free native scrapers, then scores every posting against your resume. The
+strongest matches get a tailored resume and land in a dated, styled **XLSX** report. A digest
+of the top picks — with the report and resumes attached — is pushed to Telegram (or Discord)
+automatically on whatever schedule you set. You can drive it from a chat, or run it headless
+on a schedule via the local control service (§5a).
 
 ## 2. Prerequisites
 
@@ -62,8 +64,35 @@ Everything personal — secrets, preferences, cached resume, reports — lives i
 ## 5. Daily use
 
 Once the scheduled task is set up, you do nothing. It fires on your cadence, runs the full
-pipeline, and pushes results to Telegram. Just check Telegram for the digest and the attached
-CSV.
+pipeline, and pushes results to your notify channel. Just check Telegram (or Discord) for the
+digest, the attached XLSX report, and any tailored resumes.
+
+### 5a. Local control service + UI (optional)
+
+Instead of a chat, you can run JobPilot as a small local web app that schedules runs, lets
+you pick an execution engine, wires up Discord/Telegram in the browser, and shows a **live,
+harness-style view** of each run (stages lighting up, per-source counts, the final digest).
+
+```bash
+pip install -r requirements.txt      # installs fastapi/uvicorn/apscheduler/…
+python -m server                     # → http://127.0.0.1:8787
+```
+
+- **Engine choice (Setup tab).** *Claude Code* runs the pipeline under your Pro/Max
+  subscription (no per-token cost, needs the `claude` CLI logged in). *Anthropic API* runs it
+  metered via the Claude Agent SDK (`ANTHROPIC_API_KEY`). *Gemini/Antigravity* is
+  interface-ready for a future release. The UI greys out any engine that isn't usable yet and
+  tells you why.
+- **Schedule tab.** Add/remove IST time slots; the service fires `/job-search` at each and the
+  skill alternates full ⇄ native to stretch Apify credit. `python -m server install-service`
+  writes a systemd/launchd unit so it survives reboot.
+- **Connections tab.** Telegram sign-in is a phone → OTP form (no terminal); Discord is a
+  webhook paste + test. A ✅/⚠️/❌ health check tells you which sources are live.
+- **Delivery** is pluggable: set `notify_channels` (e.g. `["telegram","discord"]`) in
+  preferences or the UI.
+
+The service only *drives* the existing pipeline — all scoring/tailoring logic still lives in
+`skills/job-search/SKILL.md`, the single source of truth for every engine.
 
 ## 6. Slash command reference
 

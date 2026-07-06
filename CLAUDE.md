@@ -9,6 +9,26 @@ Two-layer design:
 - **Layer A (pure Python, no LLM):** `apify_scraper.py` → `dedupe.py` → `filter.py`. Runs via bash, writes JSON to `/tmp/jobpilot_*.json`. Must never call the LLM. Handles scraping, deduplication, and location/seen-jobs filtering only.
 - **Layer B (Claude):** All intelligence lives here. Claude reads filtered jobs, scores each one inline against `profile.json`, researches salary via WebSearch, writes the CSV report, tailors resumes, and sends the Telegram digest. No scoring or filtering Python scripts.
 
+**Shipping layer (optional, `engines/` + `server/`):** A local FastAPI service wraps the
+whole `/job-search` pipeline so it can run on a schedule and be driven from a web UI —
+without a human in a chat. It never contains pipeline logic; it only *invokes* the pipeline
+through a provider **engine** and streams progress.
+
+- **`engines/` — RunEngine provider adapters.** `claude_code` runs `/job-search` headless
+  under a Pro/Max subscription (`claude -p … --output-format stream-json`, no per-token
+  cost, reuses `SKILL.md` verbatim); `claude_api` runs it via the Claude Agent SDK (metered,
+  loads the `SKILL.md` body as the system prompt so logic isn't duplicated); `gemini` is an
+  interface-ready stub. Both provider streams normalize to one `RunEvent` shape.
+- **`server/` — the service.** `app.py` (FastAPI + SSE), `run_manager.py` (orchestrates one
+  run, tails Layer A's `events.jsonl`, fans events to the UI), `scheduler.py` (APScheduler
+  over `schedule_slots_ist`), `telegram_auth.py` (browser OTP flow), `doctor.py` (health
+  checks), `ui/index.html` (single-file SPA with a harness-style live run view). Run it with
+  `python -m server` → http://127.0.0.1:8787.
+- **`scripts/run_events.py`** — Layer A emits stage/count events here (no-op unless a run is
+  active); this is what makes the live UI mirror the backend precisely.
+- **`scripts/notify/`** — pluggable delivery (`telegram`, `discord`); `preferences.notify_channels`
+  selects channels. The single-run digest still goes through `telegram_notify.py`.
+
 **Hybrid scraping (Layer A):** `apify_scraper.py` runs **native scrapers first** (free, in `scripts/scrapers/`) and then the **Apify layer** only for sources that block native access. Source mix is driven by `preferences.json` `job_market_focus` (`india` | `global` | `both`).
 
 | Source | Native? | Why |
@@ -37,7 +57,7 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 | `scripts/report_generator.py` | Layer B: styled **XLSX** (top 20) into `~/.claude/job-hunt-ai/reports/` from `/tmp/jobpilot_scored.json` |
 | `scripts/telegram_notify.py` | Layer B: sends digest + report (xlsx/csv) + tailored resumes to Telegram |
 | `scripts/drive_upload.py` | Layer B: manifest of report + tailored resumes for Google Drive |
-| `scripts/secrets.py` | Secret loader/saver (keyring → `.env`). All scripts use this; never read env vars directly. |
+| `scripts/jp_secrets.py` | Secret loader/saver (keyring → `.env`). All scripts use this; never read env vars directly. |
 | `scripts/setup_wizard.py` | Interactive wizard called by `setup.sh` |
 | `config/actors.json` | Apify actor IDs (native sources listed under `_native_sources`) |
 | `config/preferences.example.json` | Template for user preferences |
@@ -107,7 +127,7 @@ No `ats_scorer.py`, no `sentence-transformers`, no Jaccard fallback.
 
 ## Secrets rule
 
-All secrets are loaded through `scripts/secrets.py` (keyring first, then `~/.claude/job-hunt-ai/.env`). No script should read `os.environ` for secrets directly.
+All secrets are loaded through `scripts/jp_secrets.py` (keyring first, then `~/.claude/job-hunt-ai/.env`). No script should read `os.environ` for secrets directly.
 
 ## Job sources
 

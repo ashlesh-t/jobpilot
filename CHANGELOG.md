@@ -1,5 +1,117 @@
 # Changelog
 
+## v1.5.0 — 2026-07-06
+
+### Release title: "Ship It — Local Automation Service, Web UI & Multi-Engine"
+
+JobPilot can now run **headless on a schedule** and be driven from a **polished local web
+UI**, without a human in a chat. The pipeline logic is unchanged — a new shipping layer wraps
+it and adds a provider abstraction so the same `/job-search` program runs under a Claude
+subscription, the Anthropic API, or (later) Gemini/Antigravity.
+
+### Breaking changes
+- **`scripts/secrets.py` renamed to `scripts/jp_secrets.py`.** The old module name shadowed
+  Python's stdlib `secrets` (which FastAPI/Starlette import), breaking the service. All repo
+  imports, docs, and the permission allowlist were updated. If you have external scripts doing
+  `from secrets import get_secret`, change them to `from jp_secrets import get_secret`. The
+  documented CLI is now `python3 scripts/jp_secrets.py`.
+- `preferences.json` gains an `engine` block (`{provider, model, permission_mode}`) and
+  `notify_channels` (default `["telegram"]`). Both have safe defaults — no migration required.
+
+### What's new
+
+**Local control service (`server/`) + web UI**
+- `python -m server` starts a FastAPI service at `http://127.0.0.1:8787` with a single-file
+  SPA (`server/ui/index.html`).
+- **Live Run view** mirrors the Claude Code harness: a stage timeline (scrape → dedupe →
+  filter → score → salary → report → tailor → notify) lights up in real time over SSE, with
+  per-source job counts, activity log, and the final top-matches table + digest.
+- **Setup / Schedule / Connections** tabs: pick an engine, store secrets (via the keyring/.env
+  through `jp_secrets`), edit search preferences, manage IST schedule slots, and connect
+  Telegram/Discord.
+- APScheduler fires `/job-search` at each `schedule_slots_ist` slot (previously an unused
+  preference). `python -m server install-service` writes a systemd/launchd unit.
+- Optional tray launcher: `python -m server.tray`.
+
+**Multi-engine execution (`engines/`)**
+- **Claude Code** (`claude_code`) — runs `/job-search` headless under a Pro/Max subscription
+  (`claude -p … --output-format stream-json`); no per-token cost, reuses `SKILL.md` verbatim.
+- **Anthropic API** (`claude_api`) — runs it metered via the Claude Agent SDK, loading the
+  `SKILL.md` body as the system prompt so pipeline logic is never duplicated.
+- **Gemini/Antigravity** (`gemini`) — interface-ready stub for a future release.
+- Engines are chosen in Setup; unusable ones are greyed out with the reason. `/job-search`
+  now honours an `OVERRIDE: force RUN_MODE=<full|native>` prompt so the UI's mode buttons work.
+
+**Pluggable notifications (`scripts/notify/`)**
+- Delivery is now channel-agnostic (`telegram`, `discord`) selected by
+  `preferences.notify_channels`. Discord is a simple webhook (paste URL + test in the UI).
+
+**Live run events (`scripts/run_events.py`)**
+- Layer A emits structured stage/count events to a per-run `events.jsonl` (a no-op unless a run
+  is active, so plain CLI use is unchanged). This is what makes the UI mirror the backend
+  precisely.
+
+**Health check ("doctor")**
+- `GET /doctor` (and the Connections tab) returns a ✅/⚠️/❌ table for engines, notifiers,
+  Apify token, Telegram session, and — in live mode — each native source, so you can tell a
+  dead source from an over-eager filter.
+
+**`skills/job-search/SKILL.md` rewritten**
+- Removed merge scars: a duplicated "Step 0b", scraping steps jammed into profile verification,
+  and **two conflicting Layer B specs**. It is now one linear, unambiguous flow with the
+  canonical scoring formula (`keyword_score` against `jd_hard_skills`, XLSX report, Telegram/
+  Discord delivery). This matters more now that both engines load it as the single source of
+  truth. All stale Google-Drive-upload references purged (Drive is only the resume *source*).
+
+### Testing
+- New `tests/` suite (17 tests): event emission/no-op, tool→stage mapping, stream-json parsing,
+  notifier availability + Discord chunking, RunManager fan-out/busy-rejection/persistence, and a
+  full HTTP+SSE run via a fake engine. `pytest -q` runs green with no LLM or network.
+
+### Upgrading
+Run `pip install -r requirements.txt` (adds `fastapi`, `uvicorn`, `apscheduler`,
+`sse-starlette`, `claude-agent-sdk`). Update any `from secrets import …` in your own scripts to
+`from jp_secrets import …`. The chat-driven `/job-search` and `/job-setup` flows are unchanged.
+
+---
+
+## v1.4.0 — 2026-06-28
+
+### Release title: "Telegram Jobs & Scoring Hardening"
+
+- **Telegram channel scraper `--discover` mode** — validates the seed channel list against the
+  live network, searches for additional active India job channels, and rewrites
+  `config/telegram_channels.json` with only reachable channels. Private channels supported via
+  numeric `id`. Referral detection tags posts that offer a referral.
+- **Secure Telegram API credential setup** with OS-specific copy-paste commands (nothing pasted
+  into chat).
+- **Scoring & reliability fixes**: apply-URL preservation map (links never dropped during
+  scored-JSON reconstruction), location aliasing via `locations.json`, a firmer autonomy
+  contract for unattended runs, and additional native scrapers (YC WaaS, Hasjob, Instahyre,
+  Wellfound public). `instahyre` / `wellfound_rss` / `linkedin_guest` disabled where endpoints
+  are blocked. Soft CTC filter for early-career candidates (`experience_years ≤ 2`).
+
+---
+
+## v1.3.0 — 2026-06-27
+
+### Release title: "Free-First Scraping & Credit Resilience"
+
+- **Six free native scrapers** run before Apify is ever called: Internshala (India freshers),
+  RemoteOK, WeWorkRemotely, Remotive, Arbeitnow, Jobicy — public JSON/RSS, no token.
+- **Apify credit resilience**: tiered scheduling (alternating native/full days), 3-slot key
+  rotation (`APIFY_TOKEN` → `_2` → `_3`), and a Telegram alert with recovery steps on full
+  exhaustion. Update tokens via `python3 scripts/apify_token_update.py --slot 2`.
+- **Telegram job-channel scraper** (Telethon MTProto) reading curated public India channels,
+  with every URL screened by a new **URL security pipeline** (allowlist → local checks →
+  redirect/WHOIS/URLHaus → optional Safe Browsing/VirusTotal; results cached in SQLite).
+- **Styled XLSX report** (colour-coded by score, hyperlinked apply URLs, frozen header),
+  **career-page crawl** for target companies, and an **application-deadline filter** (IST).
+- Upgrading: `pip install -r requirements.txt` for `telethon`, `tldextract`, `httpx`,
+  `python-whois`, `confusable-homoglyphs`.
+
+---
+
 ## v1.2.0 — 2026-06-27
 
 ### Release title: "Reliability & Scoring Quality"
