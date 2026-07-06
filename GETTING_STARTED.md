@@ -42,8 +42,13 @@ chmod +x setup.sh
 ```
 
 `setup.sh` creates your **data directory** at `~/.claude/job-hunt-ai/` (kept separate from the
-code), installs Python dependencies, and syncs the slash commands to `.claude/commands/`. Re-run
-`./setup.sh` anytime you pull an update — it's idempotent.
+code), installs the core Python dependencies from **`requirements.txt`**, and syncs the slash
+commands to `.claude/commands/`. Re-run `./setup.sh` anytime you pull an update — it's idempotent.
+
+> **Two requirements files.** `requirements.txt` holds the core pipeline dependencies that
+> `setup.sh` installs — that's all you need for the chat-driven `/job-setup` and `/job-search`
+> flows. The optional local web UI / control service has its own, heavier dependencies in
+> **`requirements-server.txt`**; install those only if you use it (see §11).
 
 ---
 
