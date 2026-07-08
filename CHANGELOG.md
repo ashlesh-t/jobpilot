@@ -17,8 +17,8 @@ old bash-only `setup.sh` limitation.
   fall back to the working directory from a git clone — so `scripts/…` and `config/…` work in
   both modes.
 
-**pipx / PyPI package** (`pipx install "claude-jobpilot[server]"`)
-- New `pyproject.toml` (dist name `claude-jobpilot`, command `jobpilot`) with a `[server]`
+**pipx / PyPI package** (`pipx install "jobpilot-ai[server]"`)
+- New `pyproject.toml` (dist name `jobpilot-ai`, command `jobpilot`) with a `[server]`
   extra for the web UI. The runtime tree is bundled inside the package so an installed copy has
   everything on disk in the layout the code expects (`jobpilot/paths.py` resolves it) — no
   import refactor.
@@ -31,7 +31,7 @@ old bash-only `setup.sh` limitation.
   shim to it; Windows users run `python scripts/jobpilot_setup.py`.
 
 **Native package wrappers** (thin, over the one PyPI package)
-- `packaging/aur/PKGBUILD` (`yay -S claude-jobpilot`), `packaging/homebrew/jobpilot.rb`
+- `packaging/aur/PKGBUILD` (`yay -S jobpilot-ai`), `packaging/homebrew/jobpilot.rb`
   (`brew install ashlesh-t/tap/jobpilot`), `packaging/scoop/jobpilot.json`
   (`scoop install jobpilot`) — see `packaging/README.md`. Publish + verify per-OS after the
   first PyPI release.
@@ -43,8 +43,8 @@ old bash-only `setup.sh` limitation.
 ### Notes
 - The old README `claude plugin install github:…` one-liner (which never worked — no manifest
   existed) is replaced by the marketplace flow above.
-- PyPI name: the package is `claude-jobpilot` (the bare `jobpilot` name was taken); the
-  installed command is still `jobpilot`.
+- PyPI name: the package is `jobpilot-ai` (the bare `jobpilot` name was taken; `claude-jobpilot`
+  was also renamed away from before first publish); the installed command is still `jobpilot`.
 
 ---
 

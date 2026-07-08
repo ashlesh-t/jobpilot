@@ -40,11 +40,11 @@ either (b) or (c) below so the scripts have their dependencies.
 
 **b. pipx — the backend + web UI, one command on every OS**
 ```bash
-pipx install "claude-jobpilot[server]"   # or: pip install "claude-jobpilot[server]"
+pipx install "jobpilot-ai[server]"   # or: pip install "jobpilot-ai[server]"
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 jobpilot serve                            # optional local web UI → http://127.0.0.1:8787
 ```
-On Arch: `yay -S claude-jobpilot` · macOS: `brew install ashlesh-t/tap/jobpilot` · Windows:
+On Arch: `yay -S jobpilot-ai` · macOS: `brew install ashlesh-t/tap/jobpilot` · Windows:
 `scoop install jobpilot` — all thin wrappers over the same package (see `packaging/`).
 
 **c. From source (contributors)**

@@ -42,10 +42,10 @@ Two pieces install independently, and everything below works on **Linux, macOS, 
 
 *Easiest (any OS):* [pipx](https://pipx.pypa.io) gives an isolated `jobpilot` command.
 ```bash
-pipx install "claude-jobpilot[server]"   # omit [server] if you won't use the web UI
+pipx install "jobpilot-ai[server]"   # omit [server] if you won't use the web UI
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 ```
-On Arch you can instead `yay -S claude-jobpilot`; macOS `brew install ashlesh-t/tap/jobpilot`;
+On Arch you can instead `yay -S jobpilot-ai`; macOS `brew install ashlesh-t/tap/jobpilot`;
 Windows `scoop install jobpilot` — all install the same package.
 
 *From source (contributors):*
@@ -64,7 +64,7 @@ Re-run it anytime — it's idempotent.
 > dependencies — all you need for the chat-driven `/job-setup` and `/job-search` flows. The
 > optional local web UI / control service has its own, heavier dependencies in
 > **`requirements-server.txt`** (§11). With pipx these map to the `[server]` extra:
-> `pipx install "claude-jobpilot[server]"`.
+> `pipx install "jobpilot-ai[server]"`.
 
 ---
 

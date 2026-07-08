@@ -1,7 +1,7 @@
 # Maintainer: ashlesh-t <ashleshat5@gmail.com>
-# Thin AUR wrapper over the PyPI package `claude-jobpilot`. Gives `yay -S claude-jobpilot`.
+# Thin AUR wrapper over the PyPI package `jobpilot-ai`. Gives `yay -S jobpilot-ai`.
 # All logic lives in the Python package; this only delivers it.
-pkgname=claude-jobpilot
+pkgname=jobpilot-ai
 pkgver=1.6.0
 pkgrel=1
 pkgdesc="Automated job-hunt pipeline for Claude Code (scrape → score → tailor → notify)"
@@ -13,16 +13,16 @@ depends=('python' 'python-requests' 'python-keyring' 'python-dotenv' 'python-ope
 # python-whois, pypdf2, python-docx) may need to come from AUR or be vendored into the venv.
 # The simplest robust path is to install into an isolated venv at build time; see below.
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-hatchling')
-source=("https://files.pythonhosted.org/packages/source/c/claude-jobpilot/claude_jobpilot-${pkgver}.tar.gz")
+source=("https://files.pythonhosted.org/packages/source/j/jobpilot-ai/jobpilot_ai-${pkgver}.tar.gz")
 sha256sums=('SKIP')  # replace with the real sha256 of the sdist on publish
 
 build() {
-  cd "claude_jobpilot-${pkgver}"
+  cd "jobpilot_ai-${pkgver}"
   python -m build --wheel --no-isolation
 }
 
 package() {
-  cd "claude_jobpilot-${pkgver}"
+  cd "jobpilot_ai-${pkgver}"
   python -m installer --destdir="$pkgdir" dist/*.whl
   # runtime pip deps not packaged as Arch deps are resolved on first use / via pipx.
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true

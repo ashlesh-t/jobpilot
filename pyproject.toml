@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "claude-jobpilot"
+name = "jobpilot-ai"
 version = "1.6.0"
 description = "Automated job-hunt pipeline for Claude Code: scrape → score → tailor → notify, with an optional local web UI + scheduler."
 readme = "README.md"
