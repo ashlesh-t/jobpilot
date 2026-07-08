@@ -2,7 +2,7 @@ name: Release to PyPI
 
 # Publishes the sdist + wheel to PyPI when you push a version tag (e.g. v1.6.0).
 # Uses PyPI Trusted Publishing (OIDC) — no API token to store. Configure the publisher
-# once at https://pypi.org/manage/project/claude-jobpilot/settings/publishing/ :
+# once at https://pypi.org/manage/project/jobpilot-ai/settings/publishing/ :
 #   owner: ashlesh-t, repo: jobpilot, workflow: release.yml, environment: pypi
 
 on:

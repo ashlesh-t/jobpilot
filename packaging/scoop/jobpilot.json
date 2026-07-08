@@ -9,13 +9,13 @@
   },
   "installer": {
     "script": [
-      "Write-Host 'Installing claude-jobpilot via pipx (recommended isolated install)...'",
+      "Write-Host 'Installing jobpilot-ai via pipx (recommended isolated install)...'",
       "python -m pip install --user --upgrade pipx",
-      "python -m pipx install \"claude-jobpilot[server]==1.6.0\""
+      "python -m pipx install \"jobpilot-ai[server]==1.6.0\""
     ]
   },
   "uninstaller": {
-    "script": "python -m pipx uninstall claude-jobpilot"
+    "script": "python -m pipx uninstall jobpilot-ai"
   },
   "checkver": "github",
   "autoupdate": {
@@ -24,6 +24,6 @@
   "notes": [
     "The 'jobpilot' command is provided by pipx. Ensure the pipx bin dir is on PATH:",
     "  python -m pipx ensurepath   (then restart the terminal)",
-    "On Windows, `pipx install \"claude-jobpilot[server]\"` also works directly without scoop."
+    "On Windows, `pipx install \"jobpilot-ai[server]\"` also works directly without scoop."
   ]
 }
