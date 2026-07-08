@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.1 — 2026-07-08
+
+### Release title: "PyPI Rename" (patch)
+
+The first PyPI publish attempt for v1.6.0 failed: `claude-jobpilot`'s trusted-publisher
+project name didn't match the pending publisher registered on PyPI, so the OIDC-based
+create-new-project upload was rejected.
+
+### Fixes
+- **PyPI package renamed `claude-jobpilot` → `jobpilot-ai`** to match the registered trusted
+  publisher. Updated `pyproject.toml`, `jobpilot/__init__.py`, `.github/workflows/release.yml`,
+  and every packaging wrapper (`aur/PKGBUILD`, `homebrew/jobpilot.rb`, `scoop/jobpilot.json`) and
+  doc (`README.md`, `GETTING_STARTED.md`, `packaging/README.md`) that referenced the old name.
+  The installed command is unchanged: `jobpilot`.
+
+---
+
 ## v1.6.0 — 2026-07-06
 
 ### Release title: "Install Anywhere — Plugin, pipx & Cross-Platform Setup"
