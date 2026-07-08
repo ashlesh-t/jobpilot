@@ -6,8 +6,8 @@ class Jobpilot < Formula
 
   desc "Automated job-hunt pipeline for Claude Code (scrape → score → tailor → notify)"
   homepage "https://github.com/ashlesh-t/jobpilot"
-  url "https://files.pythonhosted.org/packages/source/j/jobpilot-ai/jobpilot_ai-1.6.0.tar.gz"
-  sha256 "REPLACE_WITH_SDIST_SHA256"   # `brew fetch` / shasum -a 256 on publish
+  url "https://files.pythonhosted.org/packages/source/j/jobpilot-ai/jobpilot_ai-1.6.1.tar.gz"
+  sha256 "ea0df23d2dced2ef98fc545159a123013c958388cd3251c956453fa142bf8051"
   license "MIT"
 
   depends_on "python@3.12"
