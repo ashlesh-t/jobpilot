@@ -40,7 +40,7 @@ either (b) or (c) below so the scripts have their dependencies.
 
 **b. pipx — the backend + web UI, one command on every OS**
 ```bash
-pipx install "jobpilot-ai[server]"   # or: pip install "jobpilot-ai[server]"
+pipx install jobpilot-ai   # or: pip install jobpilot-ai — installs the pipeline + web UI
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 jobpilot serve                            # optional local web UI → http://127.0.0.1:8787
 ```

@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "jobpilot",
   "displayName": "JobPilot",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Automated job-hunt pipeline for Claude Code: scrape ~12 sources, score against your resume, tailor resumes, and deliver a digest via Telegram/Discord. Optional local web UI + scheduler.",
   "author": {
     "name": "ashlesh-t",

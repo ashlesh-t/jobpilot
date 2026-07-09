@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.6.2 — 2026-07-09
+
+### Release title: "One-Command Install" (patch)
+
+`pipx install "jobpilot-ai[server]"` required remembering the `[server]` extra to get the
+local web UI. Since `jobpilot-ai` is the only PyPI package (no lean core-only use case for
+end users), fold the extra into the base install.
+
+### Changed
+- **`[server]` extra removed from the PyPI package.** `fastapi`, `uvicorn`, `sse-starlette`,
+  `apscheduler`, and `claude-agent-sdk` moved from `[project.optional-dependencies].server`
+  into base `dependencies` in `pyproject.toml`. `pipx install jobpilot-ai` (no extra) now
+  installs the pipeline and the optional local web UI together. `tray` and `dev` extras are
+  unchanged. Homebrew/AUR/Scoop wrappers and docs updated to drop `[server]` from every
+  install command.
+- Source installs (`requirements.txt` / `requirements-server.txt`, used by `setup.sh` /
+  `scripts/jobpilot_setup.py`) are unchanged — that split still lets contributors skip the
+  heavier web-UI deps if they only need the chat-driven pipeline.
+
+---
+
 ## v1.6.1 — 2026-07-08
 
 ### Release title: "PyPI Rename" (patch)

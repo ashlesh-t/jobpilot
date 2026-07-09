@@ -4,7 +4,8 @@ Every wrapper here is **thin**: it only delivers the one PyPI package
 [`jobpilot-ai`](https://pypi.org/project/jobpilot-ai/). All behaviour lives in the
 Python package, so these files just carry a version + hash and need almost no maintenance.
 
-**The universal path is `pipx install "jobpilot-ai[server]"`** — it works identically on
+**The universal path is `pipx install jobpilot-ai`** — one command installs the pipeline
+and the optional local web UI together, and works identically on
 Linux, macOS, and Windows. The wrappers below are conveniences for users who prefer their OS
 package manager.
 

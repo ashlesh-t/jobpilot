@@ -42,7 +42,7 @@ Two pieces install independently, and everything below works on **Linux, macOS, 
 
 *Easiest (any OS):* [pipx](https://pipx.pypa.io) gives an isolated `jobpilot` command.
 ```bash
-pipx install "jobpilot-ai[server]"   # omit [server] if you won't use the web UI
+pipx install jobpilot-ai   # installs the pipeline + optional local web UI, all in one go
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 ```
 macOS: `brew install ashlesh-t/tap/jobpilot`. Windows: `scoop bucket add ashlesh-t
@@ -63,11 +63,12 @@ Setup creates your **data directory** at `~/.claude/job-hunt-ai/` (kept separate
 initialises the SQLite cache using Python's standard library, and syncs the slash commands.
 Re-run it anytime — it's idempotent.
 
-> **Two requirements files (source installs).** `requirements.txt` holds the core pipeline
+> **Two requirements files (source installs only).** `requirements.txt` holds the core pipeline
 > dependencies — all you need for the chat-driven `/job-setup` and `/job-search` flows. The
 > optional local web UI / control service has its own, heavier dependencies in
-> **`requirements-server.txt`** (§11). With pipx these map to the `[server]` extra:
-> `pipx install "jobpilot-ai[server]"`.
+> **`requirements-server.txt`** (§11) — install it separately with `pip install -r
+> requirements-server.txt` if you cloned from source and want the web UI. The `jobpilot-ai`
+> PyPI package bundles both, so a plain `pipx install jobpilot-ai` always includes the web UI.
 
 ---
 
