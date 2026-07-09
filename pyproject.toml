@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jobpilot-ai"
-version = "1.6.1"
+version = "1.6.2"
 description = "Automated job-hunt pipeline for Claude Code: scrape → score → tailor → notify, with an optional local web UI + scheduler."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,8 @@ classifiers = [
   "Environment :: Console",
 ]
 
-# Core pipeline dependencies (mirror requirements.txt).
+# Core pipeline + local control service/web UI, so a plain `pipx install jobpilot-ai`
+# installs everything (mirrors requirements.txt + requirements-server.txt combined).
 dependencies = [
   "apify-client>=1.8",
   "python-dotenv>=1.0",
@@ -33,17 +34,14 @@ dependencies = [
   "python-whois>=0.9",
   "confusable-homoglyphs>=3.0",
   "urlextract>=1.9",
-]
-
-[project.optional-dependencies]
-# The local control service + web UI (mirror requirements-server.txt).
-server = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
   "sse-starlette>=2.0",
   "apscheduler>=3.10",
   "claude-agent-sdk>=0.1",
 ]
+
+[project.optional-dependencies]
 tray = ["pystray>=0.19", "Pillow>=10.0"]
 dev = ["pytest>=8.0"]
 

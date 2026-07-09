@@ -40,12 +40,15 @@ either (b) or (c) below so the scripts have their dependencies.
 
 **b. pipx — the backend + web UI, one command on every OS**
 ```bash
-pipx install "jobpilot-ai[server]"   # or: pip install "jobpilot-ai[server]"
+pipx install jobpilot-ai   # or: pip install jobpilot-ai — installs the pipeline + web UI
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 jobpilot serve                            # optional local web UI → http://127.0.0.1:8787
 ```
-On Arch: `yay -S jobpilot-ai` · macOS: `brew install ashlesh-t/tap/jobpilot` · Windows:
-`scoop install jobpilot` — all thin wrappers over the same package (see `packaging/`).
+macOS: `brew install ashlesh-t/tap/jobpilot` · Windows: `scoop bucket add ashlesh-t
+https://github.com/ashlesh-t/scoop-bucket && scoop install jobpilot` · Arch (AUR): pending —
+new AUR account registrations are temporarily disabled ([details](https://itsfoss.com/news/arch-linux-aur-malware-flood/)); the `PKGBUILD` is ready in `packaging/aur/` and
+will be pushed once registration reopens. All are thin wrappers over the same PyPI package
+(see `packaging/`).
 
 **c. From source (contributors)**
 ```bash

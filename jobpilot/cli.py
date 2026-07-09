@@ -2,7 +2,7 @@
 
 Subcommands:
   jobpilot setup     configure the data dir, DB, config, slash commands (stdlib only)
-  jobpilot serve     launch the local control service + web UI (needs the [server] extra)
+  jobpilot serve     launch the local control service + web UI
   jobpilot doctor    print an engines/notifiers/sources health table
   jobpilot --version
 

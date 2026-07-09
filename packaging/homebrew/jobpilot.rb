@@ -6,7 +6,7 @@ class Jobpilot < Formula
 
   desc "Automated job-hunt pipeline for Claude Code (scrape → score → tailor → notify)"
   homepage "https://github.com/ashlesh-t/jobpilot"
-  url "https://files.pythonhosted.org/packages/source/j/jobpilot-ai/jobpilot_ai-1.6.0.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/j/jobpilot-ai/jobpilot_ai-1.6.2.tar.gz"
   sha256 "REPLACE_WITH_SDIST_SHA256"   # `brew fetch` / shasum -a 256 on publish
   license "MIT"
 
@@ -15,7 +15,7 @@ class Jobpilot < Formula
   def install
     # Simple, maintainable install: create a venv and pip-install the package (+deps) into it.
     venv = virtualenv_create(libexec, "python3.12")
-    system libexec/"bin/pip", "install", "jobpilot-ai[server]==#{version}"
+    system libexec/"bin/pip", "install", "jobpilot-ai==#{version}"
     bin.install_symlink libexec/"bin/jobpilot"
   end
 
