@@ -1,9 +1,16 @@
 name: Release to PyPI
 
-# Publishes the sdist + wheel to PyPI when you push a version tag (e.g. v1.6.0).
+# Publishes the sdist + wheel to PyPI when you push a version tag (e.g. v1.6.0), then syncs
+# the Homebrew tap and Scoop bucket to match.
 # Uses PyPI Trusted Publishing (OIDC) — no API token to store. Configure the publisher
 # once at https://pypi.org/manage/project/jobpilot-ai/settings/publishing/ :
 #   owner: ashlesh-t, repo: jobpilot, workflow: release.yml, environment: pypi
+#
+# sync-taps needs a fine-grained GitHub PAT (contents: write on homebrew-tap + scoop-bucket
+# only) stored as the repo secret TAP_PUSH_TOKEN — GITHUB_TOKEN can't push to other repos.
+# AUR is intentionally not synced here: it needs an SSH-key push to a separate git host and
+# new AUR account registrations are currently disabled; push packaging/aur/PKGBUILD manually
+# once that's possible.
 
 on:
   push:
@@ -39,3 +46,64 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  sync-taps:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Compute release version + sdist sha256
+        id: rel
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SDIST="dist/jobpilot_ai-${VERSION}.tar.gz"
+          test -f "$SDIST"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$SDIST" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        if: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          VERSION: ${{ steps.rel.outputs.version }}
+          SHA256: ${{ steps.rel.outputs.sha256 }}
+        run: |
+          git clone "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/ashlesh-t/homebrew-tap.git" tap
+          cd tap
+          sed -i \
+            -e "s#jobpilot_ai-[0-9][0-9.]*\.tar\.gz#jobpilot_ai-${VERSION}.tar.gz#" \
+            -e "s#sha256 \".*\"#sha256 \"${SHA256}\"#" \
+            Formula/jobpilot.rb
+          if ! git diff --quiet; then
+            git -c user.name="jobpilot-release-bot" -c user.email="actions@github.com" \
+              commit -am "jobpilot ${VERSION}"
+            git push
+          else
+            echo "Formula already up to date"
+          fi
+
+      - name: Update Scoop bucket
+        if: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: |
+          git clone "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/ashlesh-t/scoop-bucket.git" bucket
+          MANIFEST=bucket/bucket/jobpilot.json
+          jq --arg v "$VERSION" '.version = $v | .installer.script[-1] = ("python -m pipx install \"jobpilot-ai==" + $v + "\"")' "$MANIFEST" > "$MANIFEST.tmp"
+          mv "$MANIFEST.tmp" "$MANIFEST"
+          cd bucket
+          if ! git diff --quiet; then
+            git -c user.name="jobpilot-release-bot" -c user.email="actions@github.com" \
+              commit -am "jobpilot ${VERSION}"
+            git push
+          else
+            echo "Manifest already up to date"
+          fi
+
+      - name: Skip notice
+        if: ${{ secrets.TAP_PUSH_TOKEN == '' }}
+        run: echo "::warning::TAP_PUSH_TOKEN secret not set — skipped Homebrew/Scoop sync. See release.yml header."
