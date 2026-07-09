@@ -45,8 +45,11 @@ Two pieces install independently, and everything below works on **Linux, macOS, 
 pipx install "jobpilot-ai[server]"   # omit [server] if you won't use the web UI
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 ```
-On Arch you can instead `yay -S jobpilot-ai`; macOS `brew install ashlesh-t/tap/jobpilot`;
-Windows `scoop install jobpilot` — all install the same package.
+macOS: `brew install ashlesh-t/tap/jobpilot`. Windows: `scoop bucket add ashlesh-t
+https://github.com/ashlesh-t/scoop-bucket` then `scoop install jobpilot`. Arch (AUR): not yet
+published — new AUR account registrations are temporarily disabled due to a malware cleanup;
+the `PKGBUILD` is ready in `packaging/aur/` and will be pushed once registration reopens. All
+three install the same `jobpilot-ai` PyPI package.
 
 *From source (contributors):*
 ```bash
