@@ -16,9 +16,12 @@ Wipe JobPilot's run history so previously seen jobs can resurface. Keeps prefere
 
 2. **On CONFIRM**, run via bash against `~/.claude/job-hunt-ai/cache/jobs.sqlite`:
    ```bash
-   sqlite3 ~/.claude/job-hunt-ai/cache/jobs.sqlite "DELETE FROM jobs_seen; DELETE FROM score_cache;"
+   sqlite3 ~/.claude/job-hunt-ai/cache/jobs.sqlite "DELETE FROM jobs_seen; DELETE FROM score_cache; DELETE FROM user_feedback;"
    rm -rf ~/.claude/job-hunt-ai/reports/*
+   rm -f ~/.claude/job-hunt-ai/cache/learning.json
    ```
+   (History reset must also reset learned ranking bias — `learning.json` derives from the
+   deleted feedback rows. `company_intel.json` is kept: it's public research, not history.)
 
 3. **Confirm** what was cleared: number of job rows removed, score-cache rows removed, and that
    the reports directory is now empty. Reassure the user that `preferences.json`, `profile.json`,

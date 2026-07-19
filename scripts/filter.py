@@ -83,9 +83,8 @@ def seen_job_ids() -> set:
         return set()
     try:
         conn = sqlite3.connect(str(db_path()))
-        rows = conn.execute(
-            "SELECT job_id FROM jobs_seen WHERE status = 'active'"
-        ).fetchall()
+        # Any row counts as seen — status may be a feedback value (applied/rejected/...).
+        rows = conn.execute("SELECT job_id FROM jobs_seen").fetchall()
         conn.close()
         return {r[0] for r in rows}
     except sqlite3.Error:
@@ -112,8 +111,8 @@ def extract_exp_req(job: dict) -> int:
     for text in (exp_field, jd):
         if not text:
             continue
-        # "3-5 years", "3 to 5 years", "2 – 4 yrs"
-        m = re.search(r"(\d+)\s*(?:-|-|to)\s*\d+\s*(?:\+)?\s*(?:years?|yrs?)", text)
+        # "3-5 years", "3 to 5 years", "2 – 4 yrs" (hyphen, en/em dash, or "to")
+        m = re.search(r"(\d+)\s*(?:-|–|—|to)\s*\d+\s*(?:\+)?\s*(?:years?|yrs?)", text)
         if m:
             return int(m.group(1))
         # "3+ years", "minimum 3 years", "3 years", "3 year(s)"
@@ -228,9 +227,17 @@ def ctc_company_ok(job: dict, prefs: dict, user_exp: int = 0) -> tuple[bool, boo
     is_early_career = user_exp <= 2
 
     text = ((job.get("jd_full") or "") + " " + (job.get("experience_req") or "")).lower()
+    # "LPA" is unambiguous; bare "lakh(s)" only counts with compensation context nearby
+    # ("10 lakh users" / "5 lakh downloads" must NOT parse as a salary).
     m = re.search(
-        r"(\d+(?:\.\d+)?)\s*(?:[-–]\s*\d+(?:\.\d+)?\s*)?(?:lpa|l\.p\.a|lakhs?)\b", text
+        r"(\d+(?:\.\d+)?)\s*(?:[-–]\s*\d+(?:\.\d+)?\s*)?(?:lpa|l\.p\.a)\b", text
     )
+    if not m:
+        m = re.search(
+            r"(?:ctc|salary|package|compensation|stipend|pay|₹|rs\.?|inr)\D{0,20}?"
+            r"(\d+(?:\.\d+)?)\s*(?:[-–]\s*\d+(?:\.\d+)?\s*)?lakhs?\b",
+            text,
+        )
     if m:
         found = float(m.group(1))
         if found >= min_ctc:

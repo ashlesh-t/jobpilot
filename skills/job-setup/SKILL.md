@@ -110,6 +110,15 @@ the cached profile.
    - `graduation_date` — e.g. `"July 2026"` (from the education section).
 4. **Ask the user to clarify** anything genuinely missing or ambiguous (e.g. empty projects,
    unclear company names). Do not ask about details already clearly readable.
+4b. **Interview readiness** (one AskUserQuestion batch — setup is the one place this is
+   allowed; `/job-search` treats a missing block as all-`"unknown"` and never asks):
+   - "How's your DSA/LeetCode practice?" → `dsa_level`: `none | basic | medium | strong`
+   - "LeetCode/CodeChef profile URL?" (optional) → `leetcode_url`
+   - "System design comfort?" → `system_design`: `none | basic | good`
+   - "Spoken-English interview comfort?" → `spoken_english`: `basic | good | fluent`
+   These feed the interview-bar-aware ranking in `/job-search` (a DSA-gate company like Navi
+   ranks lower when `dsa_level` is weak; a GenAI startup ranks higher for a shipped RAG
+   project — see `CLAUDE.md` "Interview-bar intelligence").
 5. Write the complete `~/.claude/job-hunt-ai/cache/profile.json`, including these fields:
    ```json
    {
@@ -120,6 +129,10 @@ the cached profile.
      "publications": [],
      "graduation_date": "July 2026",
      "github_url": "", "portfolio_url": "",
+     "interview_readiness": {
+       "dsa_level": "unknown", "leetcode_url": "",
+       "system_design": "unknown", "spoken_english": "unknown"
+     },
      "locations": [],
      "availability": "",
      "notice_period_days": 0,

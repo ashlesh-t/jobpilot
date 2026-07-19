@@ -41,6 +41,8 @@ COLUMNS = [
     ("Why", "why", 42),
     ("Matched Skills", "matched_skills", 28),
     ("Missing Skills", "missing_skills", 26),
+    ("Prep Focus", "prep_focus", 30),
+    ("Gap Signals", "gap_signals", 28),
     ("Market Salary", "market_salary", 15),
     ("Your Demand", "your_demand", 13),
     ("Salary Source", "salary_source", 14),
@@ -207,7 +209,7 @@ def build_workbook(jobs: list):
     ws.freeze_panes = "A2"
 
     wrap_keys = {"why", "jd_summary", "must_have_skills", "nice_to_have",
-                 "matched_skills", "missing_skills"}
+                 "matched_skills", "missing_skills", "prep_focus", "gap_signals"}
     center_keys = {"_row", "score", "effective_score", "exp_required", "posted_date"}
 
     for r, job in enumerate(jobs, start=2):

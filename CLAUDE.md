@@ -51,12 +51,11 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 | `scripts/scrapers/{internshala,remoteok,weworkremotely,remotive,arbeitnow,jobicy}.py` | Native scrapers (no Apify, no LLM) |
 | `scripts/dedupe.py` | Layer A: removes duplicates → `/tmp/jobpilot_deduped.json` |
 | `scripts/filter.py` | Layer A: hard filters (location+city-alias, exp cap, CTC, seen-jobs) → `/tmp/jobpilot_filtered.json` |
-| `scripts/ats_scorer.py` | Layer B: semantic + keyword ATS score for one job ID |
-| `scripts/salary_research.py` | Layer B: market salary lookup (web fallback; AmbitionBox actor preferred) |
 | `scripts/resume_tailor.py` | Layer B: edits LaTeX/DOCX resume to match JD, compiles PDF |
+| `scripts/record_scored.py` | Layer-B-invoked, pure Python: persists scored jobs into `jobs_seen` + `score_cache` (cross-run memory) |
+| `scripts/feedback.py` | Records `/job-feedback` outcomes into `user_feedback` |
 | `scripts/report_generator.py` | Layer B: styled **XLSX** (top 20) into `~/.claude/job-hunt-ai/reports/` from `/tmp/jobpilot_scored.json` |
 | `scripts/telegram_notify.py` | Layer B: sends digest + report (xlsx/csv) + tailored resumes to Telegram |
-| `scripts/drive_upload.py` | Layer B: manifest of report + tailored resumes for Google Drive |
 | `scripts/jp_secrets.py` | Secret loader/saver (keyring → `.env`). All scripts use this; never read env vars directly. |
 | `scripts/setup_wizard.py` | Interactive wizard called by `setup.sh` |
 | `config/actors.json` | Apify actor IDs (native sources listed under `_native_sources`) |
@@ -69,9 +68,10 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 | Command | File | What it does |
 |---|---|---|
 | `/job-setup` | `skills/job-setup/SKILL.md` | Secrets check, Drive resume pick, **Claude reads + verifies resume**, preferences questionnaire |
-| `/job-search` | `skills/job-search/SKILL.md` | Full pipeline (Layer A + Claude Layer B scoring, salary, CSV, tailoring, Telegram, Drive) |
+| `/job-search` | `skills/job-search/SKILL.md` | Full pipeline (Layer A + WebSearch discovery + Claude Layer B scoring, company intel, salary, XLSX, tailoring, Telegram) |
 | `/job-tailor <id\|URL\|JD>` | `skills/job-tailor/SKILL.md` | Claude scores + tailors resume to a single job |
-| `/jobpilot-clear` | `skills/jobpilot-clear/SKILL.md` | Reset seen-job cache and score cache |
+| `/job-feedback` | `skills/job-feedback/SKILL.md` | Record applied/rejected/interview/offer/ghosted outcomes; updates `learning.json` |
+| `/jobpilot-clear` | `skills/jobpilot-clear/SKILL.md` | Reset seen-job cache, score cache, feedback, and learned weights |
 
 ## Data directory (not in repo)
 
@@ -81,8 +81,10 @@ Everything personal lives in `~/.claude/job-hunt-ai/` (created by `setup.sh`):
 ~/.claude/job-hunt-ai/
 ├── .env                          # APIFY_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 ├── options/preferences.json      # job search criteria
-├── cache/jobs.sqlite             # seen-jobs + score cache
+├── cache/jobs.sqlite             # seen-jobs + score cache + user feedback
 ├── cache/profile.json            # resume profile (Claude-verified, profile_verified: true)
+├── cache/company_intel.json      # per-company interview intel (archetype, prep focus; TTL 45d)
+├── cache/learning.json           # outcome-learned ranking weights (see Learning loop below)
 ├── resumes/base.pdf              # master resume (cached from Google Drive)
 ├── resumes/tailored/             # generated tailored resumes
 └── reports/                      # dated XLSX reports
@@ -117,13 +119,49 @@ Claude scores each job in Layer B by reading the full JD + `profile.json` and co
 - `semantic_score` = holistic judgment of fit (0–100).
 - `score` = `round(0.5 * semantic_score + 0.5 * keyword_score, 1)` — pure fit, 0–100.
   Used for threshold gates (tailoring, salary research). **Never multiply by location_weight.**
-- `effective_score` = `score * location_weight` — used **only for sort order**, never for gates.
+- `effective_score` = `score * location_weight + bar_fit + learning_adj` — used **only for
+  sort order**, never for gates (see the two sections below for the added terms).
 
 **Worked example (Swiss Re Golang):** JD asks for Go, Docker, Kubernetes, CI/CD, microservices
 (5 skills). Profile has Go, Docker, K8s, GitHub Actions, gRPC → 4 matched / 5 JD skills = 80.
 With semantic_score=75 → score = round(0.5×75 + 0.5×80) = 78. Crosses tailoring threshold.
 
-No `ats_scorer.py`, no `sentence-transformers`, no Jaccard fallback.
+No `ats_scorer.py`, no `sentence-transformers`, no Jaccard fallback. Scored jobs are persisted
+by `scripts/record_scored.py` (jobs_seen + score_cache) so runs are deduped and cached scores
+are reused for an unchanged resume.
+
+## Interview-bar intelligence (Layer B, /job-search Step B3b)
+
+Pure JD-text matching can't see the *hiring bar*: Navi gates freshers on medium DSA
+(GFG interview experiences), Signzy tests API/system-design depth, Swiss Re deep-dives resume
+projects, Accenture screens communication + cognitive, GenAI startups want one production RAG
+project (see `PLAN_INTELLIGENCE.md` Research Findings for citations).
+
+- `cache/company_intel.json`: per-company entry with `archetype`
+  (`dsa-gate-product | api-depth-startup | genai-portfolio-startup | gcc-enterprise |
+  mass-recruiter | unknown`), rounds, `prep_focus`, `sources`, `fetched_at`, `ttl_days: 45`.
+  Populated by ≤5 WebSearch lookups per run (top jobs only, misses cached as `unknown`).
+- `profile.interview_readiness` (additive, from `/job-setup`): `dsa_level`, `leetcode_url`,
+  `system_design`, `spoken_english`. Missing block = all-`unknown`; never ask during a run.
+- `bar_fit ∈ [-8, +8]` from archetype × readiness (e.g. dsa-gate + weak/unknown DSA → −8…−4;
+  genai-portfolio + shipped RAG project → +4…+8; mass-recruiter/unknown → 0). Applied to
+  `effective_score` only. Report gets `Prep Focus` + `Gap Signals` columns.
+
+## Learning loop (Layer B only — recursive, capped)
+
+`/job-feedback` outcomes re-weight *ranking* over time via `cache/learning.json`
+(`skill_weights` / `archetype_weights` / `source_weights`, all defaulting to 1.0):
+
+- **Write** (job-feedback Step 3b), per outcome with value
+  `v ∈ {offer +1.0, interview +0.6, applied 0, ghosted −0.3, rejected −0.6}`, for each signal
+  `s` in the job's `matched_skills ∪ {archetype, source_board}` (from `score_cache`):
+  `w[s] = clip(w[s] + 0.05 * v, 0.7, 1.3)`. One outcome moves a weight ≤ 0.05.
+- **Read** (job-search B3b), only when `outcome_count >= 5`:
+  `learning_adj = clip(10 * (mean(w[s] for relevant s) − 1.0), −10, +10)` added to
+  `effective_score`. Never touches `score` or any threshold gate. `/jobpilot-clear` deletes
+  `learning.json` along with the feedback rows it was learned from.
+- **Layer A never learns**: no scoring or learning logic in `apify_scraper.py` / `dedupe.py` /
+  `filter.py` / `scripts/scrapers/` (Layer A invariant).
 
 ## Secrets rule
 

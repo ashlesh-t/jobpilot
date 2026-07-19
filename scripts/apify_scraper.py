@@ -20,7 +20,6 @@ import json
 import os
 import re
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,8 +34,6 @@ import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
 REPO_DIR = Path(__file__).resolve().parent.parent
 RAW_OUT = "/tmp/jobpilot_raw.json"
 STATUS_OUT = "/tmp/jobpilot_scrape_status.json"
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds between retry attempts
 APIFY_BASE = "https://api.apify.com/v2"
 
 # Set once if Apify becomes unusable mid-run, so we prompt/skip only once.
@@ -199,65 +196,6 @@ def build_run_input(base_input: dict, actor_id: str, lessons: dict) -> dict:
         new_key = field_overrides.get(k, k)
         result[new_key] = v
     return result
-
-
-# ── Apify actor call + retry ──────────────────────────────────────────────────
-
-def run_apify_actor(
-    actor_id: str, run_input: dict, token: str, timeout: int = 300
-) -> tuple[list, bool, int]:
-    """Call an Apify actor with up to MAX_RETRIES attempts.
-
-    0 items counts as a soft failure and triggers a retry.
-    Returns (items, success, attempts_used).
-    """
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            items = _call_apify_actor(actor_id, run_input, token, timeout)
-            if items:
-                print(f"[apify] {actor_id}: {len(items)} items (attempt {attempt})", file=sys.stderr)
-                return items, True, attempt
-            print(f"[apify] {actor_id}: 0 items on attempt {attempt}", file=sys.stderr)
-        except Exception as exc:
-            print(f"[apify] {actor_id} attempt {attempt} error: {exc}", file=sys.stderr)
-
-        if attempt < MAX_RETRIES:
-            time.sleep(RETRY_DELAY)
-
-    print(f"[apify] {actor_id}: all {MAX_RETRIES} attempts returned 0 or failed", file=sys.stderr)
-    return [], False, MAX_RETRIES
-
-
-def _call_apify_actor(actor_id: str, run_input: dict, token: str, timeout: int) -> list:
-    """Single attempt — SDK preferred, raw requests fallback."""
-    try:
-        from apify_client import ApifyClient
-        client = ApifyClient(token)
-        run = client.actor(actor_id).call(run_input=run_input, wait_secs=timeout)
-        if not run:
-            return []
-        dataset_id = run.get("defaultDatasetId")
-        if not dataset_id:
-            return []
-        return list(client.dataset(dataset_id).iterate_items())
-    except ImportError:
-        print("[apify] apify-client not installed, falling back to requests", file=sys.stderr)
-        return _run_apify_actor_raw(actor_id, run_input, token, timeout)
-
-
-def _run_apify_actor_raw(actor_id: str, run_input: dict, token: str, timeout: int) -> list:
-    """Raw requests fallback if apify-client is unavailable."""
-    actor_path = actor_id.replace("/", "~")
-    url = f"{APIFY_BASE}/acts/{actor_path}/run-sync-get-dataset-items"
-    resp = requests.post(
-        url,
-        params={"token": token},
-        json=run_input,
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data if isinstance(data, list) else data.get("items", [])
 
 
 # --------------------------------------------------------------------------- #
