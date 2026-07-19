@@ -9,6 +9,7 @@
   "boards": ["linkedin", "glassdoor", "indeed", "google"],
   "max_results_per_board": 50,
   "hours_old": 48,
+  "retry_empty_runs": false,
   "_native_sources": [
     "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy",
     "yc_startup", "hasjob", "instahyre", "wellfound_rss"

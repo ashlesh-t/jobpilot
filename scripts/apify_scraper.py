@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,14 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 RAW_OUT = "/tmp/jobpilot_raw.json"
 STATUS_OUT = "/tmp/jobpilot_scrape_status.json"
 APIFY_BASE = "https://api.apify.com/v2"
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # base seconds; backoff is RETRY_DELAY * 2**attempt
+
+# Logged once per process so an ImportError isn't printed for every actor call.
+_sdk_missing_logged = False
+
+# Set once per run from actors.json "retry_empty_runs"; see _run_actor()'s retry policy.
+_retry_empty_runs = False
 
 # Set once if Apify becomes unusable mid-run, so we prompt/skip only once.
 _apify_blocked = False
@@ -378,7 +387,7 @@ def _classify_error(status: int, body: str) -> str | None:
 
 def run_actor_safe(actor_id: str, run_input: dict, token_holder: dict,
                    source_board: str, timeout: int = 300,
-                   url_field: str = "") -> list:
+                   url_field: str = "", retry_empty: bool | None = None) -> list:
     """Run an Apify actor; normalize + return its items. On credit/auth failure, prompt
     once (interactive) for a new token and retry, else degrade to native-only.
 
@@ -392,14 +401,16 @@ def run_actor_safe(actor_id: str, run_input: dict, token_holder: dict,
     token = token_holder.get("token")
     if not token:
         return []
+    if retry_empty is None:
+        retry_empty = _retry_empty_runs
 
-    items, err = _run_actor(actor_id, run_input, token, timeout)
+    items, err = _run_actor(actor_id, run_input, token, timeout, retry_empty)
     if err in ("credit", "auth"):
         reason = "credits exhausted" if err == "credit" else "token invalid"
         new_token = prompt_for_new_token(reason)
         if new_token:
             token_holder["token"] = new_token
-            items, err2 = _run_actor(actor_id, run_input, new_token, timeout)
+            items, err2 = _run_actor(actor_id, run_input, new_token, timeout, retry_empty)
             if err2:
                 _apify_blocked = True
                 return []
@@ -408,8 +419,135 @@ def run_actor_safe(actor_id: str, run_input: dict, token_holder: dict,
     return [normalize(it, source_board, url_field=url_field) for it in items]
 
 
-def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int):
-    """Low-level synchronous actor run. Returns (items, error_kind|None)."""
+def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int,
+               retry_empty: bool = False):
+    """Run an actor with retry/backoff. Returns (items, error_kind|None).
+
+    Retry policy — deliberately narrow, because Apify bills by compute unit:
+      * transport error / 5xx / 408  -> retry (the run never started, so nothing billed)
+      * auth / credit                -> no retry; caller re-prompts for a token
+      * HTTP 400 (input schema)      -> no retry; deterministic, retrying only burns time
+      * HTTP 200 with 0 items        -> accepted as a real answer unless retry_empty,
+                                        and then retried ONCE only (already billed)
+    """
+    empty_retried = False
+    for attempt in range(MAX_RETRIES):
+        items, err, retryable = _run_actor_once(actor_id, run_input, token, timeout)
+
+        if err:  # auth / credit — hand straight back for the token re-prompt
+            return [], err
+
+        if items:
+            return items, None
+
+        if not retryable:
+            # Genuine empty result. Retry at most once, and only when asked to.
+            if retry_empty and not empty_retried and attempt < MAX_RETRIES - 1:
+                empty_retried = True
+                print(f"[apify] {actor_id}: 0 items — retrying once (retry_empty_runs)",
+                      file=sys.stderr)
+            else:
+                return [], None
+
+        if attempt >= MAX_RETRIES - 1:
+            break
+
+        delay = RETRY_DELAY * (2 ** attempt)
+        print(f"[apify] {actor_id}: retrying in {delay}s "
+              f"(attempt {attempt + 2}/{MAX_RETRIES})", file=sys.stderr)
+        run_events.emit("scrape", "progress",
+                        f"{actor_id}: retry {attempt + 2}/{MAX_RETRIES}",
+                        source="apify", layer="apify", actor=actor_id,
+                        attempt=attempt + 2)
+        time.sleep(delay)
+
+    print(f"[apify] {actor_id}: gave up after {MAX_RETRIES} attempts", file=sys.stderr)
+    return [], None
+
+
+def _run_actor_once(actor_id: str, run_input: dict, token: str, timeout: int):
+    """One actor attempt. Returns (items, error_kind|None, retryable).
+
+    Prefers the Apify SDK: .call() polls the run instead of using the
+    run-sync-get-dataset-items endpoint, which has a 300s server-side ceiling that
+    long scrapes (e.g. a full Naukri run) can exceed. Falls back to raw requests
+    when apify-client isn't installed.
+    """
+    global _sdk_missing_logged
+    try:
+        from apify_client import ApifyClient  # noqa: F401
+    except ImportError:
+        if not _sdk_missing_logged:
+            print("[apify] apify-client not installed — using raw requests fallback",
+                  file=sys.stderr)
+            _sdk_missing_logged = True
+        return _run_actor_raw(actor_id, run_input, token, timeout)
+    return _run_actor_sdk(actor_id, run_input, token, timeout)
+
+
+def _sdk_wait_kwargs(client, timeout: int) -> dict:
+    """Build .call() kwargs that work across apify-client majors.
+
+    1.x takes wait_secs=int; 3.x renamed it to wait_duration=timedelta and added a
+    `logger` that streams actor logs to stdout by default — which would pollute
+    Layer A's output, so it's silenced where supported. pyproject allows >=1.8, so
+    both shapes are reachable; introspect rather than guess.
+    """
+    import inspect
+    from datetime import timedelta
+
+    try:
+        params = inspect.signature(client.actor("x").call).parameters
+    except Exception:  # noqa: BLE001 — never let introspection break the run
+        return {"wait_secs": timeout}
+
+    kwargs: dict = {}
+    if "wait_duration" in params:
+        kwargs["wait_duration"] = timedelta(seconds=timeout)
+    elif "wait_secs" in params:
+        kwargs["wait_secs"] = timeout
+    if "logger" in params:
+        kwargs["logger"] = None
+    return kwargs
+
+
+def _sdk_dataset_id(run) -> str | None:
+    """Read the default dataset id from a 1.x dict run or a 3.x pydantic Run model."""
+    if isinstance(run, dict):
+        return run.get("defaultDatasetId")
+    return getattr(run, "default_dataset_id", None)
+
+
+def _run_actor_sdk(actor_id: str, run_input: dict, token: str, timeout: int):
+    """SDK attempt. Maps ApifyApiError through the same _classify_error() as the raw
+    path so credit/auth detection (and thus the token re-prompt) behaves identically."""
+    from apify_client import ApifyClient
+
+    try:
+        client = ApifyClient(token)
+        run = client.actor(actor_id).call(run_input=run_input, **_sdk_wait_kwargs(client, timeout))
+        if not run:
+            return [], None, True  # no run object => treat as transient
+        dataset_id = _sdk_dataset_id(run)
+        if not dataset_id:
+            return [], None, False
+        return list(client.dataset(dataset_id).iterate_items()), None, False
+    except Exception as exc:  # noqa: BLE001
+        status = getattr(exc, "status_code", None) or 0
+        err = _classify_error(status, str(exc))
+        if err:
+            return [], err, False
+        if status == 400:
+            print(f"[apify] actor {actor_id} HTTP 400 — skipping. {str(exc)[:300]}",
+                  file=sys.stderr)
+            return [], None, False
+        print(f"[apify] actor {actor_id} failed: {exc}", file=sys.stderr)
+        # No status (transport) or 5xx/408 — worth another attempt.
+        return [], None, status == 0 or status >= 500 or status == 408
+
+
+def _run_actor_raw(actor_id: str, run_input: dict, token: str, timeout: int):
+    """Raw requests attempt, used when apify-client is unavailable."""
     actor_path = actor_id.replace("/", "~")
     url = f"{APIFY_BASE}/acts/{actor_path}/run-sync-get-dataset-items"
     try:
@@ -417,8 +555,8 @@ def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int):
         if resp.status_code in (200, 201):
             data = resp.json()
             if isinstance(data, list):
-                return data, None
-            return (data.get("items", []) if isinstance(data, dict) else []), None
+                return data, None, False
+            return (data.get("items", []) if isinstance(data, dict) else []), None, False
         err = _classify_error(resp.status_code, resp.text)
         if not err:
             # Surface the body snippet so an input-schema mismatch (HTTP 400) is
@@ -426,10 +564,11 @@ def _run_actor(actor_id: str, run_input: dict, token: str, timeout: int):
             snippet = (resp.text or "")[:300].replace("\n", " ")
             print(f"[apify] actor {actor_id} HTTP {resp.status_code} — skipping. Body: {snippet}",
                   file=sys.stderr)
-        return [], err
+        retryable = not err and (resp.status_code >= 500 or resp.status_code == 408)
+        return [], err, retryable
     except Exception as exc:  # noqa: BLE001
         print(f"[apify] actor {actor_id} failed: {exc}", file=sys.stderr)
-        return [], None
+        return [], None, True
 
 
 # --------------------------------------------------------------------------- #
@@ -588,6 +727,11 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict,
     boards = actors.get("boards", ["linkedin", "glassdoor", "indeed"])
     max_results = int(actors.get("max_results_per_board", 50))
     hours_old = int(actors.get("hours_old", 48))
+
+    # Off by default: an actor run that finished with 0 items has already burned credit,
+    # so retrying it costs real money for a result that is usually genuinely empty.
+    global _retry_empty_runs
+    _retry_empty_runs = bool(actors.get("retry_empty_runs", False))
     results: list = []
 
     proxy_in = {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}

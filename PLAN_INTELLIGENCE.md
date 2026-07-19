@@ -2,8 +2,8 @@
 
 Research-grounded plan for upgrading JobPilot's matching intelligence: real hiring-bar data
 in scoring, Claude WebSearch as a discovery source, and a recursive learning loop over
-`/job-feedback` outcomes. Companion to `PLAN.md` (whose EPICs A–E are implemented); EPICs here
-continue the lettering at F.
+`/job-feedback` outcomes. Follow-up to the initial scoring/location upgrade (EPICs A–E, since
+implemented); EPICs here continue the lettering at F.
 
 ## Root-Cause Analysis (what actually holds intelligence back)
 
