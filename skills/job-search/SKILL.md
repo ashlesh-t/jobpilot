@@ -186,6 +186,25 @@ Read `config/target_companies.json`. If `"enabled": true`:
 
 These jobs enter Layer B on equal footing with scraper results.
 
+### A5 — WebSearch job discovery (Layer B, free)
+
+Claude's own WebSearch is the third sourcing channel (native scrapers → Apify → WebSearch).
+Run **at most 3 searches** built from `preferences.json`:
+
+```
+"<role_types[0]> fresher <current year> <location_priority[0]>" (site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com)
+"<preferred_stack[0]> <role_types[0]> hiring <location_priority[0]>"
+"<role_types[1]> new grad remote india apply"
+```
+
+For each credible posting found (**cap 10 total**): build the canonical job dict —
+`job_id` = same SHA1 as `make_job_id(company, role, location, "websearch")`,
+`source_board: "websearch"`, `application_url` = the posting page, `has_jd` per available
+text. Skip any `job_id` already in the seen set (SQLite) or already present in
+`/tmp/jobpilot_filtered.json`. Append survivors to `/tmp/jobpilot_filtered.json`
+(read → merge → write), exactly like A4. Log `[websearch] N jobs added`. If searches fail,
+log and continue — never block.
+
 ---
 
 ## Layer B — Claude scores, researches, tailors, notifies
@@ -233,7 +252,13 @@ takes >~8s. **Do NOT** scrape LinkedIn with a logged-in session — it risks ban
 
 ### B3 — ATS scoring (write the scored JSON)
 
-For each surviving job, read the **full** `jd_full` and `profile.json`:
+**Score-cache reuse:** before scoring each job, check
+`SELECT score_json FROM score_cache WHERE job_id=? AND resume_hash=?` (current
+`preferences.resume_hash`). On a hit, reuse the cached `score`/`matched_skills`/
+`missing_skills` (log `cache-hit <job_id>`) and skip re-derivation — scores stay consistent
+across runs. (A resume change clears the cache automatically in `dedupe.py`.)
+
+For each remaining job, read the **full** `jd_full` and `profile.json`:
 
 **Extract JD hard skills:**
 - `must_have_skills` (≤6): concrete tech skills the JD explicitly requires.
@@ -267,12 +292,76 @@ or JD city hints; if the JD implies remote, use the remote weight; if unresolvab
 `location_weight` at 0.75 and note it in `why`. Log
 `location '<raw>' re-resolved to '<canonical>' → weight <w>`.
 
-**Feedback signal (optional):** if `user_feedback` has rows, run
+**Feedback pattern report:** if `user_feedback` has rows, run
 `SELECT uf.status, js.company, js.role FROM user_feedback uf JOIN jobs_seen js ON uf.job_id = js.job_id ORDER BY uf.feedback_date DESC LIMIT 20;`
-and surface any pattern in the run summary. **Do NOT auto-adjust scores** — just report it.
+and surface any pattern in the run summary (e.g. "high-scoring GCC jobs keep rejecting").
+The *numeric* learning adjustment happens in B3b below — never here, and never on `score`.
 
 Rank by `effective_score` (desc), hard-dropped jobs at the bottom. Apply any non-OVERRIDE
 override hint. Write the full enriched list to **`/tmp/jobpilot_scored.json`**.
+
+### B3b — Company intel, bar-aware ranking, learning adjustment
+
+All three adjust **ranking only** (`effective_score`) — `score` and every threshold gate
+(tailoring, salary) are never touched by this step.
+
+**1. Company intel** (`~/.claude/job-hunt-ai/cache/company_intel.json`, read it first):
+for the top ~8 jobs with `score >= 55`, look up the lowercased company name. For at most
+**5 cache-misses per run**, run one WebSearch each:
+`"<company> <role-family> interview experience rounds site:geeksforgeeks.org OR site:ambitionbox.com OR site:glassdoor.co.in"`
+(retry once without the site filter). Write what you learn as a cache entry:
+
+```json
+{
+  "navi": {
+    "archetype": "dsa-gate-product",
+    "rounds": "OT + 2 DSA rounds + HM round",
+    "tests": ["DSA medium (DP, binary search)", "OOP", "DBMS"],
+    "dsa_intensity": "high",
+    "fresher_friendly": true,
+    "prep_focus": "Grind medium DP/graph problems; be fluent in complexity analysis",
+    "sources": ["<url>"],
+    "fetched_at": "YYYY-MM-DD",
+    "ttl_days": 45
+  }
+}
+```
+
+Archetype enum: `dsa-gate-product | api-depth-startup | genai-portfolio-startup |
+gcc-enterprise | mass-recruiter | unknown`. If nothing credible is found, cache
+`{"archetype": "unknown", ...}` too (so the miss isn't re-searched). Re-fetch entries older
+than `ttl_days`. Attach `archetype`, `prep_focus` to each covered job.
+
+**2. bar_fit** (`∈ [-8, +8]`, from archetype × `profile.interview_readiness`; treat a missing
+`interview_readiness` block as all-`unknown`, never ask):
+- `dsa-gate-product` and `dsa_level` in (none, basic, unknown) → −8…−4
+- `genai-portfolio-startup` and profile has a shipped RAG/LLM project → +4…+8
+- `gcc-enterprise` with strong resume projects → +2…+5
+- `mass-recruiter` or `unknown` archetype → 0
+
+**3. learning_adj** (`~/.claude/job-hunt-ai/cache/learning.json`; skip entirely if the file
+is missing or `outcome_count < 5`):
+
+```
+relevant     = matched_skills ∪ {archetype, source_board}   # only keys present in the file
+learning_adj = clip(10 * (mean(w[s] for s in relevant) - 1.0), -10, +10)   # 0 if relevant is empty
+```
+
+Then for every job: `effective_score = score * location_weight + bar_fit + learning_adj`.
+Add `gap_signals` (≤3 short strings) to each top-20 job — what the company's bar demands
+that the profile can't show (e.g. `"No DSA signal — this company gates on medium DP"`).
+Append `(bar N)` / `(learning N)` to `why` when |bar_fit| ≥ 4 or |learning_adj| ≥ 2.
+Re-rank, rewrite `/tmp/jobpilot_scored.json`.
+
+### B3c — Persist scored jobs (cross-run memory)
+
+```bash
+python3 scripts/record_scored.py /tmp/jobpilot_scored.json
+```
+
+Upserts every scored job into `jobs_seen` (company/role/location/score — this is what makes
+cross-run dedupe and `/job-feedback` work) and `score_cache` (score + matched_skills +
+archetype, keyed by resume hash — fuel for the learning loop). Pure Python, no LLM.
 
 ### B4 — Salary research (top ~20, India-aware)
 
@@ -329,6 +418,7 @@ Top matches:
 1. <role> @ <company> (Score: <score>)
    <market_salary> | <location>
    <application_url>
+   Prep: <prep_focus>          ← only when the job has one
 
 ... (up to 5)
 ────────────────────────────────────────
@@ -339,8 +429,7 @@ Report + tailored resumes attached.
 ────────────────────────────────────────
 ```
 Flag Google-Form apply URLs (`docs.google.com/forms`, `forms.gle`) with ⚠️ and no-JD jobs with
-`[no JD]`. If any Apify actors failed, add `⚠️ <actor> failed after 3 retries — see
-apify_lessons.json`.
+`[no JD]`. If any Apify actors failed, add `⚠️ <actor> failed — see apify_lessons.json`.
 
 Send via the notifier (respects `preferences.notify_channels`, default Telegram; the XLSX
 report and tailored resumes are attached automatically):

@@ -46,10 +46,11 @@ def batch_key(job: dict) -> str:
 
 
 def seen_job_ids(conn) -> set:
+    # Any row in jobs_seen counts as seen — status is lifecycle metadata (feedback may
+    # set it to applied/rejected/...), not seen-set membership. Filtering on
+    # status='active' made feedback-tagged jobs resurface as "new" every run.
     try:
-        rows = conn.execute(
-            "SELECT job_id FROM jobs_seen WHERE status = 'active'"
-        ).fetchall()
+        rows = conn.execute("SELECT job_id FROM jobs_seen").fetchall()
         return {r[0] for r in rows}
     except sqlite3.Error:
         return set()
