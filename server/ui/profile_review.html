@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobPilot — Profile Review</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  [x-cloak]{display:none!important;}
+  textarea{resize:vertical;}
+</style>
+</head>
+<body class="h-full bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200 font-sans antialiased">
+<div x-data="profileReview()" x-init="load()" x-cloak class="max-w-3xl mx-auto p-6 space-y-6">
+
+  <header class="space-y-1">
+    <h1 class="text-xl font-semibold">Review your profile</h1>
+    <p class="text-sm text-slate-500 dark:text-slate-400">
+      This is what Claude read from your resume. Fix anything that's wrong or
+      incomplete, then <strong>Save</strong> and click <strong>Done</strong> to
+      continue setup. Closing this tab without clicking Done keeps Claude's
+      original draft.
+    </p>
+  </header>
+
+  <template x-if="error">
+    <div class="rounded-lg border border-red-300 bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 p-3 text-sm" x-text="error"></div>
+  </template>
+
+  <template x-if="!loading && !error">
+  <div class="space-y-6">
+
+    <section class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Name</label>
+        <input type="text" x-model="profile.name" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Email</label>
+        <input type="text" x-model="profile.email" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Experience (years)</label>
+        <input type="number" min="0" x-model.number="profile.experience_years" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Graduation date</label>
+        <input type="text" x-model="profile.graduation_date" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">GitHub URL</label>
+        <input type="text" x-model="profile.github_url" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Portfolio URL</label>
+        <input type="text" x-model="profile.portfolio_url" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+    </section>
+
+    <!-- Skills -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Skills</h2>
+      <div class="flex flex-wrap gap-2">
+        <template x-for="(s, i) in profile.skills" :key="i">
+          <span class="inline-flex items-center gap-1 rounded-full bg-slate-200 dark:bg-slate-800 px-3 py-1 text-xs">
+            <input type="text" x-model="profile.skills[i]" class="bg-transparent w-24 focus:outline-none">
+            <button @click="profile.skills.splice(i,1)" class="text-slate-500 hover:text-red-600">&times;</button>
+          </span>
+        </template>
+        <button @click="profile.skills.push('')" class="rounded-full border border-dashed border-slate-400 px-3 py-1 text-xs text-slate-500 hover:border-slate-600">+ add skill</button>
+      </div>
+    </section>
+
+    <!-- Roles held -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Roles held</h2>
+      <template x-for="(r, i) in profile.roles_held" :key="i">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-md border border-slate-200 dark:border-slate-800 p-3">
+          <input type="text" placeholder="Title" x-model="r.title" class="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+          <input type="text" placeholder="Company" x-model="r.company" class="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+          <div class="flex gap-2">
+            <input type="text" placeholder="Duration" x-model="r.duration" class="flex-1 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <button @click="profile.roles_held.splice(i,1)" class="text-slate-500 hover:text-red-600 px-2">&times;</button>
+          </div>
+        </div>
+      </template>
+      <button @click="profile.roles_held.push({title:'',company:'',duration:''})" class="rounded-md border border-dashed border-slate-400 px-3 py-1 text-xs text-slate-500 hover:border-slate-600">+ add role</button>
+    </section>
+
+    <!-- Projects -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Projects</h2>
+      <template x-for="(p, i) in profile.projects" :key="i">
+        <div class="space-y-2 rounded-md border border-slate-200 dark:border-slate-800 p-3">
+          <div class="flex gap-2">
+            <input type="text" placeholder="Project name" x-model="p.name" class="flex-1 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <button @click="profile.projects.splice(i,1)" class="text-slate-500 hover:text-red-600 px-2">&times;</button>
+          </div>
+          <input type="text" placeholder="Stack (comma separated)"
+                 :value="(p.stack||[]).join(', ')"
+                 @change="p.stack = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)"
+                 class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+          <textarea placeholder="Description" x-model="p.description" rows="2" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm"></textarea>
+        </div>
+      </template>
+      <button @click="profile.projects.push({name:'',stack:[],description:''})" class="rounded-md border border-dashed border-slate-400 px-3 py-1 text-xs text-slate-500 hover:border-slate-600">+ add project</button>
+    </section>
+
+    <!-- Education -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Education</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <input type="text" placeholder="Degree" x-model="profile.education.degree" class="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+        <input type="text" placeholder="College" x-model="profile.education.college" class="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+        <input type="text" placeholder="Year" x-model="profile.education.year" class="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+      </div>
+    </section>
+
+    <!-- Publications -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Publications</h2>
+      <div class="space-y-2">
+        <template x-for="(pub, i) in profile.publications" :key="i">
+          <div class="flex gap-2">
+            <input type="text" x-model="profile.publications[i]" class="flex-1 rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <button @click="profile.publications.splice(i,1)" class="text-slate-500 hover:text-red-600 px-2">&times;</button>
+          </div>
+        </template>
+      </div>
+      <button @click="profile.publications.push('')" class="rounded-md border border-dashed border-slate-400 px-3 py-1 text-xs text-slate-500 hover:border-slate-600">+ add publication</button>
+    </section>
+
+    <!-- Interview readiness -->
+    <section class="space-y-2">
+      <h2 class="text-sm font-semibold">Interview readiness</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">DSA level</label>
+          <select x-model="profile.interview_readiness.dsa_level" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <option value="unknown">unknown</option>
+            <option value="none">none</option>
+            <option value="basic">basic</option>
+            <option value="medium">medium</option>
+            <option value="strong">strong</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">LeetCode/CodeChef URL</label>
+          <input type="text" x-model="profile.interview_readiness.leetcode_url" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">System design</label>
+          <select x-model="profile.interview_readiness.system_design" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <option value="unknown">unknown</option>
+            <option value="none">none</option>
+            <option value="basic">basic</option>
+            <option value="good">good</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">Spoken English</label>
+          <select x-model="profile.interview_readiness.spoken_english" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm">
+            <option value="unknown">unknown</option>
+            <option value="basic">basic</option>
+            <option value="good">good</option>
+            <option value="fluent">fluent</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <!-- Locations / availability -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Locations (comma separated)</label>
+        <input type="text" :value="(profile.locations||[]).join(', ')"
+               @change="profile.locations = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)"
+               class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Availability</label>
+        <input type="text" x-model="profile.availability" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 mb-1">Notice period (days)</label>
+        <input type="number" min="0" x-model.number="profile.notice_period_days" class="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm">
+      </div>
+    </section>
+
+    <footer class="flex items-center gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+      <button @click="save()" class="rounded-md bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900 px-4 py-2 text-sm font-medium hover:opacity-90">Save</button>
+      <button @click="markDone()" class="rounded-md bg-emerald-600 text-white px-4 py-2 text-sm font-medium hover:opacity-90">Save &amp; Done</button>
+      <span x-show="status" x-text="status" class="text-sm text-slate-500"></span>
+    </footer>
+
+  </div>
+  </template>
+
+</div>
+
+<script>
+function profileReview(){
+  return {
+    loading: true,
+    error: '',
+    status: '',
+    profile: {},
+    async load(){
+      try{
+        const r = await fetch('/api/profile');
+        if(!r.ok){ this.error = 'No profile.json found yet.'; this.loading = false; return; }
+        const p = await r.json();
+        p.skills = p.skills || [];
+        p.roles_held = p.roles_held || [];
+        p.projects = (p.projects||[]).map(x => ({stack: [], ...x}));
+        p.publications = p.publications || [];
+        p.education = p.education || {degree:'', college:'', year:''};
+        p.interview_readiness = p.interview_readiness || {dsa_level:'unknown', leetcode_url:'', system_design:'unknown', spoken_english:'unknown'};
+        p.locations = p.locations || [];
+        this.profile = p;
+      }catch(e){ this.error = 'Could not reach the JobPilot service: ' + e; }
+      this.loading = false;
+    },
+    async save(){
+      this.status = 'Saving…';
+      try{
+        const r = await fetch('/api/profile', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(this.profile)});
+        this.status = r.ok ? 'Saved.' : 'Save failed.';
+      }catch(e){ this.status = 'Save failed: ' + e; }
+    },
+    async markDone(){
+      await this.save();
+      try{
+        await fetch('/api/profile/done', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({done:true})});
+        this.status = 'Saved. You can close this tab.';
+      }catch(e){ this.status = 'Could not signal completion: ' + e; }
+    }
+  }
+}
+</script>
+</body>
+</html>
