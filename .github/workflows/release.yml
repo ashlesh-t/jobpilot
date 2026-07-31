@@ -50,6 +50,8 @@ jobs:
   sync-taps:
     needs: publish
     runs-on: ubuntu-latest
+    env:
+      TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -65,9 +67,8 @@ jobs:
           echo "sha256=$(sha256sum "$SDIST" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap
-        if: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+        if: ${{ env.TAP_PUSH_TOKEN != '' }}
         env:
-          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
           VERSION: ${{ steps.rel.outputs.version }}
           SHA256: ${{ steps.rel.outputs.sha256 }}
         run: |
@@ -86,9 +87,8 @@ jobs:
           fi
 
       - name: Update Scoop bucket
-        if: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+        if: ${{ env.TAP_PUSH_TOKEN != '' }}
         env:
-          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
           VERSION: ${{ steps.rel.outputs.version }}
         run: |
           git clone "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/ashlesh-t/scoop-bucket.git" bucket
@@ -105,5 +105,5 @@ jobs:
           fi
 
       - name: Skip notice
-        if: ${{ secrets.TAP_PUSH_TOKEN == '' }}
+        if: ${{ env.TAP_PUSH_TOKEN == '' }}
         run: echo "::warning::TAP_PUSH_TOKEN secret not set — skipped Homebrew/Scoop sync. See release.yml header."
