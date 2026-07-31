@@ -2,7 +2,7 @@
 # Thin AUR wrapper over the PyPI package `jobpilot-ai`. Gives `yay -S jobpilot-ai`.
 # All logic lives in the Python package; this only delivers it.
 pkgname=jobpilot-ai
-pkgver=1.6.2
+pkgver=1.7.0
 pkgrel=1
 pkgdesc="Automated job-hunt pipeline for Claude Code (scrape → score → tailor → notify)"
 arch=('any')
