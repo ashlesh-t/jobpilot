@@ -27,7 +27,16 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__
-from .paths import bundle_root, runtime_env
+from .paths import bundle_root, runtime_env, inject_path
+
+
+def _resolve_port(host: str, port: int) -> int:
+    inject_path()
+    from common import find_available_port
+    resolved = find_available_port(host, port)
+    if resolved != port:
+        print(f"==> Port {port} is already in use — using {resolved} instead.")
+    return resolved
 
 
 def _setup(args: argparse.Namespace) -> int:
@@ -45,10 +54,10 @@ def _setup(args: argparse.Namespace) -> int:
 
 def _serve(args: argparse.Namespace) -> int:
     env = runtime_env()
-    if args.port:
-        env["JOBPILOT_PORT"] = str(args.port)
-    if args.host:
-        env["JOBPILOT_HOST"] = args.host
+    host = args.host or os.environ.get("JOBPILOT_HOST", "127.0.0.1")
+    port = args.port or int(os.environ.get("JOBPILOT_PORT", "8787"))
+    env["JOBPILOT_HOST"] = host
+    env["JOBPILOT_PORT"] = str(_resolve_port(host, port))
     try:
         return subprocess.call([sys.executable, "-m", "server"],
                                cwd=str(bundle_root()), env=env)
@@ -184,7 +193,9 @@ def _start(args) -> int:
         _configure_schedule(d)
 
     host = args.host or os.environ.get("JOBPILOT_HOST", "127.0.0.1")
-    port = args.port or int(os.environ.get("JOBPILOT_PORT", "8787"))
+    requested_port = args.port or int(os.environ.get("JOBPILOT_PORT", "8787"))
+    port = _resolve_port(host, requested_port)
+    args.host, args.port = host, port
     url = f"http://{host}:{port}"
     try:
         webbrowser.open(url)

@@ -19,8 +19,12 @@ def main() -> None:
         return
 
     import uvicorn
+    from common import find_available_port
     host = os.environ.get("JOBPILOT_HOST", "127.0.0.1")
-    port = int(os.environ.get("JOBPILOT_PORT", "8787"))
+    requested_port = int(os.environ.get("JOBPILOT_PORT", "8787"))
+    port = find_available_port(host, requested_port)
+    if port != requested_port:
+        print(f"==> Port {requested_port} is already in use — using {port} instead.")
     print(f"JobPilot service → http://{host}:{port}")
     # import the app object via the flat module (server dir is on sys.path)
     from app import app
