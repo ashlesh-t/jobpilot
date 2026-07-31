@@ -35,6 +35,15 @@ def runs_dir() -> Path:
     return d
 
 
+def profile_path() -> Path:
+    return jobpilot_dir() / "cache" / "profile.json"
+
+
+def profile_review_done_path() -> Path:
+    """Sentinel file signaling the user clicked Done in the profile review UI."""
+    return jobpilot_dir() / "cache" / ".profile_review_done"
+
+
 def load_prefs() -> dict:
     try:
         return json.loads(prefs_path().read_text())

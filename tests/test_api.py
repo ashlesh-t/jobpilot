@@ -84,6 +84,32 @@ def test_run_and_sse_stream(client):
     assert detail["status"] == "done"
 
 
+def test_profile_review_round_trip(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+
+    # No profile yet -> 404
+    assert client.get("/api/profile").status_code == 404
+
+    sample = {"name": "Ada Lovelace", "email": "ada@example.com", "skills": ["Python"]}
+    r = client.post("/api/profile", json=sample)
+    assert r.status_code == 200
+    assert r.json()["profile"] == sample
+
+    r = client.get("/api/profile")
+    assert r.status_code == 200
+    assert r.json() == sample
+
+    # profile-review page is served
+    assert client.get("/profile-review").status_code == 200
+
+    # done flag starts false, flips true, and can be cleared
+    assert client.get("/api/profile/done").json()["done"] is False
+    assert client.post("/api/profile/done", json={"done": True}).json()["done"] is True
+    assert client.get("/api/profile/done").json()["done"] is True
+    assert client.post("/api/profile/done", json={"done": False}).json()["done"] is False
+    assert client.get("/api/profile/done").json()["done"] is False
+
+
 def test_busy_returns_409(client, monkeypatch):
     # make the fake run long enough to overlap
     slow = FakeEngine()

@@ -1,9 +1,11 @@
 """Scheduler — fire /job-search at the user's IST slots via APScheduler.
 
-Reads `schedule_slots_ist` (list of "HH:MM") from preferences and installs one cron job
-per slot in Asia/Kolkata. Each firing calls RunManager.start_run(mode="auto"); the skill's
-own run_state.json logic then alternates full vs native. Reconfigured live when the UI
-edits the schedule.
+Reads `schedule_slots_ist` from preferences and installs one cron job per slot in
+Asia/Kolkata. Each entry is either a plain `"HH:MM"` string (original shape, still
+supported) or `{"name": "...", "time": "HH:MM"}` (written by `jobpilot start`, which lets
+several slots share the same clock time under distinct, disambiguated names). Each firing
+calls RunManager.start_run(mode="auto"); the skill's own run_state.json logic then
+alternates full vs native. Reconfigured live when the UI edits the schedule.
 """
 from __future__ import annotations
 
@@ -38,12 +40,18 @@ class Scheduler:
         """Rebuild jobs from the current preferences.schedule_slots_ist."""
         self._sched.remove_all_jobs()
         for slot in load_prefs().get("schedule_slots_ist", []) or []:
+            if isinstance(slot, dict):
+                time_str = slot.get("time", "")
+                label = slot.get("name") or time_str
+            else:
+                time_str = slot
+                label = slot
             try:
-                hh, mm = str(slot).split(":")
+                hh, mm = str(time_str).split(":")
                 trigger = CronTrigger(hour=int(hh), minute=int(mm), timezone=IST)
             except Exception:
                 continue
-            self._sched.add_job(_fire, trigger, id=f"slot-{slot}",
+            self._sched.add_job(_fire, trigger, id=f"slot-{label}",
                                 replace_existing=True, misfire_grace_time=3600)
 
     def jobs(self) -> list[dict]:

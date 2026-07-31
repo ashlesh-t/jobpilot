@@ -44,11 +44,21 @@ pipx install jobpilot-ai   # or: pip install jobpilot-ai — installs the pipeli
 jobpilot setup                            # configure data dir + secrets (cross-platform)
 jobpilot serve                            # optional local web UI → http://127.0.0.1:8787
 ```
+Or run `jobpilot start` instead of `setup` + `serve` separately — it runs setup only if not
+already configured, asks for schedule slots (24h `HH:MM`, one at a time), then launches
+`serve` and opens the web UI in your browser. Safe to re-run: it skips the wizard on an
+already-configured install unless you pass `--reconfigure`.
+
 macOS: `brew install ashlesh-t/tap/jobpilot` · Windows: `scoop bucket add ashlesh-t
 https://github.com/ashlesh-t/scoop-bucket && scoop install jobpilot` · Arch (AUR): pending —
 new AUR account registrations are temporarily disabled ([details](https://itsfoss.com/news/arch-linux-aur-malware-flood/)); the `PKGBUILD` is ready in `packaging/aur/` and
 will be pushed once registration reopens. All are thin wrappers over the same PyPI package
 (see `packaging/`).
+
+> **Note:** `jobpilot start` (and `setup`) only bootstrap the Python backend — they cannot
+> run step (a) for you. `/plugin install jobpilot@jobpilot` happens *inside Claude Code*, not
+> the shell, so it stays a separate, one-time, manual step regardless of which backend
+> install path you use.
 
 **c. From source (contributors)**
 ```bash
@@ -105,6 +115,14 @@ python -m server                         # → http://127.0.0.1:8787
   writes a systemd/launchd unit so it survives reboot.
 - **Connections tab.** Telegram sign-in is a phone → OTP form (no terminal); Discord is a
   webhook paste + test. A ✅/⚠️/❌ health check tells you which sources are live.
+
+The same health check is available from the CLI, without the web UI:
+```bash
+jobpilot doctor              # full engines/notifiers/sources table
+jobpilot doctor --live       # also runs each native scraper with a tiny cap
+jobpilot view Apify          # just the one row (name, or unique substring), e.g. Apify/Discord
+jobpilot view Apify --live   # same, with the live probe where applicable
+```
 - **Delivery** is pluggable: set `notify_channels` (e.g. `["telegram","discord"]`) in
   preferences or the UI.
 

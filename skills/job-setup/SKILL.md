@@ -136,12 +136,34 @@ the cached profile.
      "locations": [],
      "availability": "",
      "notice_period_days": 0,
-     "profile_verified": true,
+     "profile_verified": false,
      "hash": "<resume_hash from preferences.json>"
    }
    ```
+   Leave `profile_verified: false` here — step 5b below confirms it.
+5b. **Browser review (optional, non-blocking).** Give the user a chance to see and correct
+   the full structured profile before it's finalized, instead of only the fields Claude
+   flagged as ambiguous in step 4. Run via bash:
+   ```bash
+   python3 -m server.ephemeral --timeout 600
+   ```
+   (run with cwd = repo root, or `${CLAUDE_PLUGIN_ROOT}` if installed as a plugin — this
+   reuses a persistent `jobpilot serve` instance if one is already running, otherwise starts
+   a throw-away instance on a free port and shuts it down afterward). This opens a browser
+   tab at `/profile-review` showing every section of the draft profile with inline edit
+   fields, plus Save and Save & Done buttons.
+   - The command prints exactly one word: `done` (user reviewed and clicked Save & Done),
+     `timeout` (10 minutes elapsed, user didn't respond), or `skipped` (server/browser
+     couldn't be reached — e.g. headless environment). All three are non-fatal.
+   - **Re-read** `~/.claude/job-hunt-ai/cache/profile.json` from disk after this command
+     returns — if the user edited anything in the browser, the on-disk copy now reflects
+     their edits and must be used from here on, not Claude's original in-memory draft.
+   - If the result is `timeout` or `skipped`, proceed with Claude's own draft as-is — this
+     step never blocks setup from completing.
 6. After the preferences questionnaire, set `profile.locations`/`availability`/`notice_period_days`
    to match the answers, and **warn** if `profile.locations` and `preferences.locations` diverge.
+   Set `profile_verified: true` now (the resume content itself was confirmed in step 5b; this
+   final write layers in the preferences-derived fields).
 7. Print: *"Profile captured: <name>, <N> skills, <N> projects, graduating <year>. Verified ✓"*
 
 ---

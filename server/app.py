@@ -14,9 +14,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Wire import paths (also imported for side effects by the modules below).
-from common import REPO_DIR, load_prefs, save_prefs, engine_config  # noqa: E402
+from common import (  # noqa: E402
+    REPO_DIR, load_prefs, save_prefs, engine_config,
+    profile_path, profile_review_done_path,
+)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -80,6 +83,10 @@ class DiscordRequest(BaseModel):
     webhook_url: str
 
 
+class DoneRequest(BaseModel):
+    done: bool = True
+
+
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
@@ -89,6 +96,14 @@ async def index():
     if idx.exists():
         return FileResponse(str(idx))
     return JSONResponse({"error": "UI not built"}, status_code=404)
+
+
+@app.get("/profile-review")
+async def profile_review_page():
+    page = UI_DIR / "profile_review.html"
+    if page.exists():
+        return FileResponse(str(page))
+    return JSONResponse({"error": "profile review UI not built"}, status_code=404)
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +279,45 @@ async def notify_test(channel: str):
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Profile review — /job-setup opens this so the user can check/edit the profile
+# Claude drafted from the resume before it's marked profile_verified: true.
+# --------------------------------------------------------------------------- #
+@app.get("/api/profile")
+async def get_profile():
+    p = profile_path()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="profile.json not found")
+    try:
+        return json.loads(p.read_text())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"could not parse profile.json: {exc}")
+
+
+@app.post("/api/profile")
+async def post_profile(payload: dict = Body(...)):
+    p = profile_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    return {"ok": True, "profile": payload}
+
+
+@app.get("/api/profile/done")
+async def get_profile_done():
+    return {"done": profile_review_done_path().exists()}
+
+
+@app.post("/api/profile/done")
+async def set_profile_done(req: DoneRequest):
+    marker = profile_review_done_path()
+    if req.done:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("1")
+    else:
+        marker.unlink(missing_ok=True)
+    return {"ok": True, "done": req.done}
 
 
 # --------------------------------------------------------------------------- #
