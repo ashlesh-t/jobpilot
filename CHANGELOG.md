@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.7.0 — 2026-08-01
+
+### Release title: "Company Intel & Onboarding Polish" (minor)
+
+Four features from `PLAN_INTELLIGENCE.md` land together: cross-run memory that actually
+persists, interview-bar-aware ranking, a recursive learning loop off `/job-feedback`
+outcomes, and a smoother `/job-setup` + `jobpilot` CLI onboarding flow.
+
+### Added
+- **Company intel + interview-bar ranking.** `/job-search` researches each top job's
+  interview bar into `cache/company_intel.json` (≤5 WebSearch/run, 45d TTL) and applies
+  `bar_fit ∈ [-8, +8]` to `effective_score` based on company archetype × the new
+  `profile.interview_readiness` block (collected once in `/job-setup`). Report and
+  digest gain Prep Focus / Gap Signals columns.
+- **Recursive learning loop.** `/job-feedback` outcomes now update
+  `cache/learning.json` skill/archetype/source weights (`w = clip(w + 0.05*v, 0.7, 1.3)`),
+  applied to ranking only after ≥5 outcomes, capped ±10, never touching `score` or
+  threshold gates.
+- **WebSearch as a third job source** (≤3 searches, ≤10 jobs/run) alongside native
+  scrapers and Apify.
+- **Browser-based profile review** in `/job-setup` — after Claude drafts `profile.json`,
+  a review page (`server/ui/profile_review.html`) lets you see and edit every section
+  before `profile_verified` is set. Reuses the existing FastAPI/UI stack; spins up a
+  throwaway server instance if `jobpilot serve` isn't already running.
+- **`jobpilot start`**: bootstraps setup if not configured, prompts for schedule slots,
+  launches `serve`, opens the browser. `--reconfigure` forces the wizard.
+- **`jobpilot view <item>`**: prints a single doctor check's status by name/substring,
+  with `--live`.
+
+### Fixed
+- **Cross-run memory was silently broken.** Only tailored jobs were ever recorded into
+  `jobs_seen`/`score_cache` (with blank company/role), so seen-job dedupe was a no-op
+  and `/job-feedback` listed empty rows. New `scripts/record_scored.py` persists every
+  scored job.
+- **Feedback resurrection.** Any `jobs_seen` row now counts as "seen" during dedupe/filter
+  — status is lifecycle metadata, not membership, so a `rejected` job no longer reappears
+  next run.
+- `filter.py`: en-dash experience ranges ("2 – 4 yrs") now parse the lower bound; bare
+  "lakh" requires compensation context so "10 lakh users" isn't misread as salary.
+- **Apify retry/backoff restored** on the live path (lost in a prior cleanup) — transient
+  5xx/408/transport errors now retry with 2s→4s backoff, max 3 attempts; auth/credit and
+  HTTP 400 don't retry. Empty 200 responses are accepted by default (opt into one retry
+  via `actors.json` `retry_empty_runs`) instead of the old 3x-retry-on-empty that tripled
+  spend on runs returning nothing.
+- Wired in `apify-client` SDK (declared as a dependency but never used) so long scrapes
+  aren't capped by the 300s server-side ceiling of the raw `run-sync-get-dataset-items`
+  call; raw HTTP remains the fallback.
+
+### Housekeeping
+- Removed `PLAN.md` / `PLAN_INTELLIGENCE_PROMPT.md` (superseded planning docs).
+  `PLAN_INTELLIGENCE.md` stays — it's cited by `CLAUDE.md` for interview-bar research.
+- `server/scheduler.py`: `schedule_slots_ist` entries accept `{"name","time"}` in
+  addition to plain `"HH:MM"`, so multiple slots can share a clock time. Backward
+  compatible.
+
+---
+
 ## v1.6.2 — 2026-07-09
 
 ### Release title: "One-Command Install" (patch)

@@ -4,4 +4,4 @@ This thin package exists so `pipx install jobpilot-ai` gives a cross-platform `j
 command. The actual pipeline (engines/, server/, scripts/, skills/, config/, schema/) is
 bundled alongside it and resolved at runtime by `jobpilot.paths`.
 """
-__version__ = "1.6.2"
+__version__ = "1.7.0"
