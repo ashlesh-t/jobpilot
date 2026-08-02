@@ -191,8 +191,9 @@ def build_digest(jobs: list, total_found: int, survived_filter: int, tailored_co
 
 
 def load_jobs_for_digest() -> list:
-    """Top jobs for the digest — prefer the scored file, fall back to filtered."""
-    for path in ("/tmp/jobpilot_scored.json", "/tmp/jobpilot_filtered.json"):
+    """Top jobs for the digest — prefer the scored artifact, fall back to filtered."""
+    import jp_paths
+    for path in (jp_paths.artifact("scored"), jp_paths.artifact("filtered")):
         try:
             return json.loads(Path(path).read_text())
         except Exception:

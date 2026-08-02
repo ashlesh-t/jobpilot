@@ -1,0 +1,244 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --------------------------------------------------------------------------
+   Design tokens.
+
+   One token set, two themes. Values are space-separated RGB so Tailwind's
+   `<alpha-value>` syntax works (`bg-surface/60`). The theme is applied by a
+   `data-theme` attribute on <html>, set before first paint by the inline script in
+   index.html — that's what prevents the white flash on a dark-mode load.
+   -------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme='light'] {
+  --canvas: 246 247 249;      /* app background */
+  --surface: 255 255 255;     /* cards, panels */
+  --raised: 250 250 252;      /* nested surfaces, table headers */
+  --line: 226 229 234;        /* borders, dividers */
+
+  --ink: 17 21 28;            /* primary text */
+  --muted: 92 101 116;        /* secondary text */
+  --faint: 140 149 165;       /* tertiary text, placeholders */
+
+  --accent: 79 91 214;        /* the single accent */
+  --accent-soft: 233 235 252; /* accent-tinted surface */
+  --accent-ink: 255 255 255;  /* text on accent */
+
+  --ok: 22 141 92;
+  --warn: 176 116 8;
+  --danger: 194 51 51;
+  --info: 44 110 190;
+
+  /* Chart tokens.
+     Every chart here shows magnitude, not identity, so all of them use one hue on
+     an ordinal blue ramp rather than a categorical palette — that sidesteps
+     colour-vision-deficiency risk entirely. Steps validated against this surface
+     (monotone lightness, ≥0.06 ΔL between steps, light end clears 2:1). */
+  --viz-solo: #2a78d6;   /* single-series bars */
+  --viz-1: #86b6ef;
+  --viz-2: #5598e7;
+  --viz-3: #3987e5;
+  --viz-4: #2a78d6;
+  --viz-5: #1c5cab;
+  --viz-6: #104281;
+  --viz-grid: #e6e8ec;
+  --viz-axis: #8c95a5;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --canvas: 14 16 21;
+  --surface: 22 25 32;
+  --raised: 30 34 43;
+  --line: 46 51 62;
+
+  --ink: 233 236 241;
+  --muted: 158 167 182;
+  --faint: 116 125 142;
+
+  --accent: 128 140 248;
+  --accent-soft: 39 43 74;
+  --accent-ink: 13 15 22;
+
+  /* Lightened so they keep ~4.5:1 against the dark surface — the light-mode values
+     fail contrast here. */
+  --ok: 62 191 133;
+  --warn: 226 165 58;
+  --danger: 240 113 113;
+  --info: 112 165 245;
+
+  /* Dark chart steps are chosen for the dark surface, not flipped from light —
+     validated separately against #161920. */
+  --viz-solo: #3987e5;
+  --viz-1: #9ec5f4;
+  --viz-2: #6da7ec;
+  --viz-3: #3987e5;
+  --viz-4: #2a78d6;
+  --viz-5: #256abf;
+  --viz-6: #184f95;
+  --viz-grid: #2b303a;
+  --viz-axis: #747d8e;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --canvas: 14 16 21;
+    --surface: 22 25 32;
+    --raised: 30 34 43;
+    --line: 46 51 62;
+    --ink: 233 236 241;
+    --muted: 158 167 182;
+    --faint: 116 125 142;
+    --accent: 128 140 248;
+    --accent-soft: 39 43 74;
+    --accent-ink: 13 15 22;
+    --ok: 62 191 133;
+    --warn: 226 165 58;
+    --danger: 240 113 113;
+    --info: 112 165 245;
+    --viz-solo: #3987e5;
+    --viz-1: #9ec5f4;
+    --viz-2: #6da7ec;
+    --viz-3: #3987e5;
+    --viz-4: #2a78d6;
+    --viz-5: #256abf;
+    --viz-6: #184f95;
+    --viz-grid: #2b303a;
+    --viz-axis: #747d8e;
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-line;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-canvas;
+  }
+  ::selection {
+    @apply bg-accent/25;
+  }
+  /* Scrollbars that don't fight the theme. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-line;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-faint;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+  .card-pad {
+    @apply p-5;
+  }
+  .card-title {
+    @apply text-sm font-semibold tracking-tight text-ink;
+  }
+  .card-sub {
+    @apply text-xs text-muted;
+  }
+
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-lg px-3.5 py-2
+           text-sm font-medium transition-colors disabled:pointer-events-none
+           disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-accent-ink hover:bg-accent/90;
+  }
+  .btn-secondary {
+    @apply btn border border-line bg-surface text-ink hover:bg-raised;
+  }
+  .btn-ghost {
+    @apply btn text-muted hover:bg-raised hover:text-ink;
+  }
+  .btn-danger {
+    @apply btn bg-danger text-white hover:bg-danger/90;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+  .btn-icon {
+    @apply btn h-9 w-9 p-0 text-muted hover:bg-raised hover:text-ink;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink
+           placeholder:text-faint focus:border-accent focus:outline-none
+           focus:ring-1 focus:ring-accent;
+  }
+  .label {
+    @apply mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+  }
+  .chip-neutral {
+    @apply chip bg-raised text-muted;
+  }
+  .chip-ok {
+    @apply chip bg-ok/10 text-ok;
+  }
+  .chip-warn {
+    @apply chip bg-warn/10 text-warn;
+  }
+  .chip-danger {
+    @apply chip bg-danger/10 text-danger;
+  }
+  .chip-accent {
+    @apply chip bg-accent-soft text-accent;
+  }
+
+  .table-wrap {
+    /* Wide tables scroll inside their own container — the page body must never
+       scroll horizontally. */
+    @apply overflow-x-auto rounded-xl border border-line;
+  }
+  .th {
+    @apply whitespace-nowrap bg-raised px-3 py-2.5 text-left text-xs font-semibold
+           uppercase tracking-wide text-muted;
+  }
+  .td {
+    @apply border-t border-line px-3 py-2.5 text-sm text-ink;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded bg-raised;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full animate-shimmer;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--line) / 0.6),
+      transparent
+    );
+  }
+}

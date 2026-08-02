@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>JobPilot</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234F5BD6'/%3E%3Cpath d='M9 21V11h3v10zM15 11h5a4 4 0 0 1 0 8h-2v2h-3zm3 3v2h2a1 1 0 0 0 0-2z' fill='white'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Apply the saved theme before first paint. Without this, a dark-mode user gets a
+      // white flash on every load while React boots.
+      (function () {
+        try {
+          var saved = localStorage.getItem('jobpilot.theme')
+          var theme =
+            saved === 'light' || saved === 'dark'
+              ? saved
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          document.documentElement.setAttribute('data-theme', theme)
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light')
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="./assets/index-0qnUyXrC.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/react-DMAsRpRa.js">
+    <link rel="modulepreload" crossorigin href="./assets/charts-BFBae4Hd.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-Ce4Q79_i.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

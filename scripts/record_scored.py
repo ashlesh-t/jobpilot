@@ -1,20 +1,19 @@
-"""Persist scored jobs into the cache DB — invoked from Layer B, pure Python, NO LLM.
+"""Persist scored jobs — invoked from Layer B, pure Python, NO LLM.
 
-Called by the /job-search skill after scoring (Step B3b):
-  python3 scripts/record_scored.py /tmp/jobpilot_scored.json
+Called by the scoring phase:
+  python3 scripts/record_scored.py <scored.json> [--scan-id N]
 
-For every scored job it:
-  * upserts jobs_seen (job_id, company, role, location, source, match_score, resume_hash,
-    first_seen, last_seen, status='active') — never overwriting a feedback status back to
-    'active', and never touching tailored_resume_path (resume_tailor.py owns that column);
-  * upserts score_cache (job_id, resume_hash) -> score_json with the fields the learning
-    loop needs later: score, matched_skills, missing_skills, archetype, source_board.
+Writes through `core.repo.jobs.upsert_scored()`, which owns the upsert semantics:
+discovery and scoring fields are refreshed, while application status and tailoring
+history on an existing row are left alone.
 
-This is what makes cross-run dedupe ("already seen") and /job-feedback work: without it,
-jobs_seen only ever contained tailored jobs with empty company/role columns.
+If `core` isn't importable — a plugin-only checkout without the server dependencies —
+it falls back to the v1 SQLite writer so a chat-driven run still records its jobs.
+This is what makes cross-run dedupe ("already seen") and the feedback loop work.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sqlite3
@@ -22,33 +21,51 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import jp_paths  # noqa: E402
+
 
 def jobpilot_dir() -> Path:
     raw = os.environ.get("JOBPILOT_DIR", "~/.claude/job-hunt-ai")
     return Path(os.path.expanduser(raw))
 
 
-def db_path() -> Path:
+def legacy_db_path() -> Path:
     return jobpilot_dir() / "cache" / "jobs.sqlite"
 
 
-def main() -> int:
-    scored_path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/jobpilot_scored.json"
+def _load(path: str) -> list[dict] | None:
     try:
-        jobs = json.loads(Path(scored_path).read_text())
+        data = json.loads(Path(path).read_text())
     except Exception as exc:  # noqa: BLE001
-        print(f"[record] cannot read {scored_path}: {exc}", file=sys.stderr)
-        return 0
+        print(f"[record] cannot read {path}: {exc}", file=sys.stderr)
+        return None
+    return data if isinstance(data, list) else []
 
+
+def record_via_core(jobs: list[dict], scan_id: int | None) -> dict | None:
+    """Preferred path. Returns counts, or None when core isn't available."""
+    try:
+        from core.db import init_db
+        from core.repo import jobs as jobs_repo
+    except Exception:
+        return None
+    init_db()
+    return jobs_repo.upsert_scored(jobs, scan_id=scan_id)
+
+
+def record_via_sqlite(jobs: list[dict]) -> dict:
+    """v1 fallback — the original jobs_seen / score_cache writer."""
     try:
         prefs = json.loads((jobpilot_dir() / "options" / "preferences.json").read_text())
     except Exception:
         prefs = {}
     resume_hash = prefs.get("resume_hash", "")
-
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn = sqlite3.connect(str(db_path()))
-    seen_n = cache_n = 0
+
+    conn = sqlite3.connect(str(legacy_db_path()))
+    count = 0
     try:
         for job in jobs:
             jid = job.get("job_id")
@@ -76,8 +93,6 @@ def main() -> int:
                  job.get("location", ""), job.get("source_board", ""),
                  score, resume_hash, now, now),
             )
-            seen_n += 1
-
             score_json = json.dumps({
                 "score": score,
                 "keyword_score": job.get("keyword_score"),
@@ -97,13 +112,38 @@ def main() -> int:
                 """,
                 (jid, resume_hash, score_json, now),
             )
-            cache_n += 1
+            count += 1
         conn.commit()
     finally:
         conn.close()
+    return {"inserted": count, "updated": 0}
 
-    print(f"Recorded {seen_n} jobs into jobs_seen, {cache_n} into score_cache")
-    return seen_n
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Persist scored jobs")
+    ap.add_argument("input", nargs="?", default=jp_paths.artifact("scored"))
+    ap.add_argument("--scan-id", type=int, default=None,
+                    help="attribute these jobs to a scan (set by the orchestrator)")
+    args = ap.parse_args(argv)
+
+    jobs = _load(args.input)
+    if jobs is None:
+        return 0
+    if not jobs:
+        print("[record] nothing to record")
+        return 0
+
+    scan_id = args.scan_id
+    if scan_id is None and os.environ.get("JOBPILOT_SCAN_ID", "").isdigit():
+        scan_id = int(os.environ["JOBPILOT_SCAN_ID"])
+
+    result = record_via_core(jobs, scan_id)
+    if result is None:
+        result = record_via_sqlite(jobs)
+        print(f"[record] core unavailable — wrote {result['inserted']} jobs to jobs.sqlite")
+    else:
+        print(f"Recorded {result['inserted']} new and {result['updated']} updated jobs")
+    return result["inserted"] + result["updated"]
 
 
 if __name__ == "__main__":

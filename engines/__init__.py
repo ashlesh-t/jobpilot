@@ -8,15 +8,17 @@ Usage:
 """
 from __future__ import annotations
 
-from .base import RunEngine  # noqa: E402
+from .base import RunEngine, RunEvent, RunResult, Usage  # noqa: E402
 from .claude_code import ClaudeCodeEngine  # noqa: E402
 from .claude_api import ClaudeApiEngine  # noqa: E402
 from .gemini import GeminiEngine  # noqa: E402
+from .generic_cli import GenericCliEngine  # noqa: E402
 
 _REGISTRY = {
     ClaudeCodeEngine.name: ClaudeCodeEngine,
     ClaudeApiEngine.name: ClaudeApiEngine,
     GeminiEngine.name: GeminiEngine,
+    GenericCliEngine.name: GenericCliEngine,
 }
 
 DEFAULT_ENGINE = ClaudeCodeEngine.name
@@ -31,19 +33,28 @@ def get_engine(name: str | None = None, **kwargs) -> RunEngine:
 
 
 def list_engines() -> list[dict]:
-    """Availability + metadata for every registered engine (drives the setup UI)."""
+    """Availability + metadata for every registered engine (drives the setup UI).
+
+    Instantiating an engine must stay cheap — a constructor that probed the network
+    would make this call block the UI. Deep auth checks live in core.backends.
+    """
     out = []
     for name, cls in _REGISTRY.items():
-        eng = cls()
-        ok, reason = eng.available()
+        try:
+            eng = cls()
+            ok, reason = eng.available()
+            label, metered = eng.label, eng.metered
+        except Exception as exc:  # noqa: BLE001 — a broken adapter must not hide the rest
+            ok, reason, label, metered = False, f"engine failed to load: {exc}", name, False
         out.append({
             "name": name,
-            "label": eng.label,
-            "metered": eng.metered,
+            "label": label,
+            "metered": metered,
             "available": ok,
             "reason": reason,
         })
     return out
 
 
-__all__ = ["get_engine", "list_engines", "RunEngine", "DEFAULT_ENGINE"]
+__all__ = ["get_engine", "list_engines", "RunEngine", "RunEvent", "RunResult",
+           "Usage", "DEFAULT_ENGINE"]

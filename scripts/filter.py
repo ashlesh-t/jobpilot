@@ -3,7 +3,8 @@
 Applies location, deadline, experience, and CTC/company hard filters.
 All other filtering (role relevance, keyword match) is handled by Claude in Layer B.
 
-Reads /tmp/jobpilot_deduped.json + preferences.json, writes /tmp/jobpilot_filtered.json.
+Reads the `deduped` artifact + preferences.json, writes the `filtered` one. Inside an
+orchestrated run those live under `$JOBPILOT_RUN_DIR` (see jp_paths.py).
 """
 from __future__ import annotations
 
@@ -18,9 +19,10 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
+import jp_paths  # noqa: E402
 
-DEDUPED_IN = "/tmp/jobpilot_deduped.json"
-FILTERED_OUT = "/tmp/jobpilot_filtered.json"
+DEDUPED_IN = jp_paths.artifact("deduped")
+FILTERED_OUT = jp_paths.artifact("filtered")
 
 IST = ZoneInfo("Asia/Kolkata")
 

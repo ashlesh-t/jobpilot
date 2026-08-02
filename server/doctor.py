@@ -46,6 +46,90 @@ def _check_engines() -> list[dict]:
     return rows
 
 
+def _check_backend(live: bool) -> list[dict]:
+    """The selected agent backend, with a real authentication probe in live mode.
+
+    In quick mode this only reports installation — verifying a Claude Code login costs
+    a full round trip, which is too slow for a page load.
+    """
+    from core import backends  # noqa
+
+    try:
+        chosen = backends.selected()
+        info = backends.probe(chosen, deep=live)
+    except Exception as exc:  # noqa: BLE001
+        return [_row("Agent backend", "engine", "fail", str(exc)[:160])]
+
+    if info.ready:
+        status = "ok"
+    elif info.found:
+        status = "warn"
+    else:
+        status = "fail"
+    detail = info.detail or ""
+    if not info.ready and info.auth_hint:
+        detail = f"{detail} — {info.auth_hint}".strip(" —")
+    return [_row(f"Backend: {info.label}", "engine", status, detail)]
+
+
+def _check_database() -> list[dict]:
+    from core import db  # noqa
+    from core.infra import docker  # noqa
+
+    rows = []
+    ok, detail = db.ping()
+    rows.append(_row("Database", "storage", "ok" if ok else "fail", detail))
+
+    st = docker.status()
+    if not st.installed:
+        rows.append(_row("Docker", "storage", "warn",
+                         "not installed — JobPilot is using SQLite (fully supported)"))
+    elif not st.running:
+        rows.append(_row("Docker", "storage", "warn", st.detail))
+    elif st.container_running:
+        rows.append(_row("Docker", "storage", "ok",
+                         f"{docker.CONTAINER} running on port {st.port}"))
+    else:
+        rows.append(_row("Docker", "storage", "warn", st.detail))
+    return rows
+
+
+def _check_profile_and_resume() -> list[dict]:
+    from core.repo import profiles, resumes  # noqa
+
+    rows = []
+    active = resumes.active()
+    if active is None:
+        rows.append(_row("Active resume", "profile", "fail",
+                         "no resume uploaded — add one on the Job Hunt page"))
+    elif active["missing"]:
+        rows.append(_row("Active resume", "profile", "fail",
+                         f"file missing on disk: {active['path']}"))
+    else:
+        rows.append(_row("Active resume", "profile", "ok",
+                         f"{active['folder']}/{active['filename']}"))
+
+    profile = profiles.current()
+    if profile is None:
+        rows.append(_row("Profile", "profile", "fail", "not built yet — run setup"))
+    elif not profile.get("profile_verified"):
+        rows.append(_row("Profile", "profile", "warn",
+                         "extracted but not confirmed — review it to enable scoring"))
+    else:
+        rows.append(_row("Profile", "profile", "ok",
+                         f"verified for {profile.get('name') or 'you'}"))
+    return rows
+
+
+def _check_tectonic() -> dict:
+    import shutil
+
+    if shutil.which("tectonic"):
+        return _row("LaTeX (tectonic)", "tailoring", "ok", "PDF tailoring available")
+    return _row("LaTeX (tectonic)", "tailoring", "warn",
+                "not installed — resume tailoring falls back to DOCX")
+
+
 def _check_notifiers() -> list[dict]:
     import notify  # noqa
     rows = []
@@ -106,10 +190,22 @@ def _run_source(mod_name: str, extra: dict) -> dict:
 
 def run_doctor(live: bool = False) -> dict:
     rows: list[dict] = []
-    rows += _check_engines()
-    rows += _check_notifiers()
-    rows.append(_check_apify())
-    rows.append(_check_telegram_scraper())
+    # One failing check must never blank the whole table — that's precisely when the
+    # user needs the other rows most.
+    for label, check in (
+        ("Agent backend", lambda: _check_backend(live)),
+        ("Database", _check_database),
+        ("Profile", _check_profile_and_resume),
+        ("Engines", _check_engines),
+        ("Notifiers", _check_notifiers),
+        ("Apify", lambda: [_check_apify()]),
+        ("LaTeX", lambda: [_check_tectonic()]),
+        ("Telegram channels", lambda: [_check_telegram_scraper()]),
+    ):
+        try:
+            rows += check()
+        except Exception as exc:  # noqa: BLE001
+            rows.append(_row(label, "check", "fail", f"check itself failed: {exc}"[:200]))
 
     if live:
         disabled = set()

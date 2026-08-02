@@ -9,7 +9,10 @@ def test_registry_lists_channels():
 
 
 def test_discord_unavailable_without_webhook(monkeypatch):
-    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    # Secrets resolve keyring-first, so clearing the env var alone doesn't unconfigure
+    # a developer machine that really has Discord set up — patch the loader instead.
+    import notify.discord as disc
+    monkeypatch.setattr(disc, "get_secret_optional", lambda k, d=None: None)
     ok, reason = DiscordNotifier().available()
     assert ok is False and "DISCORD_WEBHOOK_URL" in reason
 
@@ -32,8 +35,13 @@ def test_chunks_respects_limit():
 
 
 def test_enabled_notifiers_filters_unavailable(monkeypatch):
-    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    import notify.discord as disc
+    import notify.telegram as tg
+
+    monkeypatch.setattr(disc, "get_secret_optional", lambda k, d=None: None)
+    monkeypatch.setattr(tg, "get_secret_optional", lambda k, d=None: None, raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
     assert notify.enabled_notifiers(["telegram", "discord"]) == []
     assert notify.fan_out(["telegram", "discord"], digest="hi") == {}

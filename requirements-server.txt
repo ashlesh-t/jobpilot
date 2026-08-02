@@ -7,6 +7,18 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 sse-starlette>=2.0
 apscheduler>=3.10
+python-multipart>=0.0.9
+
+# Storage. One schema, two dialects: PostgreSQL when Docker is available,
+# SQLite otherwise. psycopg is only exercised on the Postgres path.
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.1
+
+# `jobpilot setup` terminal UI
+rich>=13.7
+questionary>=2.0
+qrcode>=7.4
 
 # Metered engine only (Anthropic API). The default Claude Code subscription engine
 # uses the `claude` CLI instead and does NOT need this. Safe to omit if it won't

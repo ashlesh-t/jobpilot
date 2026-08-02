@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from .base import EventCB, RunEngine, RunEvent, RunResult  # noqa: E402
+from .base import EventCB, RunEngine, RunEvent, RunResult, Usage  # noqa: E402
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
@@ -33,6 +33,8 @@ class ClaudeApiEngine(RunEngine):
         # id would otherwise break every run.
         self.model = (model or "").strip()
         self.permission_mode = permission_mode
+        self._usage = Usage(source="metered")
+        self._cancelled = False
 
     # ------------------------------------------------------------------ #
     def available(self) -> tuple[bool, str]:
@@ -94,16 +96,33 @@ class ClaudeApiEngine(RunEngine):
         on_event(RunEvent("log", "started",
                           f"agent-sdk model={self.model or 'sdk-default'}", origin="engine"))
         final_text = ""
+        self._usage = Usage(source="metered", model=self.model)
+        self._cancelled = False
         try:
             async for message in query(prompt=prompt, options=options):
+                if self._cancelled:
+                    break
                 final_text = self._handle_message(message, on_event) or final_text
         except Exception as exc:  # noqa: BLE001
             on_event(RunEvent("done", "error", f"agent error: {exc}", origin="engine"))
-            return RunResult(ok=False, error=str(exc))
+            return RunResult(ok=False, error=str(exc), usage=self._usage)
+
+        if self._cancelled:
+            on_event(RunEvent("done", "error", "cancelled", origin="engine"))
+            return RunResult(ok=False, error="cancelled", usage=self._usage)
 
         on_event(RunEvent("done", "done", "run complete", origin="engine",
                           data={"summary": final_text[:2000]}))
-        return RunResult(ok=True, exit_code=0, artifacts={"final_text": final_text})
+        return RunResult(ok=True, exit_code=0, artifacts={"final_text": final_text},
+                         usage=self._usage)
+
+    async def stop(self) -> None:
+        """Ask the message loop to break at the next yield.
+
+        The SDK has no hard-kill hook, so cancellation lands on a message boundary
+        rather than instantly — the orchestrator reports it as such.
+        """
+        self._cancelled = True
 
     # ------------------------------------------------------------------ #
     def _handle_message(self, message, on_event: EventCB) -> str | None:
@@ -111,6 +130,8 @@ class ClaudeApiEngine(RunEngine):
         cls = type(message).__name__
 
         if cls == "AssistantMessage":
+            self._absorb_usage(getattr(message, "usage", None),
+                               getattr(message, "model", ""))
             for block in getattr(message, "content", []) or []:
                 bcls = type(block).__name__
                 if bcls == "ToolUseBlock":
@@ -124,9 +145,25 @@ class ClaudeApiEngine(RunEngine):
             return None
 
         if cls == "ResultMessage":
+            self._absorb_usage(getattr(message, "usage", None), getattr(message, "model", ""))
+            cost = getattr(message, "total_cost_usd", None)
+            if isinstance(cost, (int, float)):
+                self._usage.usd = float(cost)
             return str(getattr(message, "result", "") or "")
 
         return None
+
+    def _absorb_usage(self, usage, model: str = "") -> None:
+        """Accept either a dict or an SDK usage object — the shape varies by version."""
+        if usage is None:
+            return
+        get = usage.get if isinstance(usage, dict) else lambda k, d=0: getattr(usage, k, d)
+        self._usage.tokens_in += int(get("input_tokens", 0) or 0)
+        self._usage.tokens_out += int(get("output_tokens", 0) or 0)
+        self._usage.cache_read += int(get("cache_read_input_tokens", 0) or 0)
+        self._usage.cache_write += int(get("cache_creation_input_tokens", 0) or 0)
+        if model:
+            self._usage.model = model
 
 
 # CLI smoke test: python -m engines.claude_api "/job-search"

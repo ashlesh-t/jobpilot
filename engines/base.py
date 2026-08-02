@@ -26,9 +26,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-# Keep in sync with scripts/run_events.STAGES and server/events.CANONICAL_STAGES.
+# Keep in sync with scripts/run_events.STAGES and orchestrator/phases.PHASE_KEYS.
 CANONICAL_STAGES = (
-    "scrape", "dedupe", "filter", "relevance", "score",
+    "scrape", "dedupe", "filter", "discover", "relevance", "score", "intel",
     "salary", "report", "tailor", "notify", "done", "log",
 )
 
@@ -55,11 +55,45 @@ class RunEvent:
 
 
 @dataclass
+class Usage:
+    """Token accounting for one engine invocation.
+
+    `source` distinguishes how the numbers were obtained, which the cost meter needs:
+      metered      — billed per token against an API key; `usd` is exact
+      subscription — real tokens, but no marginal cost (Claude Pro/Max)
+      estimated    — the provider reported nothing; numbers are a rough guess
+    """
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    model: str = ""
+    source: str = "estimated"
+    usd: float | None = None          # None → let the pricing table compute it
+
+    def merge(self, other: "Usage") -> "Usage":
+        return Usage(
+            tokens_in=self.tokens_in + other.tokens_in,
+            tokens_out=self.tokens_out + other.tokens_out,
+            cache_read=self.cache_read + other.cache_read,
+            cache_write=self.cache_write + other.cache_write,
+            model=other.model or self.model,
+            source=other.source if other.source != "estimated" else self.source,
+            usd=(self.usd or 0.0) + (other.usd or 0.0) if (
+                self.usd is not None or other.usd is not None) else None,
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class RunResult:
     ok: bool
     exit_code: int | None = None
     error: str = ""
     artifacts: dict = field(default_factory=dict)
+    usage: Usage = field(default_factory=Usage)
 
 
 EventCB = Callable[[RunEvent], None]
@@ -93,6 +127,10 @@ def map_tool_to_stage(tool_name: str, tool_input: dict | None) -> str | None:
         return "dedupe"
     if "filter.py" in blob:
         return "filter"
+    if "record_scored" in blob or "scored.json" in blob:
+        return "score"
+    if "company_intel" in blob or "learning.json" in blob:
+        return "intel"
     if t == "websearch":
         return "salary"       # Layer B salary research uses WebSearch
     if t == "webfetch":
@@ -119,6 +157,14 @@ class RunEngine(abc.ABC):
     async def run(self, program: str, run_id: str, on_event: EventCB) -> RunResult:
         """Execute `program` (e.g. "/job-search"), calling on_event as it progresses."""
         raise NotImplementedError
+
+    async def stop(self) -> None:
+        """Cancel the in-flight run. Default no-op for engines that can't be interrupted.
+
+        Subprocess engines override this to terminate the child; the orchestrator always
+        calls it, then falls back to cancelling the asyncio task.
+        """
+        return None
 
     # -- shared helper: emit a tool-call as narration + inferred stage -------- #
     def _emit_tool(self, on_event: EventCB, tool_name: str, tool_input: dict | None) -> None:
