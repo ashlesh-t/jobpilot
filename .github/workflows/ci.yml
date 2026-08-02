@@ -91,7 +91,14 @@ jobs:
           PY
           fi
       - name: Smoke-test the jobpilot CLI
+        shell: bash
         run: |
+          set -e
           jobpilot --version
           jobpilot setup --non-interactive
-          jobpilot doctor
+          # `doctor` exits non-zero when checks fail, which is correct — and on a bare
+          # runner with no resume, profile or AI backend, failing checks are the right
+          # answer. What we're asserting here is that the command runs and reports.
+          jobpilot doctor > doctor.txt || true
+          cat doctor.txt
+          grep -q "Database" doctor.txt
