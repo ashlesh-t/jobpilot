@@ -1,55 +1,173 @@
-"""Unit tests for jobpilot/cli.py's `start`/`view` helpers (no server/network involved)."""
+"""Unit tests for jobpilot/cli.py — argument parsing and process helpers, no server.
+
+Schedule configuration moved out of the CLI into the web UI in v2; the slot naming and
+validation rules it used to own now live in core.repo.schedule (see test_core_repo.py).
+"""
+from __future__ import annotations
+
 import json
-from pathlib import Path
+import os
+
+import pytest
 
 from jobpilot import cli
 
 
-def test_configured_requires_prefs_and_db(tmp_path):
-    assert cli._configured(tmp_path) is False
-    (tmp_path / "options").mkdir()
-    (tmp_path / "options" / "preferences.json").write_text("{}")
-    assert cli._configured(tmp_path) is False
-    (tmp_path / "cache").mkdir()
-    (tmp_path / "cache" / "jobs.sqlite").write_text("")
-    assert cli._configured(tmp_path) is True
+@pytest.fixture()
+def store(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    monkeypatch.delenv("JOBPILOT_DATABASE_URL", raising=False)
+    from core import db
+
+    db.dispose()
+    db.init_db()
+    yield tmp_path
+    db.dispose()
 
 
-def test_prompt_schedule_slots_disambiguates_duplicates(monkeypatch):
-    answers = iter(["09:30", "morning", "18:00", "evening", "18:00", "evening", ""])
-    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
-    slots = cli._prompt_schedule_slots()
-    assert slots == [
-        {"name": "morning", "time": "09:30"},
-        {"name": "evening-1", "time": "18:00"},
-        {"name": "evening-2", "time": "18:00"},
-    ]
+# --------------------------------------------------------------------------- #
+# parser
+# --------------------------------------------------------------------------- #
+def test_parser_exposes_every_subcommand():
+    parser = cli.build_parser()
+    actions = [a for a in parser._actions if a.dest == "cmd"]
+    assert actions, "expected a subparser group"
+    names = set(actions[0].choices)
+    assert names == {"setup", "start", "serve", "stop", "doctor", "view",
+                     "logs", "db", "service", "migrate"}
 
 
-def test_prompt_schedule_slots_rejects_bad_time(monkeypatch, capsys):
-    answers = iter(["25:99", "9:30", "09:30", "x", ""])
-    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
-    slots = cli._prompt_schedule_slots()
-    assert slots == [{"name": "x", "time": "09:30"}]
-    assert "invalid time" in capsys.readouterr().out
+def test_parser_defaults():
+    parser = cli.build_parser()
+    args = parser.parse_args(["db"])
+    assert args.action == "status"
+    args = parser.parse_args(["service"])
+    assert args.action == "status"
+    args = parser.parse_args(["doctor", "--live"])
+    assert args.live is True
 
 
-def test_configure_schedule_appends_to_existing(tmp_path, monkeypatch):
-    (tmp_path / "options").mkdir()
-    prefs_path = tmp_path / "options" / "preferences.json"
-    prefs_path.write_text(json.dumps({"schedule_slots_ist": ["07:00"], "other": "keep-me"}))
-
-    answers = iter(["09:30", "morning", ""])
-    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
-    cli._configure_schedule(tmp_path)
-
-    saved = json.loads(prefs_path.read_text())
-    assert saved["other"] == "keep-me"
-    assert saved["schedule_slots_ist"] == ["07:00", {"name": "morning", "time": "09:30"}]
+def test_no_subcommand_prints_help(capsys):
+    assert cli.main([]) == 0
+    assert "jobpilot" in capsys.readouterr().out
 
 
-def test_configure_schedule_noop_when_nothing_entered(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("builtins.input", lambda *_: "")
-    cli._configure_schedule(tmp_path)
-    assert not (tmp_path / "options" / "preferences.json").exists()
-    assert "leaving the existing schedule as-is" in capsys.readouterr().out
+# --------------------------------------------------------------------------- #
+# data dir resolution
+# --------------------------------------------------------------------------- #
+def test_data_dir_precedence(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path / "from-env"))
+    assert cli._data_dir() == tmp_path / "from-env"
+    assert cli._data_dir(str(tmp_path / "explicit")) == tmp_path / "explicit"
+
+
+def test_apply_data_dir_exports_to_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("JOBPILOT_DIR", raising=False)
+    args = cli.build_parser().parse_args(["serve", "--data-dir", str(tmp_path)])
+    cli._apply_data_dir(args)
+    assert os.environ["JOBPILOT_DIR"] == str(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# run file / stop
+# --------------------------------------------------------------------------- #
+def test_read_runfile_ignores_garbage(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    (tmp_path / "cache").mkdir(parents=True)
+    assert cli._read_runfile() is None
+
+    cli._runfile().write_text("not json")
+    assert cli._read_runfile() is None
+
+    cli._runfile().write_text(json.dumps({"host": "127.0.0.1"}))  # no pid
+    assert cli._read_runfile() is None
+
+    cli._runfile().write_text(json.dumps({"pid": 123, "host": "127.0.0.1", "port": 8787}))
+    assert cli._read_runfile()["pid"] == 123
+
+
+def test_stop_with_no_service(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    args = cli.build_parser().parse_args(["stop"])
+    assert cli._stop(args) == 0
+    assert "No running JobPilot service" in capsys.readouterr().out
+
+
+def test_stop_clears_a_stale_runfile(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    (tmp_path / "cache").mkdir(parents=True)
+    cli._runfile().write_text(json.dumps({"pid": 999999, "host": "127.0.0.1", "port": 8787}))
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: False)
+
+    args = cli.build_parser().parse_args(["stop"])
+    assert cli._stop(args) == 0
+    assert not cli._runfile().exists()
+    assert "already stopped" in capsys.readouterr().out
+
+
+def test_stop_signals_then_confirms(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    (tmp_path / "cache").mkdir(parents=True)
+    cli._runfile().write_text(json.dumps({"pid": 4242, "host": "127.0.0.1", "port": 8787}))
+
+    signalled = []
+    alive = iter([True, False, False])
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: next(alive, False))
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    args = cli.build_parser().parse_args(["stop"])
+    assert cli._stop(args) == 0
+    assert signalled and signalled[0][0] == 4242
+    assert not cli._runfile().exists()
+    assert "Stopped." in capsys.readouterr().out
+
+
+def test_pid_alive_for_this_process():
+    assert cli._pid_alive(os.getpid()) is True
+    assert cli._pid_alive(999999) is False
+
+
+# --------------------------------------------------------------------------- #
+# setup gate
+# --------------------------------------------------------------------------- #
+def test_needs_setup_until_marked_complete(store):
+    from core.repo import settings as settings_repo
+
+    assert cli._needs_setup(store) is True
+    settings_repo.mark_setup_complete(True)
+    assert cli._needs_setup(store) is False
+
+
+def test_start_short_circuits_when_already_running(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    (tmp_path / "cache").mkdir(parents=True)
+    cli._runfile().write_text(json.dumps({"pid": 4242, "host": "127.0.0.1", "port": 8787}))
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+    opened = []
+    monkeypatch.setattr(cli, "_open_browser", lambda url, delay=0: opened.append(url))
+
+    args = cli.build_parser().parse_args(["start"])
+    assert cli._start(args) == 0
+    assert opened == ["http://127.0.0.1:8787"]
+    assert "already running" in capsys.readouterr().out
+
+
+def test_setup_non_interactive_provisions_a_database(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
+    monkeypatch.delenv("JOBPILOT_DATABASE_URL", raising=False)
+
+    from core import db
+    from core.infra import docker
+
+    # Pretend Docker is unavailable so the test exercises the SQLite fallback path
+    # rather than touching a real container.
+    monkeypatch.setattr(docker, "ensure_postgres",
+                        lambda **kw: (None, "docker CLI not found on PATH"))
+    db.dispose()
+
+    args = cli.build_parser().parse_args(["setup", "--non-interactive"])
+    assert cli._setup(args) == 0
+    out = capsys.readouterr().out
+    assert "sqlite" in out
+    assert (tmp_path / "cache" / "jobpilot.db").exists()
+    db.dispose()

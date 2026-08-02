@@ -23,6 +23,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jp_paths  # noqa: E402
+
 IST = timezone(timedelta(hours=5, minutes=30))
 TOP_N = 20
 
@@ -301,16 +304,16 @@ def default_output() -> Path:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="/tmp/jobpilot_scored.json",
-                    help="Scored jobs JSON (falls back to /tmp/jobpilot_filtered.json).")
+    ap.add_argument("--input", default=jp_paths.artifact("scored"),
+                    help="Scored jobs JSON (falls back to the filtered artifact).")
     ap.add_argument("--output", default="", help="Output .xlsx path.")
     args = ap.parse_args()
 
+    fallback = jp_paths.artifact("filtered")
     jobs = load_json(args.input, None)
     if jobs is None:
-        jobs = load_json("/tmp/jobpilot_filtered.json", [])
-        print(f"[report] {args.input} not found — using /tmp/jobpilot_filtered.json",
-              file=sys.stderr)
+        jobs = load_json(fallback, [])
+        print(f"[report] {args.input} not found — using {fallback}", file=sys.stderr)
 
     missing_url_ids = [j.get("job_id", "?") for j in jobs if not j.get("application_url")]
     if missing_url_ids:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -67,6 +68,25 @@ def save_prefs(prefs: dict) -> None:
     current.update(prefs)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(current, indent=2, ensure_ascii=False))
+
+
+def find_available_port(host: str, preferred: int, max_tries: int = 20) -> int:
+    """Return `preferred` if free, else the next free port, else an OS-assigned one.
+
+    Scans sequentially (preferred, preferred+1, …) first since a predictable neighbor
+    is friendlier to bookmark than a random high port; only falls back to an
+    OS-assigned port if the whole range is occupied.
+    """
+    for port in range(preferred, preferred + max_tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, port))
+                return port
+            except OSError:
+                continue
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
 
 
 def engine_config() -> dict:

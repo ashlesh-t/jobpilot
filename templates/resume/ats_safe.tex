@@ -1,0 +1,73 @@
+% JobPilot ATS-safe resume template.
+%
+% Designed to survive automated parsing, which is the only job that matters before a
+% human ever sees it:
+%   * single column — multi-column layouts interleave into gibberish when parsed
+%   * no tables, text boxes, headers/footers, or graphics in parseable regions
+%   * standard section headings an ATS recognises verbatim
+%   * plain hyphens and standard fonts; no ligature or glyph substitution
+%   * contact details in the body, never in a header block
+%
+% Only stock LaTeX packages are used, so this compiles unchanged on Overleaf.
+% Placeholders are {{DOUBLE_BRACED}} and substituted by the tailoring step.
+
+\documentclass[letterpaper,10.5pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=0.62in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+
+% Kill hyphenation — a hyphen-broken keyword stops matching in an ATS.
+\usepackage[none]{hyphenat}
+\sloppy
+
+\pagestyle{empty}
+
+\titleformat{\section}
+  {\large\bfseries\uppercase}
+  {}{0em}{}[\vspace{-0.7em}\rule{\linewidth}{0.6pt}\vspace{-0.3em}]
+\titlespacing*{\section}{0pt}{0.9em}{0.5em}
+
+\setlist[itemize]{leftmargin=1.1em, itemsep=0.15em, topsep=0.25em, parsep=0pt}
+
+% \entry{role}{organisation}{dates}
+\newcommand{\entry}[3]{%
+  \textbf{#1}\hfill\textnormal{#3}\\%
+  \textit{#2}\vspace{0.15em}%
+}
+
+\begin{document}
+
+%% ---------------------------------------------------------------- header
+\begin{center}
+  {\LARGE\bfseries {{FULL_NAME}}}\\[0.35em]
+  {{CONTACT_LINE}}
+\end{center}
+
+\vspace{0.4em}
+
+%% ---------------------------------------------------------------- summary
+\section{Summary}
+{{SUMMARY}}
+
+%% ---------------------------------------------------------------- skills
+\section{Skills}
+{{SKILLS}}
+
+%% ---------------------------------------------------------------- experience
+\section{Experience}
+{{EXPERIENCE}}
+
+%% ---------------------------------------------------------------- projects
+\section{Projects}
+{{PROJECTS}}
+
+%% ---------------------------------------------------------------- education
+\section{Education}
+{{EDUCATION}}
+
+\end{document}

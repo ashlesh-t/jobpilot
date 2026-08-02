@@ -31,10 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "scrapers"))
 from jp_secrets import get_secret_optional, set_secret  # noqa: E402
 from scrapers._common import make_job_id  # noqa: E402
 import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
+import jp_paths  # noqa: E402
 
 REPO_DIR = Path(__file__).resolve().parent.parent
-RAW_OUT = "/tmp/jobpilot_raw.json"
-STATUS_OUT = "/tmp/jobpilot_scrape_status.json"
+RAW_OUT = jp_paths.artifact("raw")
+STATUS_OUT = jp_paths.artifact("scrape_status")
 APIFY_BASE = "https://api.apify.com/v2"
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # base seconds; backoff is RETRY_DELAY * 2**attempt

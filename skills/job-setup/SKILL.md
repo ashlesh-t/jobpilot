@@ -1,7 +1,15 @@
 ---
 name: job-setup
-description: One-time JobPilot configuration wizard. Invoke for /job-setup. Runs pre-flight checks (secrets, Google Drive MCP, jobpilot-resume folder), lets user pick their resume PDF from Drive, extracts raw text, then Claude reads and understands the resume interactively to build a complete profile.json. Finally collects job preferences into preferences.json.
+description: "SUPERSEDED in v2 by `jobpilot setup` and the in-app wizard — use those. Kept only for chat-only users; its Google Drive steps no longer apply."
 ---
+
+> **Superseded in v2.** Setup now lives in `jobpilot setup` (terminal) and the in-app
+> wizard on the Job Hunt page — neither needs Google Drive. Run those instead.
+>
+> This file is kept for people driving JobPilot entirely from a chat session. Steps B, C,
+> D and E below (the Google Drive resume pick) **no longer apply**: upload the resume in
+> the web app, or point `resume_parser.py` at a local file.
+
 
 # /job-setup
 

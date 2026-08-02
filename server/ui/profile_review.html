@@ -210,7 +210,9 @@ function profileReview(){
       try{
         const r = await fetch('/api/profile');
         if(!r.ok){ this.error = 'No profile.json found yet.'; this.loading = false; return; }
-        const p = await r.json();
+        const body = await r.json();
+        if(!body.exists){ this.error = 'No profile built yet.'; this.loading = false; return; }
+        const p = body.profile;
         p.skills = p.skills || [];
         p.roles_held = p.roles_held || [];
         p.projects = (p.projects||[]).map(x => ({stack: [], ...x}));
@@ -225,7 +227,7 @@ function profileReview(){
     async save(){
       this.status = 'Saving…';
       try{
-        const r = await fetch('/api/profile', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(this.profile)});
+        const r = await fetch('/api/profile', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({data: this.profile})});
         this.status = r.ok ? 'Saved.' : 'Save failed.';
       }catch(e){ this.status = 'Save failed: ' + e; }
     },

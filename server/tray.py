@@ -14,8 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from common import find_available_port  # noqa: E402
+
 HOST = os.environ.get("JOBPILOT_HOST", "127.0.0.1")
-PORT = int(os.environ.get("JOBPILOT_PORT", "8787"))
+_requested_port = int(os.environ.get("JOBPILOT_PORT", "8787"))
+PORT = find_available_port(HOST, _requested_port)
+if PORT != _requested_port:
+    print(f"==> Port {_requested_port} is already in use — using {PORT} instead.")
 URL = f"http://{HOST}:{PORT}"
 
 

@@ -15,11 +15,17 @@ __pycache__/
 *.pyc
 .venv/
 
-# Build artifacts (pyproject / wheel)
-dist/
-build/
+# Build artifacts (pyproject / wheel) — root-anchored so ui/dist (the committed,
+# shipped React build) is not swept up with them.
+/dist/
+/build/
 *.egg-info/
 jobpilot/bundle/
+
+# React UI: source deps and local caches, but ui/dist IS committed so a pipx or
+# source install needs no Node toolchain.
+ui/node_modules/
+ui/.vite/
 
 # Pipeline temp files
 /tmp/jobpilot_*.json
@@ -32,3 +38,6 @@ venv/
 .claude/*
 !.claude/settings.json
 # NOTE: .claude-plugin/ holds the committed plugin + marketplace manifest — do NOT ignore it.
+
+# TypeScript incremental build cache
+ui/*.tsbuildinfo

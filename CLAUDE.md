@@ -6,22 +6,37 @@ Automated job-hunting pipeline: scrape multiple job sources → Claude scores + 
 
 Two-layer design:
 
-- **Layer A (pure Python, no LLM):** `apify_scraper.py` → `dedupe.py` → `filter.py`. Runs via bash, writes JSON to `/tmp/jobpilot_*.json`. Must never call the LLM. Handles scraping, deduplication, and location/seen-jobs filtering only.
-- **Layer B (Claude):** All intelligence lives here. Claude reads filtered jobs, scores each one inline against `profile.json`, researches salary via WebSearch, writes the CSV report, tailors resumes, and sends the Telegram digest. No scoring or filtering Python scripts.
+- **Layer A (pure Python, no LLM):** `apify_scraper.py` → `dedupe.py` → `filter.py`, plus
+  `record_scored.py`, `report_generator.py` and `notify_run.py`. Must never call the LLM.
+  Writes run-scoped artifacts (see Artifact paths below).
+- **Layer B (the agent):** all the judgement — relevance, scoring, company intelligence,
+  salary research, resume tailoring. Split into per-phase skills (see Per-phase skills).
 
-**Shipping layer (optional, `engines/` + `server/`):** A local FastAPI service wraps the
-whole `/job-search` pipeline so it can run on a schedule and be driven from a web UI —
-without a human in a chat. It never contains pipeline logic; it only *invokes* the pipeline
-through a provider **engine** and streams progress.
+**v2 architecture (`core/` + `orchestrator/` + `server/` + `ui/`):** The pipeline is no
+longer one opaque LLM call. It is a sequence of phases the orchestrator drives, which is
+what makes stop / resume / per-phase rerun possible.
 
-- **`engines/` — RunEngine provider adapters.** `claude_code` runs `/job-search` headless
-  under a Pro/Max subscription (`claude -p … --output-format stream-json`, no per-token
-  cost, reuses `SKILL.md` verbatim); `claude_api` runs it via the Claude Agent SDK (metered,
-  loads the `SKILL.md` body as the system prompt so logic isn't duplicated); `gemini` is an
-  interface-ready stub. Both provider streams normalize to one `RunEvent` shape.
-- **`server/` — the service.** `app.py` (FastAPI + SSE), `run_manager.py` (orchestrates one
-  run, tails Layer A's `events.jsonl`, fans events to the UI), `scheduler.py` (APScheduler
-  over `schedule_slots_ist`), `telegram_auth.py` (browser OTP flow), `doctor.py` (health
+- **`core/`** — the domain layer. `db.py` (PostgreSQL in Docker, SQLite fallback, one
+  SQLAlchemy code path), `models.py`, `migrations/` (Alembic, applied at every start),
+  `repo/*` (every query lives here — none in server/ or orchestrator/), `secrets.py`
+  (keyring-first; secrets never enter the database), `pricing.py`, `backends.py`,
+  `tailoring.py`, `export.py`, `migrate_v1.py`.
+- **`orchestrator/`** — `phases.py` is the registry: 11 phases, each declaring who runs it
+  (`python` = a Layer A script, `llm` = a per-phase skill), its inputs and its output
+  artifact. `artifacts.py` gives every run its own directory. `runner.py` executes the
+  sequence, holds the child-process handle so a stop actually reaches it, retries transient
+  failures, and records cost per phase.
+- **`server/`** — FastAPI. `app.py` plus routers (`routes_jobs`, `routes_settings`,
+  `routes_schedule`, `routes_resumes`, `routes_tailor`, `routes_chat`), `scheduler.py`
+  (catch-up + network retry), `run_manager.py` (a thin adapter over the orchestrator).
+- **`ui/`** — React + Vite, built to `ui/dist` and shipped inside the wheel.
+
+- **`engines/` — RunEngine provider adapters.** `claude_code` (Pro/Max subscription, no
+  per-token cost), `claude_api` (Agent SDK, metered), `gemini` (experimental), and
+  `generic_cli` (any headless agent, by command template). Every adapter reports token
+  `Usage` and implements `stop()`, which is what makes cancellation reach the child.
+- **`server/` — the service.** `app.py` (FastAPI + SSE), `run_manager.py` (a thin adapter
+  over the orchestrator), `scheduler.py`, `telegram_auth.py`, `doctor.py` (health
   checks), `ui/index.html` (single-file SPA with a harness-style live run view). Run it with
   `python -m server` → http://127.0.0.1:8787.
 - **`scripts/run_events.py`** — Layer A emits stage/count events here (no-op unless a run is
@@ -46,28 +61,32 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 
 | Path | Role |
 |---|---|
-| `scripts/apify_scraper.py` | Layer A: hybrid orchestrator (native + Apify), writes `/tmp/jobpilot_raw.json` |
+| `scripts/apify_scraper.py` | Layer A: hybrid orchestrator (native + Apify), writes the `raw` artifact |
 | `scripts/scrapers/_common.py` | Shared native-scraper helpers (canonical schema, geo filter, http) |
 | `scripts/scrapers/{internshala,remoteok,weworkremotely,remotive,arbeitnow,jobicy}.py` | Native scrapers (no Apify, no LLM) |
-| `scripts/dedupe.py` | Layer A: removes duplicates → `/tmp/jobpilot_deduped.json` |
-| `scripts/filter.py` | Layer A: hard filters (location+city-alias, exp cap, CTC, seen-jobs) → `/tmp/jobpilot_filtered.json` |
+| `scripts/dedupe.py` | Layer A: removes duplicates → the `deduped` artifact |
+| `scripts/filter.py` | Layer A: hard filters (location+city-alias, exp cap, CTC, seen-jobs) → the `filtered` artifact |
 | `scripts/resume_tailor.py` | Layer B: edits LaTeX/DOCX resume to match JD, compiles PDF |
 | `scripts/record_scored.py` | Layer-B-invoked, pure Python: persists scored jobs into `jobs_seen` + `score_cache` (cross-run memory) |
 | `scripts/feedback.py` | Records `/job-feedback` outcomes into `user_feedback` |
-| `scripts/report_generator.py` | Layer B: styled **XLSX** (top 20) into `~/.claude/job-hunt-ai/reports/` from `/tmp/jobpilot_scored.json` |
+| `scripts/report_generator.py` | Layer A: styled **XLSX** (top 20) into `~/.claude/job-hunt-ai/reports/` from the `scored` artifact |
 | `scripts/telegram_notify.py` | Layer B: sends digest + report (xlsx/csv) + tailored resumes to Telegram |
 | `scripts/jp_secrets.py` | Secret loader/saver (keyring → `.env`). All scripts use this; never read env vars directly. |
 | `scripts/setup_wizard.py` | Interactive wizard called by `setup.sh` |
 | `config/actors.json` | Apify actor IDs (native sources listed under `_native_sources`) |
 | `config/preferences.example.json` | Template for user preferences |
-| `schema/init.sql` | SQLite schema for jobs_seen + score_cache |
-| `setup.sh` | One-time setup: creates `~/.claude/job-hunt-ai/`, installs deps, inits DB |
+| `scripts/jp_paths.py` | Run-scoped artifact paths shared by every Layer A script |
+| `scripts/notify_run.py` | Layer A: builds the digest and delivers it; writes a receipt |
+| `templates/resume/ats_safe.tex` | The ATS-safe LaTeX template tailoring fills in |
+| `schema/init.sql` | **v1 only** — the v2 schema is `core/models.py` + Alembic |
+| `jobpilot/tui/` | The `jobpilot setup` wizard |
+| `setup.sh` | **v1 only** — superseded by `jobpilot setup` |
 
 ## Slash commands (skills)
 
 | Command | File | What it does |
 |---|---|---|
-| `/job-setup` | `skills/job-setup/SKILL.md` | Secrets check, Drive resume pick, **Claude reads + verifies resume**, preferences questionnaire |
+| `/job-setup` | `skills/job-setup/SKILL.md` | **Superseded** by `jobpilot setup` + the in-app wizard. Kept for chat-driven users; the Drive steps no longer apply. |
 | `/job-search` | `skills/job-search/SKILL.md` | Full pipeline (Layer A + WebSearch discovery + Claude Layer B scoring, company intel, salary, XLSX, tailoring, Telegram) |
 | `/job-tailor <id\|URL\|JD>` | `skills/job-tailor/SKILL.md` | Claude scores + tailors resume to a single job |
 | `/job-feedback` | `skills/job-feedback/SKILL.md` | Record applied/rejected/interview/offer/ghosted outcomes; updates `learning.json` |
@@ -75,7 +94,8 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 
 ## Data directory (not in repo)
 
-Everything personal lives in `~/.claude/job-hunt-ai/` (created by `setup.sh`):
+Everything personal lives in `~/.claude/job-hunt-ai/` (created by `jobpilot setup`).
+Credentials are **not** there — they go to the OS keyring via `core/secrets.py`:
 
 ```
 ~/.claude/job-hunt-ai/
@@ -97,14 +117,34 @@ Everything personal lives in `~/.claude/job-hunt-ai/` (created by `setup.sh`):
 final structured profile.
 
 - `profile_verified: true` → Claude has read and confirmed the profile; safe to use for scoring.
-- `profile_verified: false` → resume_parser ran but Claude hasn't verified yet. The next
-  `/job-search` or `/job-tailor` run will trigger inline verification before continuing.
-- If `resume_hash` changes (new resume uploaded), `resume_parser.py` automatically resets
-  `profile_verified` to `false`.
+- `profile_verified: false` → extracted but not confirmed by a human. Scoring still uses
+  it; the UI says so, because a wrong profile silently degrades every score.
+- A new `resume_hash` (different resume uploaded) resets `profile_verified` to `false`
+  automatically — see `core/repo/profiles.py`.
+
+The database row is authoritative; `cache/profile.json` is written on every save because
+the Layer B skills read that file. Same for `options/preferences.json`.
 
 ## Layer A invariant
 
-Scripts `apify_scraper.py`, `dedupe.py`, `filter.py`, and everything in `scripts/scrapers/` must never invoke the LLM. They read config, call REST/HTML/RSS APIs, and read/write the cache and `/tmp` JSON files. Violating this makes the pipeline expensive.
+Scripts `apify_scraper.py`, `dedupe.py`, `filter.py`, and everything in `scripts/scrapers/`
+must never invoke the LLM. They read config, call REST/HTML/RSS APIs, and read/write the
+cache and artifact JSON files. Violating this makes the pipeline expensive.
+
+## Artifact paths
+
+Artifacts are **run-scoped**. `scripts/jp_paths.py` resolves every name:
+`$JOBPILOT_RUN_DIR/<name>.json` inside an orchestrated run, `/tmp/jobpilot_<name>.json`
+otherwise. Never hardcode either — two concurrent runs sharing `/tmp` was a real v1 bug.
+Names in order: `raw`, `scrape_status`, `deduped`, `filtered`, `discovered`, `relevant`,
+`scored`, `notify_receipt`.
+
+## Per-phase skills
+
+The five reasoning phases each own a skill file, carved verbatim out of the old monolithic
+`/job-search`: `skills/job-phase-{discover,relevance,score,intel,salary}/SKILL.md`.
+`skills/job-search/SKILL.md` is now a thin index that walks them in order for chat users.
+**When behaviour changes, edit the phase file** — the index defers to it.
 
 ## Scoring (Claude inline — no script)
 

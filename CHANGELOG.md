@@ -1,5 +1,104 @@
 # Changelog
 
+## v2.0.0 — 2026-08-02
+
+### Release title: "Everything Around the Pipeline" (major)
+
+A rewrite of everything around the pipeline. The scoring logic and the free scrapers are
+unchanged; how you set JobPilot up, run it, and see the results is entirely new.
+
+### The run is now steps you can control
+
+The pipeline was one opaque `claude -p "/job-search"` call — no cancel, no resume, no way
+to redo part of it. It is now eleven phases the orchestrator drives:
+
+- **Stop** reaches the child process instead of orphaning it. Everything already done is kept.
+- **Resume** restarts at the first unfinished phase — it never re-scrapes work that succeeded.
+- **Re-run one phase** redoes that phase and invalidates only what depends on it.
+- Every event is persisted, so a finished run's timeline survives a service restart.
+- Artifacts are run-scoped under `runs/<run_id>/`; two runs can no longer clobber each
+  other's `/tmp` files.
+- Scrape, dedupe and filter now run as plain Python with no LLM in the loop — cheaper, and
+  instantly cancellable.
+
+### A real web app
+
+React + Vite, shipped inside the wheel, works offline, light and dark:
+
+- **Home** — KPIs, charts, and the full job table: search, sort by match or package, filter
+  by source, score and salary, CSV/XLSX export of exactly what's on screen. Closed and
+  expired postings are hidden by default.
+- **Job Hunt** — start a run and watch each step, with logs, artifacts and per-phase re-run.
+- **Applications** — board and table, dated status history from applied through to offer.
+- **Tailored Resumes** — PDF preview, Overleaf source, ATS score before and after.
+- **Scheduler** — add, edit and delete run times (v1 had no delete), install the background
+  service, configure catch-up.
+- **My Info** — profile, preferences, a masked credential vault with per-credential tests,
+  and the full health table.
+- **Assistant** — ask about your own jobs, scores and runs.
+
+### Setup without Claude Desktop
+
+- `pipx install jobpilot-ai && jobpilot setup` — a guided terminal wizard.
+- **Google Drive is gone.** Resumes are uploaded in the web app, organised in folders, with
+  one active resume.
+- Telegram setup is a QR code and a `/start` — the chat ID is captured automatically instead
+  of being fished out of a raw JSON response.
+- The AI backend is detected and its login **actually verified**; v1 reported a logged-out
+  CLI as ready and then failed at run time.
+- New backends: Anthropic API, Gemini/Antigravity, and a generic CLI adapter.
+
+### Storage
+
+- PostgreSQL in a Docker container JobPilot manages, with a SQLite fallback when Docker
+  isn't available. One SQLAlchemy code path; the same test suite passes on both.
+- Alembic migrations applied at every start.
+- `jobpilot migrate` imports v1 state — preferences, profile, job history, score cache,
+  feedback, run history — idempotently, without touching your v1 files.
+
+### Cost
+
+- A per-phase cost ledger. Subscription runs report real tokens with no dollar amount,
+  because there is no per-token charge — rather than implying you were billed.
+- Tailoring and assistant answers are billed too.
+
+### Scheduling
+
+- Slots are database rows with their own timezone, mode and enabled flag.
+- A run missed while the machine was off happens **once** on return, within a configurable
+  grace window — not once per missed slot.
+- No network at fire time triggers a retry ladder rather than a recorded failure.
+- Auto-start service for systemd, launchd and Task Scheduler, installed from the UI.
+
+### Resume tailoring
+
+- Now a per-job action rather than something every run did to five jobs nobody sent.
+- Ships an ATS-safe LaTeX template; generated documents are validated against it (no tables,
+  images, multi-column layouts or exotic packages) before compiling.
+- Output: `resumes/tailored/<JOBID>-<COMPANY>/FirstName_LastName_Resume.{pdf,tex}` plus
+  `meta.json` with the ATS score before and after.
+
+### Fixed
+
+- Run artifacts resolved to the newest file on disk regardless of which run asked, so
+  historical runs showed another run's results.
+- A finished run's event stream 404'd after a service restart.
+- The scheduler's job store was in-memory, so slots vanished on restart.
+- The setup wizard wrote to `.env` while every reader preferred the keyring, so a saved
+  secret could be silently shadowed.
+- Concurrent runs shared one tailoring budget counter in `/tmp`.
+
+### Breaking
+
+- `/job-setup` is superseded by `jobpilot setup` and the in-app wizard. Google Drive is no
+  longer used.
+- `scripts/drive_upload.py` removed (deprecated since v1.6).
+- `/schedule` moved to `/api/schedule` and takes slot objects rather than time strings.
+- `/api/profile` is database-backed and returns `{profile, exists, verified}`.
+
+
+---
+
 ## v1.7.0 — 2026-08-01
 
 ### Release title: "Company Intel & Onboarding Polish" (minor)

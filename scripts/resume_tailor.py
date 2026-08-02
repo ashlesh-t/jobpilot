@@ -18,8 +18,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-FILTERED_IN = "/tmp/jobpilot_filtered.json"
-RUN_COUNTER = "/tmp/jobpilot_tailor_count.txt"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jp_paths  # noqa: E402
+
+FILTERED_IN = jp_paths.artifact("filtered")
+# Run-scoped so two concurrent runs can't share (and exhaust) one tailoring budget.
+RUN_COUNTER = jp_paths.scratch("tailor_count.txt")
 
 
 def jobpilot_dir() -> Path:

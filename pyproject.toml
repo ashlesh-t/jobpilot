@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jobpilot-ai"
-version = "1.7.0"
-description = "Automated job-hunt pipeline for Claude Code: scrape → score → tailor → notify, with an optional local web UI + scheduler."
+version = "2.0.0"
+description = "Your job hunt, automated and running on your own machine: scrape, score, tailor and track — with a local web app, a scheduler, and no cloud."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "ashlesh-t", email = "ashleshat5@gmail.com" }]
-keywords = ["jobs", "job-search", "resume", "scraping", "automation", "claude", "telegram"]
+keywords = ["jobs", "job-search", "resume", "ats", "scraping", "automation", "claude", "self-hosted"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
@@ -39,11 +39,20 @@ dependencies = [
   "sse-starlette>=2.0",
   "apscheduler>=3.10",
   "claude-agent-sdk>=0.1",
+  "python-multipart>=0.0.9",
+  # storage: one schema, two dialects (Postgres in Docker, SQLite fallback)
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "psycopg[binary]>=3.1",
+  # setup TUI
+  "rich>=13.7",
+  "questionary>=2.0",
+  "qrcode>=7.4",
 ]
 
 [project.optional-dependencies]
 tray = ["pystray>=0.19", "Pillow>=10.0"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
 
 [project.urls]
 Homepage = "https://github.com/ashlesh-t/jobpilot"
@@ -58,18 +67,29 @@ packages = ["jobpilot"]
 # Bundle the runtime tree inside the package so a pip/pipx install has everything on disk
 # in the same relative layout the code expects (jobpilot.paths resolves it).
 [tool.hatch.build.targets.wheel.force-include]
+"core" = "jobpilot/bundle/core"
+"orchestrator" = "jobpilot/bundle/orchestrator"
 "engines" = "jobpilot/bundle/engines"
 "server" = "jobpilot/bundle/server"
 "scripts" = "jobpilot/bundle/scripts"
 "skills" = "jobpilot/bundle/skills"
 "config" = "jobpilot/bundle/config"
 "schema" = "jobpilot/bundle/schema"
+"templates" = "jobpilot/bundle/templates"
+# Built React UI. `npm --prefix ui run build` must run before `hatch build`; CI
+# asserts ui_dist/index.html made it into the wheel.
+"ui/dist" = "jobpilot/bundle/ui_dist"
 "requirements.txt" = "jobpilot/bundle/requirements.txt"
 "requirements-server.txt" = "jobpilot/bundle/requirements-server.txt"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "jobpilot/", "engines/", "server/", "scripts/", "skills/", "config/", "schema/",
+  "jobpilot/", "core/", "orchestrator/", "engines/", "server/", "scripts/", "skills/",
+  "config/", "schema/", "templates/", "ui/",
   "requirements.txt", "requirements-server.txt", "README.md", "GETTING_STARTED.md",
   "CHANGELOG.md", "LICENSE", ".claude-plugin/",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

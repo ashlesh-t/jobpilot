@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-server.txt
       - name: Byte-compile
-        run: python -m compileall -q jobpilot scripts engines server tests
+        run: python -m compileall -q jobpilot core orchestrator scripts engines server tests
       - name: Validate plugin manifests are valid JSON
         run: |
           python -c "import json; json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); print('manifests OK')"
@@ -54,6 +54,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the web UI
+        shell: bash
+        run: |
+          if [ -f ui/package.json ]; then
+            npm --prefix ui ci
+            npm --prefix ui run build
+          else
+            echo "ui/package.json not present yet — skipping the UI build"
+          fi
       - name: Build the wheel
         run: |
           python -m pip install --upgrade pip build
@@ -61,7 +75,30 @@ jobs:
       - name: Install the built wheel (core deps only)
         shell: bash
         run: pip install dist/*.whl
-      - name: Smoke-test the jobpilot CLI
+      # The UI is shipped inside the wheel so a pipx install needs no Node toolchain.
+      # If this asset is missing, `jobpilot start` serves a blank page — fail loudly here.
+      - name: Assert the UI is bundled in the wheel
+        shell: bash
         run: |
+          if [ -f ui/package.json ]; then
+            python - <<'PY'
+          import glob, sys, zipfile
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(wheel).namelist()
+          if "jobpilot/bundle/ui_dist/index.html" not in names:
+              sys.exit(f"ui_dist/index.html missing from {wheel}")
+          print("UI bundled OK")
+          PY
+          fi
+      - name: Smoke-test the jobpilot CLI
+        shell: bash
+        run: |
+          set -e
           jobpilot --version
-          jobpilot doctor
+          jobpilot setup --non-interactive
+          # `doctor` exits non-zero when checks fail, which is correct — and on a bare
+          # runner with no resume, profile or AI backend, failing checks are the right
+          # answer. What we're asserting here is that the command runs and reports.
+          jobpilot doctor > doctor.txt || true
+          cat doctor.txt
+          grep -q "Database" doctor.txt

@@ -19,12 +19,38 @@ def main() -> None:
         return
 
     import uvicorn
+    from common import find_available_port
     host = os.environ.get("JOBPILOT_HOST", "127.0.0.1")
-    port = int(os.environ.get("JOBPILOT_PORT", "8787"))
+    requested_port = int(os.environ.get("JOBPILOT_PORT", "8787"))
+    port = find_available_port(host, requested_port)
+    if port != requested_port:
+        print(f"==> Port {requested_port} is already in use — using {port} instead.")
     print(f"JobPilot service → http://{host}:{port}")
-    # import the app object via the flat module (server dir is on sys.path)
-    from app import app
-    uvicorn.run(app, host=host, port=port, log_level="info")
+
+    # Publish where we're listening so `jobpilot stop` / `jobpilot start` can find us
+    # without guessing a port. Removed on clean shutdown.
+    runfile = _write_runfile(host, port)
+    try:
+        # import the app object via the flat module (server dir is on sys.path)
+        from app import app
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        try:
+            runfile.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _write_runfile(host: str, port: int):
+    import json
+    from pathlib import Path as _Path
+
+    raw = os.environ.get("JOBPILOT_DIR", "~/.claude/job-hunt-ai")
+    cache = _Path(os.path.expanduser(raw)) / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / "server.json"
+    path.write_text(json.dumps({"pid": os.getpid(), "host": host, "port": port}))
+    return path
 
 
 if __name__ == "__main__":

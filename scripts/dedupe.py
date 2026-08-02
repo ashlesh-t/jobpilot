@@ -2,7 +2,8 @@
 
 Removes jobs already seen (jobs_seen status='active'), dedupes within the batch on a
 (company|role|location) hash, and clears the score cache if the resume hash changed.
-Reads /tmp/jobpilot_raw.json, writes /tmp/jobpilot_deduped.json.
+Reads the `raw` artifact, writes the `deduped` one. Inside an orchestrated run those
+live under `$JOBPILOT_RUN_DIR`; standalone they fall back to /tmp (see jp_paths.py).
 """
 from __future__ import annotations
 
@@ -15,9 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_events  # noqa: E402  (no-op unless JOBPILOT_RUN_ID is set)
+import jp_paths  # noqa: E402
 
-RAW_IN = "/tmp/jobpilot_raw.json"
-DEDUPED_OUT = "/tmp/jobpilot_deduped.json"
+RAW_IN = jp_paths.artifact("raw")
+DEDUPED_OUT = jp_paths.artifact("deduped")
 
 
 def jobpilot_dir() -> Path:
