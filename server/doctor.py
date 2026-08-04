@@ -51,7 +51,7 @@ def _check_engines() -> list[dict]:
     return rows
 
 
-def _check_backend(live: bool) -> list[dict]:
+def _check_backend(user_id: int, live: bool) -> list[dict]:
     """The selected agent backend, with a real authentication probe in live mode.
 
     In quick mode this only reports installation — verifying a Claude Code login costs
@@ -61,7 +61,7 @@ def _check_backend(live: bool) -> list[dict]:
 
     try:
         chosen = backends.selected()
-        info = backends.probe(chosen, deep=live)
+        info = backends.probe(chosen, user_id, deep=live)
     except Exception as exc:  # noqa: BLE001
         return [_row("Agent backend", "engine", "fail", str(exc)[:160])]
 
@@ -99,11 +99,11 @@ def _check_database() -> list[dict]:
     return rows
 
 
-def _check_profile_and_resume() -> list[dict]:
+def _check_profile_and_resume(user_id: int) -> list[dict]:
     from core.repo import profiles, resumes  # noqa
 
     rows = []
-    active = resumes.active()
+    active = resumes.active(user_id)
     if active is None:
         rows.append(_row("Active resume", "profile", "fail",
                          "no resume uploaded — add one on the Job Hunt page"))
@@ -114,7 +114,7 @@ def _check_profile_and_resume() -> list[dict]:
         rows.append(_row("Active resume", "profile", "ok",
                          f"{active['folder']}/{active['filename']}"))
 
-    profile = profiles.current()
+    profile = profiles.current(user_id)
     if profile is None:
         rows.append(_row("Profile", "profile", "fail", "not built yet — run setup"))
     elif not profile.get("profile_verified"):
@@ -214,14 +214,14 @@ def _run_source(mod_name: str, extra: dict) -> dict:
         return _row(mod_name, "source", "fail", str(exc)[:120])
 
 
-def run_doctor(live: bool = False) -> dict:
+def run_doctor(user_id: int, live: bool = False) -> dict:
     rows: list[dict] = []
     # One failing check must never blank the whole table — that's precisely when the
     # user needs the other rows most.
     for label, check in (
-        ("Agent backend", lambda: _check_backend(live)),
+        ("Agent backend", lambda: _check_backend(user_id, live)),
         ("Database", _check_database),
-        ("Profile", _check_profile_and_resume),
+        ("Profile", lambda: _check_profile_and_resume(user_id)),
         ("Engines", _check_engines),
         ("Notifiers", _check_notifiers),
         ("Apify", lambda: [_check_apify()]),

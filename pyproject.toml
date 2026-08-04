@@ -43,6 +43,9 @@ dependencies = [
   "sqlalchemy>=2.0",
   "alembic>=1.13",
   "psycopg[binary]>=3.1",
+  # auth: per-user login + encrypted per-user secrets
+  "bcrypt>=4.1",
+  "cryptography>=42.0",
   # setup TUI
   "rich>=13.7",
   "questionary>=2.0",

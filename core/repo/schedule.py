@@ -43,32 +43,33 @@ def to_dict(s: ScheduleSlot) -> dict:
     }
 
 
-def _unique_name(session, base: str) -> str:
+def _unique_name(session, user_id: int, base: str) -> str:
     name = base or "slot"
     n = 1
-    while session.scalar(select(ScheduleSlot).where(ScheduleSlot.name == name)) is not None:
+    while session.scalar(select(ScheduleSlot).where(
+            ScheduleSlot.user_id == user_id, ScheduleSlot.name == name)) is not None:
         n += 1
         name = f"{base}-{n}"
     return name
 
 
-def create(*, name: str, time: str, timezone: str = DEFAULT_TZ, mode: str = "auto",
+def create(user_id: int, *, name: str, time: str, timezone: str = DEFAULT_TZ, mode: str = "auto",
            days: str = "*", enabled: bool = True) -> dict:
     validate_time(time)
     with session_scope() as s:
-        row = ScheduleSlot(name=_unique_name(s, name.strip() or "slot"), time_hhmm=time,
-                           timezone=timezone, mode=mode, days=days, enabled=enabled)
+        row = ScheduleSlot(user_id=user_id, name=_unique_name(s, user_id, name.strip() or "slot"),
+                           time_hhmm=time, timezone=timezone, mode=mode, days=days, enabled=enabled)
         s.add(row)
         s.flush()
         return to_dict(row)
 
 
-def update(slot_id: int, **fields) -> dict | None:
+def update(user_id: int, slot_id: int, **fields) -> dict | None:
     if "time" in fields:
         validate_time(fields["time"])
     with session_scope() as s:
         row = s.get(ScheduleSlot, slot_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return None
         mapping = {"time": "time_hhmm", "name": "name", "timezone": "timezone",
                    "mode": "mode", "days": "days", "enabled": "enabled"}
@@ -79,50 +80,65 @@ def update(slot_id: int, **fields) -> dict | None:
         return to_dict(row)
 
 
-def delete(slot_id: int) -> bool:
+def delete(user_id: int, slot_id: int) -> bool:
     with session_scope() as s:
         row = s.get(ScheduleSlot, slot_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return False
         s.delete(row)
         return True
 
 
-def get(slot_id: int) -> dict | None:
+def get(user_id: int, slot_id: int) -> dict | None:
     with session_scope() as s:
         row = s.get(ScheduleSlot, slot_id)
-        return to_dict(row) if row else None
+        if row is None or row.user_id != user_id:
+            return None
+        return to_dict(row)
 
 
-def list_all(*, enabled_only: bool = False) -> list[dict]:
+def list_all(user_id: int, *, enabled_only: bool = False) -> list[dict]:
     with session_scope() as s:
-        stmt = select(ScheduleSlot).order_by(ScheduleSlot.time_hhmm)
+        stmt = select(ScheduleSlot).where(ScheduleSlot.user_id == user_id).order_by(ScheduleSlot.time_hhmm)
         if enabled_only:
             stmt = stmt.where(ScheduleSlot.enabled.is_(True))
         return [to_dict(r) for r in s.scalars(stmt).all()]
 
 
-def record_fire(slot_id: int, *, run_id: str = "", outcome: str = "started",
+def record_fire(user_id: int, slot_id: int, *, run_id: str = "", outcome: str = "started",
                 when: datetime | None = None) -> None:
     """Stamp a fire. Catch-up passes `when` = the occurrence it served, not wall-clock,
     so the same missed slot is never picked up twice."""
     with session_scope() as s:
         row = s.get(ScheduleSlot, slot_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return
         row.last_fired_at = when or utcnow()
         row.last_run_id = run_id or row.last_run_id
         row.last_outcome = outcome
 
 
-def set_outcome(slot_id: int, outcome: str) -> None:
+def set_outcome(user_id: int, slot_id: int, outcome: str) -> None:
     with session_scope() as s:
         row = s.get(ScheduleSlot, slot_id)
-        if row is not None:
+        if row is not None and row.user_id == user_id:
             row.last_outcome = outcome
 
 
-def missed_since_downtime(grace_hours: int = 6, now: datetime | None = None) -> list[dict]:
+def list_all_enabled_across_users() -> list[dict]:
+    """Every enabled slot on the instance, across every account — what the scheduler's
+    APScheduler timers are rebuilt from at startup and on every `reconfigure()`.
+
+    Each dict is `to_dict()` plus `user_id`, since the scheduler needs to know which
+    account's run to fire when the timer goes off."""
+    with session_scope() as s:
+        rows = s.scalars(
+            select(ScheduleSlot).where(ScheduleSlot.enabled.is_(True))
+            .order_by(ScheduleSlot.time_hhmm)).all()
+        return [{**to_dict(r), "user_id": r.user_id} for r in rows]
+
+
+def missed_since_downtime(user_id: int, grace_hours: int = 6, now: datetime | None = None) -> list[dict]:
     """Enabled slots whose most recent fire time passed unserved within the grace window.
 
     "Unserved" means the slot has no `last_fired_at` at or after that occurrence. At most
@@ -133,7 +149,7 @@ def missed_since_downtime(grace_hours: int = 6, now: datetime | None = None) -> 
 
     now = now or utcnow()
     due: list[dict] = []
-    for slot in list_all(enabled_only=True):
+    for slot in list_all(user_id, enabled_only=True):
         try:
             tz = ZoneInfo(slot["timezone"] or DEFAULT_TZ)
         except Exception:

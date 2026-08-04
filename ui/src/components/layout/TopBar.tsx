@@ -1,12 +1,13 @@
 /** Header: where you are, what's running, what it's costing, and the theme toggle. */
 import clsx from 'clsx'
-import { Activity, Coins, Monitor, Moon, Sun } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Activity, Coins, LogOut, Monitor, Moon, Sun } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import { HelpTip } from '@/components/ui/Help'
 import { Spinner } from '@/components/ui/primitives'
 import { api } from '@/lib/api'
+import { useCurrentUser, useLogout } from '@/lib/auth'
 import { formatTokens, formatUsd } from '@/lib/format'
 import { useRuns } from '@/lib/hooks'
 import { useTheme } from '@/lib/theme'
@@ -41,6 +42,9 @@ export function TopBar({ title }: { title: string }) {
   const { choice, setChoice } = useTheme()
   const { data: runs } = useRuns()
   const { data: cost } = useCost()
+  const { data: user } = useCurrentUser()
+  const logout = useLogout()
+  const navigate = useNavigate()
   const active = runs?.active
 
   const Icon = THEME_ICON[choice]
@@ -97,6 +101,21 @@ export function TopBar({ title }: { title: string }) {
         >
           <Icon className="h-[18px] w-[18px]" />
         </button>
+
+        {user && (
+          <button
+            type="button"
+            className="btn-icon"
+            title={`Log out of ${user.username}`}
+            aria-label="Log out"
+            onClick={async () => {
+              await logout.mutateAsync()
+              navigate('/login', { replace: true })
+            }}
+          >
+            <LogOut className="h-[18px] w-[18px]" />
+          </button>
+        )}
       </div>
     </header>
   )

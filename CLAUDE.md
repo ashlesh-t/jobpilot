@@ -18,11 +18,12 @@ what makes stop / resume / per-phase rerun possible.
 
 - **`core/`** — the domain layer. `db.py` (PostgreSQL in Docker, SQLite fallback, one
   SQLAlchemy code path), `models.py`, `migrations/` (Alembic, applied at every start),
-  `repo/*` (every query lives here — none in server/ or orchestrator/), `secrets.py`
-  (keyring-first; secrets never enter the database), `pricing.py`, `backends.py`
-  (agent detection + `install_claude_code` / `install_tectonic`), `tailoring.py`,
-  `export.py`, `migrate_v1.py`, `changelog.py` (CHANGELOG.md → structured releases, shared
-  by `jobpilot upgrade` and the About page), `version.py`.
+  `repo/*` (every query lives here — none in server/ or orchestrator/; every function
+  scoped to a user takes `user_id` first — see Multi-user accounts below), `secrets.py`
+  (per-user, encrypted at rest via `crypto.py` — see Multi-user accounts), `pricing.py`,
+  `backends.py` (agent detection + `install_claude_code` / `install_tectonic`),
+  `tailoring.py`, `export.py`, `migrate_v1.py`, `changelog.py` (CHANGELOG.md → structured
+  releases, shared by `jobpilot upgrade` and the About page), `version.py`.
 - **`orchestrator/`** — `phases.py` is the registry: 11 phases, each declaring who runs it
   (`python` = a Layer A script, `llm` = a per-phase skill), its inputs and its output
   artifact. `artifacts.py` gives every run its own directory. `runner.py` executes the
@@ -47,6 +48,55 @@ what makes stop / resume / per-phase rerun possible.
 - **`scripts/notify/`** — pluggable delivery (`telegram`, `discord`); `preferences.notify_channels`
   selects channels. The single-run digest still goes through `telegram_notify.py`.
 
+## Multi-user accounts
+
+JobPilot is a shared instance with real, isolated accounts — not a single-user tool
+anymore. `jobpilot setup` only bootstraps the database and the first account; every
+other person signs up through the web UI (`/signup`) and configures their own
+preferences, resume, and API keys after logging in.
+
+- **Schema:** `core/models.py`'s `User`, `Session` (table `sessions`), `UserSecret`.
+  Every per-account table carries `user_id` — `Setting` (PK `(user_id, key)`),
+  `Profile`, `Resume`, `Run`, `Scan`, `Application`, `TailoredResume`, `Contact`,
+  `Referral`, `CostEntry`, `UserFeedback` (PK `(user_id, job_id)`), `ScheduleSlot`,
+  `ChatMessage`. **`Job` is the one deliberate exception** — the listing (company,
+  role, JD text) is shared/globally deduped by `job_id`; everything score/intel/
+  salary-shaped that depends on *whose* profile produced it lives on the separate
+  `JobUserScore` table (composite PK `(user_id, job_id)`). `UrlSecurityCache` also
+  stays shared — it's a URL-reputation cache with no user data.
+- **`core/repo/*`:** every query function takes `user_id: int` as its first
+  parameter and scopes accordingly — this is the one invariant to preserve when
+  adding a new repo function.
+- **Secrets:** `core/secrets.py` (`get(user_id, key)` / `set(user_id, key, value)`)
+  stores every credential (Apify token, Telegram bot token, Anthropic key, ...)
+  **encrypted in the database**, not the OS keyring — `core/crypto.py` holds the one
+  instance-wide Fernet key (itself in the OS keyring, or a `0600` file fallback) that
+  encrypts every `user_secrets` row. `scripts/jp_secrets.py` (used by standalone
+  Layer A subprocesses) reads a DB-backed value whenever `JOBPILOT_USER_ID` is set in
+  its environment — the orchestrator sets it on every phase subprocess it spawns —
+  and only falls back to the legacy keyring/`.env` path for the pre-auth CLI bootstrap
+  wizard, where no account exists yet.
+- **Sessions:** server-side rows + an HttpOnly `jobpilot_session` cookie
+  (`server/auth.py`, `server/auth_routes.py`) — no JWT, no localStorage token.
+- **Auth-gating:** almost every `/api/*` route requires `Depends(get_current_user)`
+  and threads `user["id"]` into its repo calls. Instance-level info (version,
+  backend detection, the About/changelog pages) stays public by design.
+- **Per-user runs:** `orchestrator/runner.py`'s `Orchestrator.active` is keyed by
+  `user_id` — each account gets its own run lock, so two people can run
+  `/job-search` concurrently without blocking each other. Artifacts, resumes, and
+  reports live under `<jobpilot_dir>/users/<user_id>/...` (`core/paths.py`).
+- **Agent backend choice** (`claude_code` / `claude_api` / `gemini` / `generic_cli`)
+  is **instance-level**, not per-account (`core/backends.py`'s own
+  `cache_dir()/engine.json`) — every account on an instance shares one agent CLI.
+  Only the `claude_api`/`gemini` backends' API *keys* are per-user secrets; a Claude
+  Code Pro/Max subscription login is inherently machine-wide and can't be
+  meaningfully namespaced per browser account.
+- **Upgrading an existing single-user install:** migration `0004_users_and_multitenancy`
+  backfills one locked `legacy-admin` account (`User.must_set_password = true`,
+  unguessable password) and assigns every pre-existing row to it. The next
+  `jobpilot setup`, or a `POST /api/auth/claim` call, gives it a real username and
+  password without losing any data.
+
 **Hybrid scraping (Layer A):** `apify_scraper.py` runs **native scrapers first** (free, in `scripts/scrapers/`) and then the **Apify layer** only for sources that block native access. Source mix is driven by `preferences.json` `job_market_focus` (`india` | `global` | `both`).
 
 | Source | Native? | Why |
@@ -70,11 +120,13 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 | `scripts/dedupe.py` | Layer A: removes duplicates → the `deduped` artifact |
 | `scripts/filter.py` | Layer A: hard filters (location+city-alias, exp cap, CTC, seen-jobs) → the `filtered` artifact |
 | `scripts/resume_tailor.py` | Layer B: edits LaTeX/DOCX resume to match JD, compiles PDF |
-| `scripts/record_scored.py` | Layer-B-invoked, pure Python: persists scored jobs into `jobs_seen` + `score_cache` (cross-run memory) |
-| `scripts/feedback.py` | Records `/job-feedback` outcomes into `user_feedback` |
+| `scripts/record_scored.py` | Layer-B-invoked, pure Python: persists scored jobs via `core.repo.jobs.upsert_scored` (shared `Job` + this run's `JOBPILOT_USER_ID`'s `JobUserScore`); falls back to the v1 `jobs.sqlite` writer if `core` or `JOBPILOT_USER_ID` is unavailable |
+| `scripts/feedback.py` | Records `/job-feedback` outcomes into `user_feedback`, scoped to `JOBPILOT_USER_ID` |
+| `scripts/feedback_candidates.py` | Lists `JOBPILOT_USER_ID`'s recent applied/tailored/fed-back jobs for `/job-feedback` Step 1 |
+| `scripts/jobpilot_clear.py` | Clears `JOBPILOT_USER_ID`'s cached scores, feedback, reports and `learning.json` for `/jobpilot-clear` |
 | `scripts/report_generator.py` | Layer A: styled **XLSX** (top 20) into `~/.claude/job-hunt-ai/reports/` from the `scored` artifact |
 | `scripts/telegram_notify.py` | Layer B: sends digest + report (xlsx/csv) + tailored resumes to Telegram |
-| `scripts/jp_secrets.py` | Secret loader/saver (keyring → `.env`). All scripts use this; never read env vars directly. |
+| `scripts/jp_secrets.py` | Secret loader/saver — per-user database store when `JOBPILOT_USER_ID` is set, else keyring → `.env`. All scripts use this; never read env vars directly. |
 | `scripts/setup_wizard.py` | Interactive wizard called by `setup.sh` |
 | `config/actors.json` | Apify actor IDs (native sources listed under `_native_sources`) |
 | `config/preferences.example.json` | Template for user preferences |
@@ -101,21 +153,36 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 
 ## Data directory (not in repo)
 
-Everything personal lives in `~/.claude/job-hunt-ai/` (created by `jobpilot setup`).
-Credentials are **not** there — they go to the OS keyring via `core/secrets.py`:
+The instance-wide root is `~/.claude/job-hunt-ai/` (created by `jobpilot setup`).
+Credentials are **not** there — they're encrypted per-user rows in the database, via
+`core/secrets.py` (see Multi-user accounts above). Everything per-account nests under
+`users/<user_id>/` (`core/paths.py`):
 
 ```
 ~/.claude/job-hunt-ai/
-├── .env                          # APIFY_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-├── options/preferences.json      # job search criteria
-├── cache/jobs.sqlite             # seen-jobs + score cache + user feedback
-├── cache/profile.json            # resume profile (Claude-verified, profile_verified: true)
-├── cache/company_intel.json      # per-company interview intel (archetype, prep focus; TTL 45d)
-├── cache/learning.json           # outcome-learned ranking weights (see Learning loop below)
-├── resumes/base.pdf              # master resume (cached from Google Drive)
-├── resumes/tailored/             # generated tailored resumes
-└── reports/                      # dated XLSX reports
+├── cache/jobpilot.db (or database.json pointing at Postgres) — every account's data
+├── cache/.master_key             # instance-wide secret-encryption key (keyring fallback)
+└── users/<user_id>/
+    ├── options/preferences.json      # this account's job search criteria (legacy export)
+    ├── cache/profile.json            # this account's resume profile (legacy export)
+    ├── resumes/                      # uploaded + active resume
+    ├── resumes/tailored/             # generated tailored resumes
+    ├── runs/<run_id>/                # this account's run-scoped artifacts
+    └── reports/                      # dated XLSX reports
 ```
+
+`preferences.json`/`profile.json` are legacy exports kept in sync only because the
+Layer B skills still read them from disk — the database row is authoritative.
+`company_intel.json` stays instance-wide (company interview intel is public research,
+the same fact regardless of who's asking — like `Job`); `learning.json` is per-user
+under `users/<user_id>/cache/`. The orchestrator's RUN CONTEXT block
+(`orchestrator/runner.py::_program_for`) hands every phase skill both
+`instance_cache_dir` and `user_cache_dir` so `skills/job-phase-intel/`,
+`skills/job-feedback/`, and `skills/jobpilot-clear/` never hardcode
+`~/.claude/job-hunt-ai/cache/` directly. `job-feedback` and `jobpilot-clear` read/write
+through `scripts/feedback_candidates.py`/`scripts/jobpilot_clear.py` (v2 database via
+`core.repo`, scoped by `JOBPILOT_USER_ID`) instead of raw `sqlite3` against the v1
+`jobs.sqlite` schema.
 
 ## profile.json and the `profile_verified` flag
 
@@ -174,8 +241,8 @@ Claude scores each job in Layer B by reading the full JD + `profile.json` and co
 With semantic_score=75 → score = round(0.5×75 + 0.5×80) = 78. Crosses tailoring threshold.
 
 No `ats_scorer.py`, no `sentence-transformers`, no Jaccard fallback. Scored jobs are persisted
-by `scripts/record_scored.py` (jobs_seen + score_cache) so runs are deduped and cached scores
-are reused for an unchanged resume.
+by `scripts/record_scored.py` (shared `Job` + this user's `JobUserScore`) so runs are deduped
+and cached scores are reused for an unchanged resume.
 
 ## Interview-bar intelligence (Layer B, /job-search Step B3b)
 
@@ -212,7 +279,14 @@ project (see `PLAN_INTELLIGENCE.md` Research Findings for citations).
 
 ## Secrets rule
 
-All secrets are loaded through `scripts/jp_secrets.py` (keyring first, then `~/.claude/job-hunt-ai/.env`). No script should read `os.environ` for secrets directly.
+In-process code (server/, orchestrator/, core/) loads every secret through
+`core/secrets.py` (`get(user_id, key)`) — encrypted per-user rows in the database, per
+Multi-user accounts above. Standalone Layer A subprocesses load through
+`scripts/jp_secrets.py`, which reads the same per-user store whenever `JOBPILOT_USER_ID`
+is set in its environment (every phase subprocess the orchestrator spawns sets it),
+falling back to the legacy OS keyring / `~/.claude/job-hunt-ai/.env` path only for the
+pre-auth CLI bootstrap wizard, before any account exists. No script should read
+`os.environ` for a credential directly.
 
 ## Job sources
 

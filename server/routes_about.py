@@ -51,7 +51,10 @@ def _tools() -> list[dict]:
     rows: list[dict] = []
 
     try:
-        info = backends.probe(backends.selected())
+        # Public, pre-login page — no account in scope, so a backend that needs a
+        # per-user API key (claude_api/gemini) will show as "not configured" here
+        # even if some account on this instance has one set.
+        info = backends.probe(backends.selected(), 0)
         rows.append({
             "name": "AI backend", "found": info.found, "detail": info.label,
             "required": True,

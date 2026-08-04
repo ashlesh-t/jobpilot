@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
 from orchestrator import phases as P
 
 # The service's own phase list, shrunk to something fast: two Layer A stand-ins around
@@ -61,7 +63,7 @@ class FakeEngine:
             waited += 0.05
         if self.stopped:
             return RunResult(ok=False, error="cancelled")
-        ArtifactStore(run_id).write("scored", [
+        ArtifactStore(int(os.environ.get("JOBPILOT_USER_ID", "0")), run_id).write("scored", [
             {"job_id": "j0", "company": "Acme", "role": "SDE", "score": 88,
              "application_url": "https://x.test"}])
         on_event(RunEvent("score", "done", "scored 1", origin="engine"))
@@ -98,6 +100,7 @@ def client(monkeypatch, tmp_path):
     import app as app_module
     with TestClient(app_module.app) as c:
         c.engine_holder = holder
+        signup(c)
         yield c
     db.dispose()
 

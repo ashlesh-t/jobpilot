@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -20,6 +20,7 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core.repo import profiles as profiles_repo  # noqa: E402
 from core.repo import resumes as resumes_repo  # noqa: E402
 from core.repo import settings as settings_repo  # noqa: E402
@@ -39,11 +40,11 @@ class LabelPatch(BaseModel):
 
 
 @router.get("")
-async def list_resumes():
+async def list_resumes(user: dict = Depends(get_current_user)):
     return {
-        "folders": resumes_repo.folders(),
-        "resumes": resumes_repo.list_all(),
-        "active": resumes_repo.active(),
+        "folders": resumes_repo.folders(user["id"]),
+        "resumes": resumes_repo.list_all(user["id"]),
+        "active": resumes_repo.active(user["id"]),
         "allowed": sorted(resumes_repo.ALLOWED_SUFFIXES),
     }
 
@@ -54,6 +55,7 @@ async def upload_resume(
     folder: str = Form("default"),
     label: str = Form(""),
     make_active: bool = Form(True),
+    user: dict = Depends(get_current_user),
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in resumes_repo.ALLOWED_SUFFIXES:
@@ -77,7 +79,7 @@ async def upload_resume(
         temp_path = Path(tmp.name)
 
     try:
-        record = resumes_repo.add(temp_path, folder=folder,
+        record = resumes_repo.add(user["id"], temp_path, folder=folder,
                                   filename=file.filename or temp_path.name,
                                   label=label, make_active=make_active)
     except ValueError as exc:
@@ -89,74 +91,74 @@ async def upload_resume(
     # decide when the score cache is stale.
     if record["is_active"]:
         settings_repo.update_preferences(
-            {"resume_path": record["path"], "resume_hash": record["hash"]})
+            user["id"], {"resume_path": record["path"], "resume_hash": record["hash"]})
 
-    return {"resume": record, "resumes": resumes_repo.list_all()}
+    return {"resume": record, "resumes": resumes_repo.list_all(user["id"])}
 
 
 @router.post("/{resume_id}/activate")
-async def activate_resume(resume_id: int):
-    record = resumes_repo.set_active(resume_id)
+async def activate_resume(resume_id: int, user: dict = Depends(get_current_user)):
+    record = resumes_repo.set_active(user["id"], resume_id)
     if record is None:
         raise HTTPException(status_code=404, detail="no such resume")
     settings_repo.update_preferences(
-        {"resume_path": record["path"], "resume_hash": record["hash"]})
-    return {"resume": record, "resumes": resumes_repo.list_all()}
+        user["id"], {"resume_path": record["path"], "resume_hash": record["hash"]})
+    return {"resume": record, "resumes": resumes_repo.list_all(user["id"])}
 
 
 @router.get("/{resume_id}/download")
-async def download_resume(resume_id: int):
-    record = resumes_repo.get(resume_id)
+async def download_resume(resume_id: int, user: dict = Depends(get_current_user)):
+    record = resumes_repo.get(user["id"], resume_id)
     if record is None or record["missing"]:
         raise HTTPException(status_code=404, detail="that file is no longer on disk")
     return FileResponse(record["path"], filename=record["filename"])
 
 
 @router.patch("/{resume_id}")
-async def rename_resume(resume_id: int, req: LabelPatch):
+async def rename_resume(resume_id: int, req: LabelPatch, user: dict = Depends(get_current_user)):
     from core.db import session_scope
     from core.models import Resume
 
     with session_scope() as s:
         row = s.get(Resume, resume_id)
-        if row is None:
+        if row is None or row.user_id != user["id"]:
             raise HTTPException(status_code=404, detail="no such resume")
         row.label = req.label
-    return {"resume": resumes_repo.get(resume_id)}
+    return {"resume": resumes_repo.get(user["id"], resume_id)}
 
 
 @router.delete("/{resume_id}")
-async def delete_resume(resume_id: int):
-    if not resumes_repo.remove(resume_id):
+async def delete_resume(resume_id: int, user: dict = Depends(get_current_user)):
+    if not resumes_repo.remove(user["id"], resume_id):
         raise HTTPException(status_code=404, detail="no such resume")
-    active = resumes_repo.active()
+    active = resumes_repo.active(user["id"])
     if active:
         settings_repo.update_preferences(
-            {"resume_path": active["path"], "resume_hash": active["hash"]})
-    return {"resumes": resumes_repo.list_all(), "active": active}
+            user["id"], {"resume_path": active["path"], "resume_hash": active["hash"]})
+    return {"resumes": resumes_repo.list_all(user["id"]), "active": active}
 
 
 @router.post("/folders/rename")
-async def rename_folder(req: FolderRename):
+async def rename_folder(req: FolderRename, user: dict = Depends(get_current_user)):
     try:
-        moved = resumes_repo.rename_folder(req.old, req.new)
+        moved = resumes_repo.rename_folder(user["id"], req.old, req.new)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"moved": moved, "folders": resumes_repo.folders()}
+    return {"moved": moved, "folders": resumes_repo.folders(user["id"])}
 
 
 # --------------------------------------------------------------------------- #
 # Profile extraction
 # --------------------------------------------------------------------------- #
 @router.post("/{resume_id}/extract")
-async def extract_profile(resume_id: int):
+async def extract_profile(resume_id: int, user: dict = Depends(get_current_user)):
     """Read the resume and propose a profile.
 
     Text extraction is plain Python; the *understanding* is the agent's job. The result
     is saved unverified — the user reviews and confirms it, because a wrong profile
     quietly degrades every score afterwards.
     """
-    record = resumes_repo.get(resume_id)
+    record = resumes_repo.get(user["id"], resume_id)
     if record is None or record["missing"]:
         raise HTTPException(status_code=404, detail="that file is no longer on disk")
 
@@ -167,10 +169,10 @@ async def extract_profile(resume_id: int):
             detail="No text could be read from that file. If it's a scanned image, "
                    "upload a text-based PDF or a DOCX instead.",
         )
-    resumes_repo.set_parsed_text(resume_id, text)
+    resumes_repo.set_parsed_text(user["id"], resume_id, text)
 
-    proposed, source, detail = await _propose_profile(text)
-    saved = profiles_repo.save(proposed, verified=False, resume_id=resume_id,
+    proposed, source, detail = await _propose_profile(user["id"], text)
+    saved = profiles_repo.save(user["id"], proposed, verified=False, resume_id=resume_id,
                                resume_hash=record["hash"])
     return {"profile": saved, "source": source, "detail": detail,
             "characters": len(text)}
@@ -224,7 +226,7 @@ RESUME:
 MAX_RESUME_CHARS = 60000
 
 
-async def _propose_profile(text: str) -> tuple[dict, str, str]:
+async def _propose_profile(user_id: int, text: str) -> tuple[dict, str, str]:
     """Ask the configured agent to structure the resume; fall back to regex heuristics.
 
     Returns (profile, source, detail) — `source` tells the UI whether a human should
@@ -237,7 +239,7 @@ async def _propose_profile(text: str) -> tuple[dict, str, str]:
         import engines
         from core.repo import settings as settings_lib
 
-        engine = engines.get_engine(settings_lib.engine_config()["provider"])
+        engine = engines.get_engine(settings_lib.engine_config(user_id)["provider"], user_id=user_id)
         ok, reason = engine.available()
         if not ok:
             raise RuntimeError(reason)

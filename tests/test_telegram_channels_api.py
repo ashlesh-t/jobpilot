@@ -6,6 +6,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -30,6 +32,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        signup(c)
         yield c
     db.dispose()
 

@@ -1,21 +1,19 @@
-"""Thin wrapper over `scripts/jp_secrets.py` — the one path to credentials.
+"""Per-user secrets — the one path to credentials.
 
-Secrets live in the OS keyring, falling back to `<jobpilot_dir>/.env`. They are never
-written to the database and never returned by an API response unless the caller
-explicitly asks to reveal one. Everything in core/, server/ and orchestrator/ imports
-from here so the import-path fixups live in exactly one place.
+Every secret (Apify token, Telegram bot token, Anthropic key, ...) is stored encrypted
+in the `user_secrets` table, scoped to whichever account it belongs to (see
+core/crypto.py for the encryption key and core/repo/user_secrets.py for persistence).
+Nothing here is written to the OS keyring or `.env` any more — that path only remains
+for the pre-auth CLI bootstrap wizard and for standalone Layer A subprocesses, both of
+which go through scripts/jp_secrets.py instead (it falls back to this module when a
+`JOBPILOT_USER_ID` is set in its environment).
+
+Secrets are never returned by an API response unless the caller explicitly asks to
+reveal one.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-REPO_DIR = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = REPO_DIR / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import jp_secrets  # noqa: E402
+from .repo import user_secrets as _repo
 
 # Everything JobPilot may hold, with the label and help text the UI renders.
 KNOWN_SECRETS: list[dict] = [
@@ -53,21 +51,23 @@ KNOWN_SECRETS: list[dict] = [
 KNOWN_KEYS = [s["key"] for s in KNOWN_SECRETS]
 
 
-def get(key: str) -> str | None:
-    return jp_secrets.get_secret_optional(key)
+def get(user_id: int, key: str) -> str | None:
+    return _repo.get(user_id, key)
 
 
-def require(key: str) -> str:
-    return jp_secrets.get_secret(key)
+def require(user_id: int, key: str) -> str:
+    value = get(user_id, key)
+    if not value:
+        raise KeyError(f"Secret '{key}' is not set for user {user_id}.")
+    return value
 
 
-def set(key: str, value: str) -> str:  # noqa: A001
-    """Store a secret. Returns the backend that took it: 'keyring' or 'env'."""
-    return jp_secrets.set_secret(key, value)
+def set(user_id: int, key: str, value: str) -> None:  # noqa: A001
+    _repo.set(user_id, key, (value or "").strip())
 
 
-def has(key: str) -> bool:
-    return bool(get(key))
+def has(user_id: int, key: str) -> bool:
+    return bool(get(user_id, key))
 
 
 def mask(value: str | None) -> str:
@@ -79,19 +79,19 @@ def mask(value: str | None) -> str:
     return f"{value[:6]}…{value[-4:]}"
 
 
-def status(keys: list[str] | None = None) -> list[dict]:
+def status(user_id: int, keys: list[str] | None = None) -> list[dict]:
     """Presence + masked preview for every known secret. Never returns a raw value."""
     wanted = {k: True for k in (keys or KNOWN_KEYS)}
     out = []
     for spec in KNOWN_SECRETS:
         if spec["key"] not in wanted:
             continue
-        value = get(spec["key"])
+        value = get(user_id, spec["key"])
         out.append({**spec, "set": bool(value), "masked": mask(value)})
     return out
 
 
-def reveal(key: str) -> str | None:
+def reveal(user_id: int, key: str) -> str | None:
     """The single explicit path to a plaintext value — used only by the vault's
     reveal button, which the UI guards behind a confirmation."""
-    return get(key)
+    return get(user_id, key)

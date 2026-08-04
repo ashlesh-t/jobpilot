@@ -15,9 +15,10 @@ def run_setup(*, non_interactive: bool = False, start_at: int = 0) -> int:
     from core.paths import ensure_dirs
     ensure_dirs()
 
-    # Step 1 reads settings, but the storage step that builds the schema is step 2.
-    # Bring the currently-resolved database up to head first so a fresh install has
-    # tables to read. Step 2 re-runs this against Postgres if the user picks it.
+    # The account step needs a working schema to query `users`, and it runs before
+    # storage is finalized — so bring whatever database is currently resolved (SQLite
+    # by default) up to head first. Step 1 (Storage) re-runs this against Postgres if
+    # the user picks it, before the account step ever touches the database.
     _ensure_schema()
 
     if non_interactive or not prompts.is_interactive():
@@ -92,22 +93,41 @@ def _ensure_schema() -> None:
 
 
 def _headless() -> int:
-    """Non-interactive setup: create the data dir and a database, nothing that asks."""
+    """Non-interactive setup: create the data dir, a database, and — on a fresh
+    instance — a first account with a generated password (printed once, since there's
+    no prompt to ask for one). Nothing else here asks."""
+    import secrets as pysecrets
+
     from core import db
     from core.infra import docker
     from core.paths import jobpilot_dir
     from core.repo import settings as settings_repo
+    from core.repo import users as users_repo
 
     print(f"==> JobPilot setup (non-interactive) — {jobpilot_dir()}")
     result = docker.provision()
     print(f"==> Database: {result['backend']} — {result['message']}")
 
-    from core import migrate_v1
-    if migrate_v1.has_v1_state() and not migrate_v1.already_migrated():
-        report = migrate_v1.migrate()
-        print(f"==> Imported v1 state: {report['counts']}")
+    user_id: int | None = None
+    if users_repo.count() == 0:
+        password = pysecrets.token_urlsafe(12)
+        user = users_repo.create(username="admin", password=password, is_admin=True)
+        user_id = user["id"]
+        print(f"==> Created account 'admin' with a generated password: {password}")
+        print("    Log in and change it from My Info.")
+    elif users_repo.find_legacy() is not None:
+        print("==> An upgraded legacy account is waiting to be claimed — run "
+              "`jobpilot setup` interactively (or use the web login) to finish.")
+    else:
+        print("==> This instance already has an account configured.")
 
-    settings_repo.export_preferences()
+    if user_id is not None:
+        from core import migrate_v1
+        if migrate_v1.has_v1_state() and not migrate_v1.already_migrated():
+            report = migrate_v1.migrate(user_id)
+            print(f"==> Imported v1 state: {report['counts']}")
+        settings_repo.export_preferences(user_id)
+
     ok, detail = db.ping()
     print(f"==> Database check: {'ok' if ok else 'FAILED'} — {detail}")
     print("==> Run `jobpilot start` and finish setup in the browser.")

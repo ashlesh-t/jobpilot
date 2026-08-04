@@ -10,6 +10,7 @@ from ..models import (
     Application,
     ApplicationStatus,
     Job,
+    JobUserScore,
     utcnow,
 )
 
@@ -22,7 +23,7 @@ def _iso(dt):
     return dt.isoformat() if dt else None
 
 
-def to_dict(a: Application, job: Job | None = None) -> dict:
+def to_dict(a: Application, job: Job | None = None, score: JobUserScore | None = None) -> dict:
     return {
         "id": a.id,
         "job_id": a.job_id,
@@ -36,23 +37,25 @@ def to_dict(a: Application, job: Job | None = None) -> dict:
         "company": job.company if job else "",
         "role": job.role if job else "",
         "location": job.location if job else "",
-        "score": job.score if job else 0.0,
+        "score": score.score if score else 0.0,
         "application_url": job.application_url if job else "",
         "source_board": job.source_board if job else "",
     }
 
 
-def mark_applied(job_id: str, *, note: str = "") -> dict:
+def mark_applied(user_id: int, job_id: str, *, note: str = "") -> dict:
     """Idempotent: re-marking an existing application just returns it."""
     with session_scope() as s:
         job = s.get(Job, job_id)
         if job is None:
             raise ValueError(f"unknown job_id {job_id!r}")
-        existing = s.scalar(select(Application).where(Application.job_id == job_id))
+        existing = s.scalar(select(Application).where(
+            Application.user_id == user_id, Application.job_id == job_id))
         if existing is not None:
-            return to_dict(existing, job)
+            return to_dict(existing, job, s.get(JobUserScore, (user_id, job_id)))
         now = utcnow()
         app = Application(
+            user_id=user_id,
             job_id=job_id,
             status=ApplicationStatus.applied.value,
             applied_at=now,
@@ -63,24 +66,26 @@ def mark_applied(job_id: str, *, note: str = "") -> dict:
         )
         s.add(app)
         s.flush()
-        return to_dict(app, job)
+        return to_dict(app, job, s.get(JobUserScore, (user_id, job_id)))
 
 
-def unmark(job_id: str) -> bool:
+def unmark(user_id: int, job_id: str) -> bool:
     """The Undo path — removes the application entirely, restoring the job's clean state."""
     with session_scope() as s:
-        app = s.scalar(select(Application).where(Application.job_id == job_id))
+        app = s.scalar(select(Application).where(
+            Application.user_id == user_id, Application.job_id == job_id))
         if app is None:
             return False
         s.delete(app)
         return True
 
 
-def set_status(job_id: str, status: str, *, note: str = "") -> dict:
+def set_status(user_id: int, job_id: str, status: str, *, note: str = "") -> dict:
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status {status!r}; expected one of {VALID_STATUSES}")
     with session_scope() as s:
-        app = s.scalar(select(Application).where(Application.job_id == job_id))
+        app = s.scalar(select(Application).where(
+            Application.user_id == user_id, Application.job_id == job_id))
         if app is None:
             raise ValueError(f"no application for job {job_id!r} — mark it applied first")
         now = utcnow()
@@ -92,45 +97,53 @@ def set_status(job_id: str, status: str, *, note: str = "") -> dict:
         if note:
             app.notes = (app.notes + "\n" if app.notes else "") + note
         job = s.get(Job, job_id)
-        return to_dict(app, job)
+        return to_dict(app, job, s.get(JobUserScore, (user_id, job_id)))
 
 
-def set_notes(job_id: str, notes: str) -> dict:
+def set_notes(user_id: int, job_id: str, notes: str) -> dict:
     with session_scope() as s:
-        app = s.scalar(select(Application).where(Application.job_id == job_id))
+        app = s.scalar(select(Application).where(
+            Application.user_id == user_id, Application.job_id == job_id))
         if app is None:
             raise ValueError(f"no application for job {job_id!r}")
         app.notes = notes
         job = s.get(Job, job_id)
-        return to_dict(app, job)
+        return to_dict(app, job, s.get(JobUserScore, (user_id, job_id)))
 
 
-def get(job_id: str) -> dict | None:
+def get(user_id: int, job_id: str) -> dict | None:
     with session_scope() as s:
-        app = s.scalar(select(Application).where(Application.job_id == job_id))
+        app = s.scalar(select(Application).where(
+            Application.user_id == user_id, Application.job_id == job_id))
         if app is None:
             return None
-        return to_dict(app, s.get(Job, job_id))
+        return to_dict(app, s.get(Job, job_id), s.get(JobUserScore, (user_id, job_id)))
 
 
-def list_all(*, status: str | None = None, limit: int = 500) -> list[dict]:
+def list_all(user_id: int, *, status: str | None = None, limit: int = 500) -> list[dict]:
     with session_scope() as s:
-        stmt = select(Application, Job).join(Job, Job.job_id == Application.job_id)
+        stmt = (
+            select(Application, Job, JobUserScore)
+            .join(Job, Job.job_id == Application.job_id)
+            .outerjoin(JobUserScore, (JobUserScore.job_id == Job.job_id)
+                       & (JobUserScore.user_id == user_id))
+            .where(Application.user_id == user_id)
+        )
         if status:
             stmt = stmt.where(Application.status == status)
         rows = s.execute(stmt.order_by(Application.updated_at.desc()).limit(limit)).all()
-        return [to_dict(a, j) for a, j in rows]
+        return [to_dict(a, j, sc) for a, j, sc in rows]
 
 
-def board() -> dict[str, list[dict]]:
+def board(user_id: int) -> dict[str, list[dict]]:
     """Applications grouped by status, ready for the kanban columns."""
     grouped: dict[str, list[dict]] = {st: [] for st in VALID_STATUSES}
-    for item in list_all():
+    for item in list_all(user_id):
         grouped.setdefault(item["status"], []).append(item)
     return grouped
 
 
-def funnel() -> dict:
+def funnel(user_id: int) -> dict:
     """Counts per stage for the dashboard funnel chart.
 
     A candidate who reached `interview` has necessarily been `applied`, so the funnel is
@@ -138,8 +151,10 @@ def funnel() -> dict:
     """
     with session_scope() as s:
         counts = dict(s.execute(
-            select(Application.status, func.count()).group_by(Application.status)).all())
-        total = s.scalar(select(func.count()).select_from(Application)) or 0
+            select(Application.status, func.count())
+            .where(Application.user_id == user_id).group_by(Application.status)).all())
+        total = s.scalar(select(func.count()).select_from(Application)
+                         .where(Application.user_id == user_id)) or 0
 
     reached: dict[str, int] = {}
     for i, stage in enumerate(PIPELINE):
@@ -154,11 +169,11 @@ def funnel() -> dict:
     }
 
 
-def stale(days: int = 14) -> list[dict]:
+def stale(user_id: int, days: int = 14) -> list[dict]:
     """Applications with no status change in `days` — the nudge list."""
     cutoff = utcnow().timestamp() - days * 86400
     return [
-        a for a in list_all()
+        a for a in list_all(user_id)
         if a["status"] not in TERMINAL and a["status"] != ApplicationStatus.placed.value
         and a["updated_at"] and _to_epoch(a["updated_at"]) < cutoff
     ]

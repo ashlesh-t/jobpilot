@@ -8,6 +8,11 @@ Additive schema, so (unlike 0002's data-only fixup) this is fully reversible. Si
 0001 built the baseline straight from the ORM metadata, every revision after it is
 hand-written explicit ops (see that file's own docstring) — column types here mirror
 core/models.py's Contact/Referral classes exactly.
+
+Guarded with `has_table()`/`has_index()` checks: because 0001's `create_all` always
+reflects *current* core.models (not a frozen snapshot), a fresh install running this
+whole chain today finds contacts/referrals already created by 0001 — only an install
+upgrading from a real pre-0003 database needs this revision to do anything.
 """
 from __future__ import annotations
 
@@ -23,6 +28,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("contacts"):
+        return
     op.create_table(
         "contacts",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),

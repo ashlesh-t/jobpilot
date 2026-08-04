@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -20,6 +22,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
@@ -30,10 +33,10 @@ def fake_vault(monkeypatch):
     store: dict[str, str] = {}
     from core import secrets as secrets_lib
 
-    monkeypatch.setattr(secrets_lib, "get", lambda key: store.get(key))
-    monkeypatch.setattr(secrets_lib, "set", lambda key, value: (store.__setitem__(key, value), "keyring")[1])
-    monkeypatch.setattr(secrets_lib, "reveal", lambda key: store.get(key))
-    monkeypatch.setattr(secrets_lib, "has", lambda key: bool(store.get(key)))
+    monkeypatch.setattr(secrets_lib, "get", lambda user_id, key: store.get(key))
+    monkeypatch.setattr(secrets_lib, "set", lambda user_id, key, value: (store.__setitem__(key, value), "keyring")[1])
+    monkeypatch.setattr(secrets_lib, "reveal", lambda user_id, key: store.get(key))
+    monkeypatch.setattr(secrets_lib, "has", lambda user_id, key: bool(store.get(key)))
     return store
 
 
@@ -68,7 +71,8 @@ def test_profile_export_keeps_the_json_file_in_sync(client, tmp_path):
     import json
 
     client.put("/api/profile", json={"data": {"name": "Ada"}, "verified": True})
-    on_disk = json.loads((tmp_path / "cache" / "profile.json").read_text())
+    on_disk = json.loads(
+        (tmp_path / "users" / str(client.user_id) / "cache" / "profile.json").read_text())
     assert on_disk["name"] == "Ada"
     assert on_disk["profile_verified"] is True
 
@@ -87,7 +91,8 @@ def test_preferences_round_trip_and_export(client, tmp_path):
     assert prefs["locations"] == ["Bengaluru"]
     assert prefs["score_threshold"] == 70
 
-    exported = json.loads((tmp_path / "options" / "preferences.json").read_text())
+    exported = json.loads(
+        (tmp_path / "users" / str(client.user_id) / "options" / "preferences.json").read_text())
     assert exported["role_types"] == ["SWE"]
 
 
@@ -195,7 +200,7 @@ def test_setup_status_clears_as_things_are_configured(client, tmp_path, monkeypa
 
     resume = tmp_path / "cv.pdf"
     resume.write_bytes(b"%PDF-1.4 x")
-    resumes_repo.add(resume, folder="main", make_active=True)
+    resumes_repo.add(client.user_id, resume, folder="main", make_active=True)
 
     client.put("/api/profile", json={"data": {"name": "Ada"}, "verified": True})
     client.put("/api/preferences", json={

@@ -23,6 +23,9 @@ type Options = Omit<RequestInit, 'body'> & { body?: unknown }
 async function request<T>(path: string, options: Options = {}): Promise<T> {
   const { body, headers, ...rest } = options
   const init: RequestInit = {
+    // Same-origin, but the session cookie is HttpOnly + SameSite=Lax — it still needs
+    // an explicit opt-in on fetch, otherwise the browser won't attach it.
+    credentials: 'include',
     ...rest,
     headers: {
       ...(body !== undefined && !(body instanceof FormData)

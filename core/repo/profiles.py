@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from ..db import session_scope
 from ..models import Profile
-from ..paths import ensure_dirs, profile_path
+from ..paths import ensure_user_dirs, profile_path
 
 SKELETON: dict[str, Any] = {
     "name": "",
@@ -56,18 +56,18 @@ def to_dict(p: Profile) -> dict:
     return data
 
 
-def current() -> dict | None:
+def current(user_id: int) -> dict | None:
     with session_scope() as s:
-        p = s.scalar(select(Profile).where(Profile.is_active.is_(True))
+        p = s.scalar(select(Profile).where(Profile.user_id == user_id, Profile.is_active.is_(True))
                      .order_by(Profile.updated_at.desc()))
         return to_dict(p) if p else None
 
 
-def get_or_empty() -> dict:
-    return current() or {**SKELETON, "profile_verified": False, "hash": ""}
+def get_or_empty(user_id: int) -> dict:
+    return current(user_id) or {**SKELETON, "profile_verified": False, "hash": ""}
 
 
-def save(data: dict, *, verified: bool | None = None, resume_id: int | None = None,
+def save(user_id: int, data: dict, *, verified: bool | None = None, resume_id: int | None = None,
          resume_hash: str | None = None) -> dict:
     """Merge-write the active profile (creating it if absent) and export profile.json."""
     payload = {k: v for k, v in data.items() if not k.startswith("_")}
@@ -75,10 +75,10 @@ def save(data: dict, *, verified: bool | None = None, resume_id: int | None = No
     payload.pop("hash", None)
 
     with session_scope() as s:
-        p = s.scalar(select(Profile).where(Profile.is_active.is_(True))
+        p = s.scalar(select(Profile).where(Profile.user_id == user_id, Profile.is_active.is_(True))
                      .order_by(Profile.updated_at.desc()))
         if p is None:
-            p = Profile(data={}, is_active=True)
+            p = Profile(user_id=user_id, data={}, is_active=True)
             s.add(p)
         merged = dict(p.data or {})
         merged.update(payload)
@@ -95,20 +95,20 @@ def save(data: dict, *, verified: bool | None = None, resume_id: int | None = No
         s.flush()
         out = to_dict(p)
 
-    export(out)
+    export(user_id, out)
     return out
 
 
-def set_verified(value: bool) -> dict:
-    return save({}, verified=value)
+def set_verified(user_id: int, value: bool) -> dict:
+    return save(user_id, {}, verified=value)
 
 
-def export(data: dict | None = None) -> None:
+def export(user_id: int, data: dict | None = None) -> None:
     """Write cache/profile.json for the Layer B skills (read-before-write)."""
-    payload = data or get_or_empty()
+    payload = data or {}
     payload = {k: v for k, v in payload.items() if not k.startswith("_")}
-    ensure_dirs()
-    path = profile_path()
+    ensure_user_dirs(user_id)
+    path = profile_path(user_id)
     current_file: dict = {}
     if path.exists():
         try:
@@ -119,6 +119,6 @@ def export(data: dict | None = None) -> None:
     path.write_text(json.dumps(current_file, indent=2, ensure_ascii=False))
 
 
-def is_verified() -> bool:
-    p = current()
+def is_verified(user_id: int) -> bool:
+    p = current(user_id)
     return bool(p and p.get("profile_verified"))

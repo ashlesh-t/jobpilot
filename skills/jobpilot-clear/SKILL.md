@@ -14,18 +14,21 @@ Wipe JobPilot's run history so previously seen jobs can resurface. Keeps prefere
    > Type CONFIRM to proceed.
    Do nothing unless the user replies with `CONFIRM`.
 
-2. **On CONFIRM**, run via bash against `~/.claude/job-hunt-ai/cache/jobs.sqlite`:
+2. **On CONFIRM**, run:
    ```bash
-   sqlite3 ~/.claude/job-hunt-ai/cache/jobs.sqlite "DELETE FROM jobs_seen; DELETE FROM score_cache; DELETE FROM user_feedback;"
-   rm -rf ~/.claude/job-hunt-ai/reports/*
-   rm -f ~/.claude/job-hunt-ai/cache/learning.json
+   python3 scripts/jobpilot_clear.py
    ```
-   (History reset must also reset learned ranking bias — `learning.json` derives from the
-   deleted feedback rows. `company_intel.json` is kept: it's public research, not history.)
+   This clears only the current account's own history — this account's cached scores
+   (`JobUserScore` rows, so previously seen jobs can be rescored), feedback rows, this
+   account's generated reports, and this account's `learning.json` (History reset must
+   also reset learned ranking bias — it derives from the deleted feedback rows).
+   `company_intel.json` is kept: it's public research shared across every account on
+   this instance, not personal history. It prints a JSON summary:
+   `{"scores_removed": N, "feedback_removed": N, "reports_removed": N, "learning_reset": true|false}`.
 
-3. **Confirm** what was cleared: number of job rows removed, score-cache rows removed, and that
-   the reports directory is now empty. Reassure the user that `preferences.json`, `profile.json`,
-   and everything under `resumes/` were left untouched.
+3. **Confirm** what was cleared, from that JSON: number of job scores removed, feedback
+   rows removed, and that the reports directory is now empty. Reassure the user that
+   `preferences.json`, `profile.json`, and everything under `resumes/` were left untouched.
 
 ## Notes
 - This does NOT touch `resumes/tailored/` — only `reports/`. Mention this if the user expected

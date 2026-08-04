@@ -101,6 +101,24 @@ def _setup(args: argparse.Namespace) -> int:
     return run_setup(non_interactive=getattr(args, "non_interactive", False))
 
 
+def _all_user_ids() -> list[int]:
+    """Every account id on this instance, oldest first."""
+    from core.db import session_scope
+    from core.models import User
+    from sqlalchemy import select
+
+    with session_scope() as s:
+        return list(s.scalars(select(User.id).order_by(User.id)).all())
+
+
+def _first_user_id() -> int | None:
+    """The oldest account on this instance — the owner `jobpilot migrate` imports v1
+    data into. v1 predates accounts, so there's no "right" owner beyond "whoever's
+    account this instance was bootstrapped with"."""
+    ids = _all_user_ids()
+    return ids[0] if ids else None
+
+
 def _migrate(args: argparse.Namespace) -> int:
     _apply_data_dir(args)
     _core()
@@ -108,7 +126,12 @@ def _migrate(args: argparse.Namespace) -> int:
     from core.migrate_v1 import migrate
 
     init_db()
-    report = migrate(force=args.force)
+    user_id = _first_user_id()
+    if user_id is None:
+        print("==> No account exists yet — run `jobpilot setup` first so the imported "
+              "data has an owner.")
+        return 1
+    report = migrate(user_id, force=args.force)
     if not report["ran"]:
         print(f"skipped: {report['skipped_reason']}")
         return 0
@@ -193,19 +216,20 @@ def _post_upgrade(interactive: bool = True) -> None:
         print(f"    ! migration failed: {exc}")
 
     # The Layer B skills read these files, not the database, so new keys have to land
-    # on disk or the skills keep seeing the old shape.
+    # on disk or the skills keep seeing the old shape. Every account gets its own.
     print("==> Refreshing preferences.json and profile.json…")
-    for label, fn in (("preferences", settings_repo.export_preferences),
-                      ("profile", profiles_repo.export)):
-        try:
-            fn()
-            print(f"    {label} exported")
-        except Exception as exc:  # noqa: BLE001
-            print(f"    ! {label} export failed: {exc}")
+    for user_id in _all_user_ids():
+        for label, fn in (("preferences", settings_repo.export_preferences),
+                          ("profile", profiles_repo.export)):
+            try:
+                fn(user_id)
+                print(f"    {label} exported (user {user_id})")
+            except Exception as exc:  # noqa: BLE001
+                print(f"    ! {label} export failed for user {user_id}: {exc}")
 
     print("==> Checking tools…")
     try:
-        info = backends.probe(backends.selected())
+        info = backends.probe(backends.selected(), _first_user_id() or 0)
         print(f"    AI backend: {info.label} — {'ready' if info.found else 'NOT FOUND'}")
         if not info.found:
             print("      run `jobpilot setup` to reconfigure it")
@@ -303,13 +327,16 @@ def _serve(args: argparse.Namespace) -> int:
 
 
 def _needs_setup(d: Path) -> bool:
-    """True when setup has never completed on this data dir."""
+    """True when this instance has never been bootstrapped — no reachable database,
+    or no accounts yet. Once an account exists, `jobpilot start` just starts serving;
+    per-account onboarding (resume, preferences, backend, delivery) happens in the
+    browser from here on, not the CLI."""
     inject_path()
     try:
         from core.db import ping
-        from core.repo import settings as settings_repo
+        from core.repo import users as users_repo
         ok, _ = ping()
-        return not (ok and settings_repo.is_setup_complete())
+        return not (ok and users_repo.count() > 0)
     except Exception:
         return True
 

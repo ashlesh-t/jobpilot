@@ -93,10 +93,16 @@ def v1_dir(tmp_path, monkeypatch):
     db.dispose()
 
 
-def test_migration_imports_every_source(v1_dir):
+@pytest.fixture()
+def user_id(v1_dir):
+    from core.repo import users as users_repo
+    return users_repo.create(username="tester", password="testpass123")["id"]
+
+
+def test_migration_imports_every_source(v1_dir, user_id):
     from core import migrate_v1
 
-    report = migrate_v1.migrate()
+    report = migrate_v1.migrate(user_id)
     assert report["ran"] is True
     assert report["errors"] == []
 
@@ -111,58 +117,58 @@ def test_migration_imports_every_source(v1_dir):
     assert c["json_caches"] == 2
 
 
-def test_migration_preserves_values(v1_dir):
+def test_migration_preserves_values(v1_dir, user_id):
     from core import migrate_v1
     from core.repo import jobs, profiles, schedule, settings
 
-    migrate_v1.migrate()
+    migrate_v1.migrate(user_id)
 
-    prefs = settings.preferences()
+    prefs = settings.preferences(user_id)
     assert prefs["locations"] == ["Bengaluru", "Remote"]
     assert prefs["score_threshold"] == 70
     # Unrecognized v1 keys are preserved, not silently dropped.
-    assert settings.get("legacy_preferences")["some_hand_added_key"] == "keep me"
-    assert settings.get("learning")["outcome_count"] == 7
+    assert settings.get(user_id, "legacy_preferences")["some_hand_added_key"] == "keep me"
+    assert settings.get(user_id, "learning")["outcome_count"] == 7
 
-    prof = profiles.current()
+    prof = profiles.current(user_id)
     assert prof["name"] == "Ada Lovelace"
     assert prof["profile_verified"] is True
     assert prof["hash"] == "abc123"
 
-    job = jobs.get("j1")
+    job = jobs.get(user_id, "j1")
     assert job["score"] == 78.0
     assert job["matched_skills"] == ["Go", "Docker"]
     assert job["archetype"] == "gcc-enterprise"
     # first_seen must survive — otherwise every imported job looks brand new.
     assert job["first_seen"].startswith("2026-06-01")
 
-    names = {s["name"]: s["time"] for s in schedule.list_all()}
+    names = {s["name"]: s["time"] for s in schedule.list_all(user_id)}
     assert names == {"slot-1": "09:30", "evening": "18:00"}
 
 
-def test_migration_activates_base_resume(v1_dir):
+def test_migration_activates_base_resume(v1_dir, user_id):
     from core import migrate_v1
     from core.repo import resumes
 
-    migrate_v1.migrate()
-    assert resumes.active()["filename"] == "base.pdf"
+    migrate_v1.migrate(user_id)
+    assert resumes.active(user_id)["filename"] == "base.pdf"
 
 
-def test_migration_is_idempotent_and_non_destructive(v1_dir):
+def test_migration_is_idempotent_and_non_destructive(v1_dir, user_id):
     from core import migrate_v1
     from core.repo import jobs
 
-    first = migrate_v1.migrate()
+    first = migrate_v1.migrate(user_id)
     assert first["ran"] is True
 
-    second = migrate_v1.migrate()
+    second = migrate_v1.migrate(user_id)
     assert second["ran"] is False
     assert "already migrated" in second["skipped_reason"]
 
-    forced = migrate_v1.migrate(force=True)
+    forced = migrate_v1.migrate(user_id, force=True)
     assert forced["ran"] is True
     assert forced["counts"]["jobs"] == 2          # updated, not duplicated
-    assert jobs.query(include_stale=True)["total"] == 2
+    assert jobs.query(user_id, include_stale=True)["total"] == 2
 
     # v1 sources are untouched.
     assert (v1_dir / "options" / "preferences.json").exists()
@@ -174,21 +180,23 @@ def test_migration_skips_when_no_v1_state(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBPILOT_DIR", str(tmp_path))
     monkeypatch.delenv("JOBPILOT_DATABASE_URL", raising=False)
     from core import db, migrate_v1
+    from core.repo import users as users_repo
 
     db.dispose()
     db.init_db()
-    report = migrate_v1.migrate()
+    user_id = users_repo.create(username="tester", password="testpass123")["id"]
+    report = migrate_v1.migrate(user_id)
     db.dispose()
 
     assert report["ran"] is False
     assert "no v1 state" in report["skipped_reason"]
 
 
-def test_migration_survives_a_corrupt_source(v1_dir):
+def test_migration_survives_a_corrupt_source(v1_dir, user_id):
     from core import migrate_v1
 
     (v1_dir / "cache" / "profile.json").write_text("{ not json")
-    report = migrate_v1.migrate()
+    report = migrate_v1.migrate(user_id)
 
     assert report["ran"] is True
     assert report["counts"]["profile"] == 0

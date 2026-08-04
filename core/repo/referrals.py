@@ -37,18 +37,18 @@ def to_dict(r: Referral, job: Job | None = None, contact: Contact | None = None)
     }
 
 
-def create(job_id: str, contact_id: int, *, message: str, engine: str = "",
+def create(user_id: int, job_id: str, contact_id: int, *, message: str, engine: str = "",
           cost_usd: float = 0.0) -> dict:
     with session_scope() as s:
         job = s.get(Job, job_id)
         if job is None:
             raise ValueError(f"unknown job_id {job_id!r}")
         contact = s.get(Contact, contact_id)
-        if contact is None:
+        if contact is None or contact.user_id != user_id:
             raise ValueError(f"unknown contact_id {contact_id!r}")
         now = utcnow()
         row = Referral(
-            job_id=job_id, contact_id=contact_id, message=message,
+            user_id=user_id, job_id=job_id, contact_id=contact_id, message=message,
             status=ReferralStatus.drafted.value, engine=engine, cost_usd=cost_usd,
             created_at=now, updated_at=now,
             status_history=[{"status": ReferralStatus.drafted.value,
@@ -59,12 +59,12 @@ def create(job_id: str, contact_id: int, *, message: str, engine: str = "",
         return to_dict(row, job, contact)
 
 
-def set_status(referral_id: int, status: str, *, note: str = "") -> dict:
+def set_status(user_id: int, referral_id: int, status: str, *, note: str = "") -> dict:
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status {status!r}; expected one of {VALID_STATUSES}")
     with session_scope() as s:
         row = s.get(Referral, referral_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             raise ValueError(f"no referral {referral_id!r}")
         now = utcnow()
         history = list(row.status_history or [])
@@ -77,35 +77,36 @@ def set_status(referral_id: int, status: str, *, note: str = "") -> dict:
         return to_dict(row, job, contact)
 
 
-def get(referral_id: int) -> dict | None:
+def get(user_id: int, referral_id: int) -> dict | None:
     with session_scope() as s:
         row = s.get(Referral, referral_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return None
         return to_dict(row, s.get(Job, row.job_id), s.get(Contact, row.contact_id))
 
 
-def for_job(job_id: str) -> list[dict]:
+def for_job(user_id: int, job_id: str) -> list[dict]:
     with session_scope() as s:
-        rows = s.scalars(select(Referral).where(Referral.job_id == job_id)
-                         .order_by(Referral.created_at.desc())).all()
+        rows = s.scalars(select(Referral).where(
+            Referral.user_id == user_id, Referral.job_id == job_id)
+            .order_by(Referral.created_at.desc())).all()
         job = s.get(Job, job_id)
         return [to_dict(r, job, s.get(Contact, r.contact_id)) for r in rows]
 
 
-def list_all(*, status: str | None = None, limit: int = 500) -> list[dict]:
+def list_all(user_id: int, *, status: str | None = None, limit: int = 500) -> list[dict]:
     with session_scope() as s:
-        stmt = select(Referral)
+        stmt = select(Referral).where(Referral.user_id == user_id)
         if status:
             stmt = stmt.where(Referral.status == status)
         rows = s.scalars(stmt.order_by(Referral.created_at.desc()).limit(limit)).all()
         return [to_dict(r, s.get(Job, r.job_id), s.get(Contact, r.contact_id)) for r in rows]
 
 
-def remove(referral_id: int) -> bool:
+def remove(user_id: int, referral_id: int) -> bool:
     with session_scope() as s:
         row = s.get(Referral, referral_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return False
         s.delete(row)
         return True

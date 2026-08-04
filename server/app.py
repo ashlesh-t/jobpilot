@@ -19,12 +19,13 @@ from common import (  # noqa: E402
     profile_path, profile_review_done_path,
 )
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from auth import get_current_user  # noqa: E402
 from run_manager import manager, RunBusyError, UnknownRunError  # noqa: E402
 from scheduler import scheduler  # noqa: E402
 from doctor import run_doctor  # noqa: E402
@@ -61,6 +62,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JobPilot", lifespan=lifespan)
 
+from auth_routes import router as auth_router  # noqa: E402
 from routes_jobs import router as jobs_router  # noqa: E402
 from routes_settings import router as settings_router  # noqa: E402
 from routes_schedule import router as schedule_router  # noqa: E402
@@ -72,6 +74,7 @@ from routes_telegram_channels import router as telegram_channels_router  # noqa:
 from routes_contacts import router as contacts_router  # noqa: E402
 from routes_referrals import router as referrals_router  # noqa: E402
 
+app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(settings_router)
 app.include_router(schedule_router)
@@ -140,15 +143,16 @@ async def profile_review_page():
 
 
 @app.get("/api/cost")
-async def cost_summary(window: str = "month", run_id: str | None = None):
+async def cost_summary(window: str = "month", run_id: str | None = None,
+                       user: dict = Depends(get_current_user)):
     from core.repo import cost as cost_repo
-    return cost_repo.summary(window=window, run_id=run_id)
+    return cost_repo.summary(user["id"], window=window, run_id=run_id)
 
 
 @app.get("/api/cost/daily")
-async def cost_daily(days: int = 30):
+async def cost_daily(days: int = 30, user: dict = Depends(get_current_user)):
     from core.repo import cost as cost_repo
-    return {"days": cost_repo.daily(days)}
+    return {"days": cost_repo.daily(user["id"], days)}
 
 
 # --------------------------------------------------------------------------- #
@@ -172,30 +176,30 @@ async def list_models(engine: str | None = None):
 
 
 @app.get("/pipeline")
-async def get_pipeline():
+async def get_pipeline(user: dict = Depends(get_current_user)):
     """Every phase's saved {enabled, model} — what the next hunt (from the UI or the
     scheduler) will run with. `model: null` means "use this phase's tier default for
     whichever engine is active"."""
     from core.repo import settings as settings_repo
-    return {"phases": settings_repo.pipeline_phase_config()}
+    return {"phases": settings_repo.pipeline_phase_config(user["id"])}
 
 
 @app.put("/pipeline")
-async def put_pipeline(req: PipelineRequest):
+async def put_pipeline(req: PipelineRequest, user: dict = Depends(get_current_user)):
     """Save the choices built in the pipeline editor."""
     from core.repo import settings as settings_repo
     try:
         saved = settings_repo.set_pipeline_phase_config(
-            {key: entry.model_dump() for key, entry in req.phases.items()})
+            user["id"], {key: entry.model_dump() for key, entry in req.phases.items()})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"phases": saved}
 
 
 @app.post("/runs")
-async def start_run(req: RunRequest):
+async def start_run(req: RunRequest, user: dict = Depends(get_current_user)):
     try:
-        run = await manager.start_run(mode=req.mode, engine_name=req.engine,
+        run = await manager.start_run(user["id"], mode=req.mode, engine_name=req.engine,
                                       only=req.only, skip=req.skip)
     except RunBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -205,31 +209,31 @@ async def start_run(req: RunRequest):
 
 
 @app.get("/runs")
-async def list_runs(limit: int = 50, offset: int = 0):
-    return {"active": manager.active(), "history": manager.history(limit, offset)}
+async def list_runs(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
+    return {"active": manager.active(user["id"]), "history": manager.history(user["id"], limit, offset)}
 
 
 @app.get("/runs/{run_id}")
-async def get_run(run_id: str):
-    run = manager.get(run_id)
+async def get_run(run_id: str, user: dict = Depends(get_current_user)):
+    run = manager.get(user["id"], run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    run["top_jobs"] = manager.top_jobs(run_id)
+    run["top_jobs"] = manager.top_jobs(user["id"], run_id)
     return run
 
 
 @app.post("/runs/{run_id}/stop")
-async def stop_run(run_id: str):
-    run = await manager.stop(run_id)
+async def stop_run(run_id: str, user: dict = Depends(get_current_user)):
+    run = await manager.stop(user["id"], run_id)
     if run is None:
         raise HTTPException(status_code=409, detail="that run is not active")
     return run
 
 
 @app.post("/runs/{run_id}/resume")
-async def resume_run(run_id: str):
+async def resume_run(run_id: str, user: dict = Depends(get_current_user)):
     try:
-        return await manager.resume(run_id)
+        return await manager.resume(user["id"], run_id)
     except UnknownRunError:
         raise HTTPException(status_code=404, detail="run not found")
     except RunBusyError as exc:
@@ -237,9 +241,9 @@ async def resume_run(run_id: str):
 
 
 @app.post("/runs/{run_id}/phases/{phase_key}/rerun")
-async def rerun_phase(run_id: str, phase_key: str):
+async def rerun_phase(run_id: str, phase_key: str, user: dict = Depends(get_current_user)):
     try:
-        return await manager.rerun_phase(run_id, phase_key)
+        return await manager.rerun_phase(user["id"], run_id, phase_key)
     except UnknownRunError:
         raise HTTPException(status_code=404, detail="run not found")
     except RunBusyError as exc:
@@ -249,31 +253,34 @@ async def rerun_phase(run_id: str, phase_key: str):
 
 
 @app.get("/runs/{run_id}/artifacts")
-async def run_artifacts(run_id: str):
-    if manager.get(run_id) is None:
+async def run_artifacts(run_id: str, user: dict = Depends(get_current_user)):
+    if manager.get(user["id"], run_id) is None:
         raise HTTPException(status_code=404, detail="run not found")
-    return {"artifacts": manager.artifacts(run_id)}
+    return {"artifacts": manager.artifacts(user["id"], run_id)}
 
 
 @app.get("/runs/{run_id}/artifacts/{name}")
-async def run_artifact(run_id: str, name: str):
+async def run_artifact(run_id: str, name: str, user: dict = Depends(get_current_user)):
     from orchestrator.artifacts import ArtifactStore, KNOWN
 
     if name not in KNOWN:
         raise HTTPException(status_code=404, detail=f"unknown artifact {name!r}")
-    path = ArtifactStore(run_id).path(name)
+    if manager.get(user["id"], run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    path = ArtifactStore(user["id"], run_id).path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(str(path), media_type="application/json", filename=path.name)
 
 
 @app.get("/runs/{run_id}/events")
-async def run_events_stream(run_id: str, request: Request, after: int = 0):
+async def run_events_stream(run_id: str, request: Request, after: int = 0,
+                            user: dict = Depends(get_current_user)):
     """Live event stream. History replays first, so a late or reconnecting client
     still sees the whole timeline — including for runs that already finished."""
-    if manager.get(run_id) is None:
+    if manager.get(user["id"], run_id) is None:
         raise HTTPException(status_code=404, detail="run not found")
-    q = manager.subscribe(run_id, after_seq=after)
+    q = manager.subscribe(user["id"], run_id, after_seq=after)
 
     async def gen():
         try:
@@ -290,7 +297,7 @@ async def run_events_stream(run_id: str, request: Request, after: int = 0):
                     break
                 yield {"event": "message", "data": json.dumps(ev, ensure_ascii=False)}
         finally:
-            manager.unsubscribe(run_id, q)
+            manager.unsubscribe(user["id"], run_id, q)
 
     return EventSourceResponse(gen())
 
@@ -299,15 +306,15 @@ async def run_events_stream(run_id: str, request: Request, after: int = 0):
 # Config / engines / secrets
 # --------------------------------------------------------------------------- #
 @app.get("/config")
-async def get_config():
-    prefs = load_prefs()
-    return {"engine": engine_config(),
+async def get_config(user: dict = Depends(get_current_user)):
+    prefs = load_prefs(user["id"])
+    return {"engine": engine_config(user["id"]),
             "notify_channels": prefs.get("notify_channels", ["telegram"]),
             "preferences": prefs}
 
 
 @app.put("/config")
-async def put_config(req: ConfigRequest):
+async def put_config(req: ConfigRequest, user: dict = Depends(get_current_user)):
     patch: dict = {}
     if req.engine is not None:
         patch["engine"] = req.engine
@@ -316,33 +323,33 @@ async def put_config(req: ConfigRequest):
     if req.preferences:
         patch.update(req.preferences)
     if patch:
-        save_prefs(patch)
-    return {"ok": True, "config": (await get_config())}
+        save_prefs(user["id"], patch)
+    return {"ok": True, "config": (await get_config(user))}
 
 
 @app.get("/engines")
-async def get_engines():
+async def get_engines(user: dict = Depends(get_current_user)):
     import engines  # noqa
     return {"engines": engines.list_engines(), "default": engines.DEFAULT_ENGINE}
 
 
 @app.get("/notifiers")
-async def get_notifiers():
+async def get_notifiers(user: dict = Depends(get_current_user)):
     import notify  # noqa
     return {"notifiers": notify.list_notifiers()}
 
 
 @app.post("/secrets")
-async def set_secret_endpoint(req: SecretRequest):
-    from jp_secrets import set_secret  # noqa (scripts/secrets.py)
-    backend = set_secret(req.key, req.value)
+async def set_secret_endpoint(req: SecretRequest, user: dict = Depends(get_current_user)):
+    from core import secrets as secrets_lib
+    backend = secrets_lib.set(user["id"], req.key, req.value)
     return {"ok": True, "backend": backend, "key": req.key}
 
 
 @app.post("/notify/discord")
-async def save_discord(req: DiscordRequest):
-    from jp_secrets import set_secret  # noqa
-    set_secret("DISCORD_WEBHOOK_URL", req.webhook_url)
+async def save_discord(req: DiscordRequest, user: dict = Depends(get_current_user)):
+    from core import secrets as secrets_lib
+    secrets_lib.set(user["id"], "DISCORD_WEBHOOK_URL", req.webhook_url)
     import notify  # noqa
     n = notify.get_notifier("discord")
     ok, reason = n.available()
@@ -356,7 +363,7 @@ async def save_discord(req: DiscordRequest):
 
 
 @app.post("/notify/test/{channel}")
-async def notify_test(channel: str):
+async def notify_test(channel: str, user: dict = Depends(get_current_user)):
     import notify  # noqa
     try:
         n = notify.get_notifier(channel)
@@ -396,15 +403,15 @@ async def set_profile_done(req: DoneRequest):
 # Doctor
 # --------------------------------------------------------------------------- #
 @app.get("/doctor")
-async def doctor(live: bool = False):
-    return await asyncio.to_thread(run_doctor, live)
+async def doctor(live: bool = False, user: dict = Depends(get_current_user)):
+    return await asyncio.to_thread(run_doctor, user["id"], live)
 
 
 @app.get("/health")
 async def health():
-    active = manager.active()
-    return {"ok": True, "active_run": active["id"] if active else None,
-            "version": _app_version()}
+    """Unauthenticated liveness probe — used by `server/ephemeral.py` before any
+    session exists, so it deliberately reports nothing account-scoped."""
+    return {"ok": True, "version": _app_version()}
 
 
 # --------------------------------------------------------------------------- #

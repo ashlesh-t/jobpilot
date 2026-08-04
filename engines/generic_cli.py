@@ -47,9 +47,12 @@ class GenericCliEngine(RunEngine):
 
     @staticmethod
     def _configured_template() -> str:
+        # The agent backend (which CLI, and its command template for generic_cli) is an
+        # instance-level choice, not per-account — see core.backends._load_engine_config,
+        # the same store core.backends.probe_generic_cli() reads to decide readiness.
         try:
-            from core.repo import settings as settings_repo
-            return settings_repo.engine_config().get("command_template", "") or ""
+            from core.backends import _load_engine_config
+            return _load_engine_config().get("command_template", "") or ""
         except Exception:
             return ""
 

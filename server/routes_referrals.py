@@ -9,13 +9,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core.repo import contacts as contacts_repo  # noqa: E402
 from core.repo import jobs as jobs_repo  # noqa: E402
 from core.repo import profiles as profiles_repo  # noqa: E402
@@ -60,46 +61,48 @@ class StatusUpdate(BaseModel):
 
 
 @router.get("")
-async def list_referrals(status: str | None = None):
-    return {"items": referrals_repo.list_all(status=status)}
+async def list_referrals(status: str | None = None, user: dict = Depends(get_current_user)):
+    return {"items": referrals_repo.list_all(user["id"], status=status)}
 
 
 @router.get("/jobs/{job_id}")
-async def referrals_for_job(job_id: str):
-    return {"items": referrals_repo.for_job(job_id)}
+async def referrals_for_job(job_id: str, user: dict = Depends(get_current_user)):
+    return {"items": referrals_repo.for_job(user["id"], job_id)}
 
 
 @router.post("/jobs/{job_id}")
-async def generate_referral(job_id: str, req: GenerateReferralRequest):
+async def generate_referral(job_id: str, req: GenerateReferralRequest,
+                            user: dict = Depends(get_current_user)):
     """Draft a referral message for one job + contact. Persists a `drafted` row and
     returns it — nothing is ever sent."""
-    job = jobs_repo.get(job_id)
+    job = jobs_repo.get(user["id"], job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
 
-    contact = contacts_repo.get(req.contact_id)
+    contact = contacts_repo.get(user["id"], req.contact_id)
     if contact is None:
         raise HTTPException(status_code=404, detail="contact not found")
 
-    profile = profiles_repo.current()
+    profile = profiles_repo.current(user["id"])
     if not profile:
         raise HTTPException(
             status_code=409,
             detail="No profile yet — upload a resume and build your profile first.")
 
-    engine_name = settings_repo.engine_config()["provider"]
-    message, cost, detail = await _generate(job, contact, profile, engine_name)
+    engine_name = settings_repo.engine_config(user["id"])["provider"]
+    message, cost, detail = await _generate(user["id"], job, contact, profile, engine_name)
     if message is None:
         raise HTTPException(status_code=502, detail=detail)
 
-    return referrals_repo.create(job_id, contact["id"], message=message,
+    return referrals_repo.create(user["id"], job_id, contact["id"], message=message,
                                  engine=engine_name, cost_usd=cost)
 
 
 @router.patch("/{referral_id}/status")
-async def update_referral_status(referral_id: int, req: StatusUpdate):
+async def update_referral_status(referral_id: int, req: StatusUpdate,
+                                 user: dict = Depends(get_current_user)):
     try:
-        return referrals_repo.set_status(referral_id, req.status, note=req.note)
+        return referrals_repo.set_status(user["id"], referral_id, req.status, note=req.note)
     except ValueError as exc:
         detail = str(exc)
         status_code = 404 if "no referral" in detail else 400
@@ -107,13 +110,13 @@ async def update_referral_status(referral_id: int, req: StatusUpdate):
 
 
 @router.delete("/{referral_id}")
-async def delete_referral(referral_id: int):
-    if not referrals_repo.remove(referral_id):
+async def delete_referral(referral_id: int, user: dict = Depends(get_current_user)):
+    if not referrals_repo.remove(user["id"], referral_id):
         raise HTTPException(status_code=404, detail="not found")
     return {"ok": True}
 
 
-async def _generate(job: dict, contact: dict, profile: dict,
+async def _generate(user_id: int, job: dict, contact: dict, profile: dict,
                     engine_name: str) -> tuple[str | None, float, str]:
     """Ask the agent for a drafted message. Returns (message, usd, detail)."""
     import json
@@ -123,7 +126,7 @@ async def _generate(job: dict, contact: dict, profile: dict,
     from core.repo import cost as cost_repo
 
     try:
-        engine = engines.get_engine(engine_name)
+        engine = engines.get_engine(engine_name, user_id=user_id)
         ok, reason = engine.available()
         if not ok:
             return None, 0.0, f"The {engine_name} backend isn't ready: {reason}"
@@ -149,8 +152,9 @@ async def _generate(job: dict, contact: dict, profile: dict,
 
     usd = 0.0
     if result.usage:
-        usd, source = pricing.price_usage(result.usage, engine=engine_name)
+        usd, source = pricing.price_usage(result.usage, user_id, engine=engine_name)
         cost_repo.record(
+            user_id,
             engine=engine_name, model=getattr(result.usage, "model", "") or "",
             tokens_in=result.usage.tokens_in, tokens_out=result.usage.tokens_out,
             usd=usd, source=source, kind="referral", phase_key="referral",

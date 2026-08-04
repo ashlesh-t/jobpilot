@@ -21,17 +21,17 @@ def to_dict(c: Contact) -> dict:
     }
 
 
-def create(*, company: str, name: str = "", email: str = "", role: str = "",
+def create(user_id: int, *, company: str, name: str = "", email: str = "", role: str = "",
           source: str = "manual") -> dict:
     with session_scope() as s:
-        row = Contact(company=company.strip(), name=name.strip(), email=email.strip(),
-                      role=role.strip(), source=source)
+        row = Contact(user_id=user_id, company=company.strip(), name=name.strip(),
+                      email=email.strip(), role=role.strip(), source=source)
         s.add(row)
         s.flush()
         return to_dict(row)
 
 
-def bulk_import(rows: list[dict]) -> dict:
+def bulk_import(user_id: int, rows: list[dict]) -> dict:
     """Rows already parsed from CSV/XLSX by the route — case-insensitive keys expected:
     company, name, email, role. Skips rows with no company and no email (nothing to
     match or contact)."""
@@ -49,6 +49,7 @@ def bulk_import(rows: list[dict]) -> dict:
                 continue
             try:
                 s.add(Contact(
+                    user_id=user_id,
                     company=company,
                     name=str(row.get("name", "") or ""),
                     email=email,
@@ -62,16 +63,16 @@ def bulk_import(rows: list[dict]) -> dict:
     return {"imported": imported, "skipped": skipped, "errors": errors}
 
 
-def list_all(*, company: str | None = None, limit: int = 500) -> list[dict]:
+def list_all(user_id: int, *, company: str | None = None, limit: int = 500) -> list[dict]:
     with session_scope() as s:
-        stmt = select(Contact)
+        stmt = select(Contact).where(Contact.user_id == user_id)
         if company:
             stmt = stmt.where(func.lower(Contact.company) == company.lower())
         rows = s.scalars(stmt.order_by(Contact.company).limit(limit)).all()
         return [to_dict(c) for c in rows]
 
 
-def for_company(company: str) -> list[dict]:
+def for_company(user_id: int, company: str) -> list[dict]:
     """Every contact whose company normalizes to the same thing as `company` — so
     "Google" matches a contact stored as "Google LLC", "google, inc.", etc."""
     if not company:
@@ -80,21 +81,23 @@ def for_company(company: str) -> list[dict]:
     if not target:
         return []
     with session_scope() as s:
-        rows = s.scalars(select(Contact)).all()
+        rows = s.scalars(select(Contact).where(Contact.user_id == user_id)).all()
         return [to_dict(c) for c in rows if normalize_company(c.company) == target]
 
 
-def get(contact_id: int) -> dict | None:
+def get(user_id: int, contact_id: int) -> dict | None:
     with session_scope() as s:
         row = s.get(Contact, contact_id)
-        return to_dict(row) if row else None
+        if row is None or row.user_id != user_id:
+            return None
+        return to_dict(row)
 
 
-def update(contact_id: int, **fields) -> dict | None:
+def update(user_id: int, contact_id: int, **fields) -> dict | None:
     allowed = {"company", "name", "email", "role"}
     with session_scope() as s:
         row = s.get(Contact, contact_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return None
         for key, value in fields.items():
             if key in allowed and value is not None:
@@ -103,10 +106,10 @@ def update(contact_id: int, **fields) -> dict | None:
         return to_dict(row)
 
 
-def remove(contact_id: int) -> bool:
+def remove(user_id: int, contact_id: int) -> bool:
     with session_scope() as s:
         row = s.get(Contact, contact_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return False
         s.delete(row)
         return True

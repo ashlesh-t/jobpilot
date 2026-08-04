@@ -131,10 +131,14 @@ def test_pid_alive_for_this_process():
 # setup gate
 # --------------------------------------------------------------------------- #
 def test_needs_setup_until_marked_complete(store):
-    from core.repo import settings as settings_repo
+    """Setup is now gated on account existence, not a settings flag: an instance with
+    a reachable database but zero accounts still needs setup; creating the first
+    account clears the gate. Per-account onboarding (resume, preferences, backend,
+    delivery) happens in the browser from here on, not the CLI."""
+    from core.repo import users as users_repo
 
     assert cli._needs_setup(store) is True
-    settings_repo.mark_setup_complete(True)
+    users_repo.create(username="tester", password="testpass123")
     assert cli._needs_setup(store) is False
 
 
@@ -243,7 +247,10 @@ def test_upgrade_stops_when_the_installer_fails(store, monkeypatch, capsys):
 
 
 def test_post_upgrade_applies_migrations_and_exports(store, monkeypatch, capsys):
+    from core.repo import users as users_repo
+
     monkeypatch.setattr("core.tailoring.has_tectonic", lambda: True)
+    user_id = users_repo.create(username="tester", password="testpass123")["id"]
 
     cli._post_upgrade(interactive=False)
 
@@ -251,4 +258,4 @@ def test_post_upgrade_applies_migrations_and_exports(store, monkeypatch, capsys)
     assert "schema up to date" in out
     assert "preferences exported" in out
     assert "tectonic found" in out
-    assert (store / "options" / "preferences.json").exists()
+    assert (store / "users" / str(user_id) / "options" / "preferences.json").exists()

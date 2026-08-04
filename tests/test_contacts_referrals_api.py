@@ -6,6 +6,8 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -22,13 +24,14 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
 
-def _seed_job(job_id="j1", company="Acme Corp"):
+def _seed_job(client, job_id="j1", company="Acme Corp"):
     from core.repo import jobs as jobs_repo
-    jobs_repo.upsert_scored([{
+    jobs_repo.upsert_scored(client.user_id, [{
         "job_id": job_id, "company": company, "role": "SWE", "location": "Remote",
         "score": 80, "application_url": "https://x.test",
     }])
@@ -97,7 +100,7 @@ def test_import_empty_csv_is_a_400(client):
 # Job detail attaches contacts + referrals
 # --------------------------------------------------------------------------- #
 def test_job_detail_includes_matching_contacts(client):
-    _seed_job(company="Acme Corp")
+    _seed_job(client, company="Acme Corp")
     client.post("/api/contacts", json={"company": "ACME", "name": "Jane HR", "email": "jane@acme.com"})
 
     job = client.get("/api/jobs/j1").json()
@@ -116,7 +119,7 @@ def test_generate_referral_404s_for_unknown_job(client):
 
 
 def test_generate_referral_404s_for_unknown_contact(client):
-    _seed_job()
+    _seed_job(client)
     r = client.post("/api/referrals/jobs/j1", json={"contact_id": 99999})
     assert r.status_code == 404
 
@@ -130,9 +133,9 @@ def test_set_invalid_status_is_400(client):
     from core.repo import contacts as contacts_repo
     from core.repo import referrals as referrals_repo
 
-    _seed_job()
-    contact = contacts_repo.create(company="Acme Corp", email="jane@acme.com")
-    referral = referrals_repo.create("j1", contact["id"], message="hi")
+    _seed_job(client)
+    contact = contacts_repo.create(client.user_id, company="Acme Corp", email="jane@acme.com")
+    referral = referrals_repo.create(client.user_id, "j1", contact["id"], message="hi")
 
     r = client.patch(f"/api/referrals/{referral['id']}/status", json={"status": "not-a-status"})
     assert r.status_code == 400
@@ -142,9 +145,9 @@ def test_referrals_for_job_endpoint(client):
     from core.repo import contacts as contacts_repo
     from core.repo import referrals as referrals_repo
 
-    _seed_job()
-    contact = contacts_repo.create(company="Acme Corp", email="jane@acme.com")
-    referrals_repo.create("j1", contact["id"], message="hi")
+    _seed_job(client)
+    contact = contacts_repo.create(client.user_id, company="Acme Corp", email="jane@acme.com")
+    referrals_repo.create(client.user_id, "j1", contact["id"], message="hi")
 
     body = client.get("/api/referrals/jobs/j1").json()
     assert len(body["items"]) == 1

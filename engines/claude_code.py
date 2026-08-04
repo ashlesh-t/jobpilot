@@ -41,7 +41,10 @@ class ClaudeCodeEngine(RunEngine):
     metered = False
 
     def __init__(self, permission_mode: str | None = None, cli: str = "claude",
-                model: str | None = None):
+                model: str | None = None, **_ignored):
+        # **_ignored absorbs `user_id` — the dispatch-uniform kwarg every engine
+        # constructor accepts from engines.get_engine(), even though a subscription
+        # login has no per-user secret to look up.
         # Every phase runs headless (`claude -p`, no terminal, no human) and every
         # skill's autonomy contract already forbids asking questions or blocking — so a
         # permission prompt here can never be answered anyway. "acceptEdits" only covers
@@ -92,7 +95,10 @@ class ClaudeCodeEngine(RunEngine):
     def authenticated(self) -> tuple[bool, str]:
         """Deep login check, delegated to core.backends (one implementation, not two)."""
         from core import backends
-        info = backends.probe("claude_code", deep=True)
+        # claude_code's probe never reads a per-user secret (it's a machine-wide CLI
+        # login check), so the user_id it's required to accept for dispatch uniformity
+        # is unused here.
+        info = backends.probe("claude_code", 0, deep=True)
         return info.authenticated, info.detail
 
     # ------------------------------------------------------------------ #

@@ -11,13 +11,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core.repo import contacts as contacts_repo  # noqa: E402
 
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
@@ -63,33 +64,34 @@ def _parse_xlsx(path: Path) -> list[dict]:
 
 
 @router.get("")
-async def list_contacts(company: str | None = None):
-    return {"contacts": contacts_repo.list_all(company=company)}
+async def list_contacts(company: str | None = None, user: dict = Depends(get_current_user)):
+    return {"contacts": contacts_repo.list_all(user["id"], company=company)}
 
 
 @router.post("")
-async def create_contact(req: ContactCreate):
-    return contacts_repo.create(company=req.company, name=req.name, email=req.email,
+async def create_contact(req: ContactCreate, user: dict = Depends(get_current_user)):
+    return contacts_repo.create(user["id"], company=req.company, name=req.name, email=req.email,
                                role=req.role, source="manual")
 
 
 @router.patch("/{contact_id}")
-async def update_contact(contact_id: int, req: ContactUpdate):
-    updated = contacts_repo.update(contact_id, **req.model_dump(exclude_none=True))
+async def update_contact(contact_id: int, req: ContactUpdate,
+                         user: dict = Depends(get_current_user)):
+    updated = contacts_repo.update(user["id"], contact_id, **req.model_dump(exclude_none=True))
     if updated is None:
         raise HTTPException(status_code=404, detail="not found")
     return updated
 
 
 @router.delete("/{contact_id}")
-async def delete_contact(contact_id: int):
-    if not contacts_repo.remove(contact_id):
+async def delete_contact(contact_id: int, user: dict = Depends(get_current_user)):
+    if not contacts_repo.remove(user["id"], contact_id):
         raise HTTPException(status_code=404, detail="not found")
     return {"ok": True}
 
 
 @router.post("/import")
-async def import_contacts(file: UploadFile = File(...)):
+async def import_contacts(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(
@@ -120,6 +122,6 @@ async def import_contacts(file: UploadFile = File(...)):
     if not rows:
         raise HTTPException(status_code=400, detail="no rows found in that file")
 
-    result = contacts_repo.bulk_import(rows)
-    result["contacts"] = contacts_repo.list_all()
+    result = contacts_repo.bulk_import(user["id"], rows)
+    result["contacts"] = contacts_repo.list_all(user["id"])
     return result

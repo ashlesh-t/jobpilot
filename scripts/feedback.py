@@ -4,10 +4,14 @@ Usage:
   python3 scripts/feedback.py <job_id> <status> [--notes "text"]
 
 Status values: applied, rejected, interview, offer, ghosted
+
+Writes to the v2 database (core.models.UserFeedback, composite PK (user_id, job_id)).
+Requires JOBPILOT_USER_ID in the environment — every pipeline subprocess the
+orchestrator spawns sets it (see orchestrator/runner.py, and scripts/jp_secrets.py for
+the same read-user-from-env pattern).
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -18,45 +22,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 VALID_STATUSES = {"applied", "rejected", "interview", "offer", "ghosted"}
 
 
-def jobpilot_dir() -> Path:
-    raw = os.environ.get("JOBPILOT_DIR", "~/.claude/job-hunt-ai")
-    return Path(os.path.expanduser(raw))
+def _user_id() -> int:
+    raw = os.environ.get("JOBPILOT_USER_ID")
+    if not raw:
+        print("Error: JOBPILOT_USER_ID is not set in the environment", file=sys.stderr)
+        sys.exit(1)
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"Error: invalid JOBPILOT_USER_ID {raw!r}", file=sys.stderr)
+        sys.exit(1)
 
 
-def db_path() -> Path:
-    return jobpilot_dir() / "cache" / "jobs.sqlite"
+def _core():
+    """Lazily import the core DB layer — only paid for when this script actually runs."""
+    repo_dir = Path(__file__).resolve().parent.parent
+    if str(repo_dir) not in sys.path:
+        sys.path.insert(0, str(repo_dir))
+    from core.db import session_scope
+    from core.models import UserFeedback
+
+    return session_scope, UserFeedback
 
 
 def record_feedback(job_id: str, status: str, notes: str = "") -> None:
-    import sqlite3
-
     status = status.lower().strip()
     if status not in VALID_STATUSES:
         print(f"Error: status must be one of {sorted(VALID_STATUSES)}", file=sys.stderr)
         sys.exit(1)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn = sqlite3.connect(str(db_path()))
-    try:
-        conn.execute(
-            """
-            INSERT INTO user_feedback (job_id, status, notes, feedback_date)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-              status = excluded.status,
-              notes = excluded.notes,
-              feedback_date = excluded.feedback_date
-            """,
-            (job_id, status, notes, now),
-        )
-        conn.execute(
-            "UPDATE jobs_seen SET status = ? WHERE job_id = ?",
-            (status, job_id),
-        )
-        conn.commit()
-        print(f"Recorded: {job_id} → {status}" + (f" ({notes})" if notes else ""))
-    finally:
-        conn.close()
+    user_id = _user_id()
+    session_scope, UserFeedback = _core()
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        row = s.get(UserFeedback, (user_id, job_id))
+        if row is None:
+            row = UserFeedback(user_id=user_id, job_id=job_id)
+            s.add(row)
+        row.status = status
+        row.notes = notes
+        row.feedback_date = now
+    print(f"Recorded: {job_id} → {status}" + (f" ({notes})" if notes else ""))
 
 
 def main() -> None:

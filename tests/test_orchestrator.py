@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 import pytest
@@ -61,6 +62,12 @@ def store(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def user_id(store):
+    from core.repo import users as users_repo
+    return users_repo.create(username="tester", password="testpass123")["id"]
+
+
+@pytest.fixture()
 def pipeline(store, monkeypatch):
     """Swap the real phase registry for the tiny test pipeline."""
     monkeypatch.setattr(P, "PHASES", TEST_PHASES)
@@ -103,7 +110,7 @@ class FakeEngine:
         if self.fail:
             return RunResult(ok=False, error=self.fail, usage=self.usage or Usage())
 
-        store = _Store(run_id)
+        store = _Store(int(os.environ.get("JOBPILOT_USER_ID", "0")), run_id)
         store.write("scored", [{"job_id": "j0", "company": "Acme", "score": 88}])
         return RunResult(ok=True, exit_code=0, usage=self.usage or Usage())
 
@@ -198,8 +205,8 @@ def test_selection_filters_and_validates():
 # --------------------------------------------------------------------------- #
 # Artifacts
 # --------------------------------------------------------------------------- #
-def test_artifacts_are_run_scoped(store):
-    a, b = ArtifactStore("run-a"), ArtifactStore("run-b")
+def test_artifacts_are_run_scoped(store, user_id):
+    a, b = ArtifactStore(user_id, "run-a"), ArtifactStore(user_id, "run-b")
     a.write("raw", [1, 2, 3])
     b.write("raw", [9])
     # The v1 bug this prevents: both runs writing /tmp/jobpilot_raw.json.
@@ -208,15 +215,15 @@ def test_artifacts_are_run_scoped(store):
     assert a.count("raw") == 3
 
 
-def test_artifact_write_is_atomic(store):
-    s = ArtifactStore("run-c")
+def test_artifact_write_is_atomic(store, user_id):
+    s = ArtifactStore(user_id, "run-c")
     s.write("raw", [{"a": 1}])
     assert not list(s.dir.glob("*.tmp"))
     assert s.read("raw") == [{"a": 1}]
 
 
-def test_artifact_inventory_lists_only_what_exists(store):
-    s = ArtifactStore("run-d")
+def test_artifact_inventory_lists_only_what_exists(store, user_id):
+    s = ArtifactStore(user_id, "run-d")
     s.write("raw", [1])
     s.write("scored", [1, 2])
     names = {i["name"] for i in s.inventory()}
@@ -242,42 +249,42 @@ def test_layer_a_scripts_honour_the_run_dir(store, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Happy path
 # --------------------------------------------------------------------------- #
-async def _drain(orch, run_id, timeout=30):
+async def _drain(orch, user_id, run_id, timeout=30):
     for _ in range(int(timeout / 0.05)):
-        if orch.active is None:
+        if orch.active.get(user_id) is None:
             return
         await asyncio.sleep(0.05)
     raise AssertionError("run did not finish in time")
 
 
-async def test_full_run_executes_every_phase(pipeline, fake_engine):
+async def test_full_run_executes_every_phase(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     orch = Orchestrator()
-    started = await orch.start(mode="native", engine="claude_code")
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id, mode="native", engine="claude_code")
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     assert run["status"] == "done"
     assert [p["status"] for p in run["phases"]] == ["done"] * 4
 
-    store = ArtifactStore(run["id"])
+    store = ArtifactStore(user_id, run["id"])
     assert store.count("raw") == 3
     assert store.count("filtered") == 2
     assert store.count("scored") == 1
 
-    scan = runs_repo.scan_for_run(run["id"])
+    scan = runs_repo.scan_for_run(user_id, run["id"])
     assert scan["jobs_raw"] == 3
     assert scan["jobs_after_filter"] == 2
     assert scan["jobs_scored"] == 1
 
 
-async def test_events_are_persisted_and_replayable(pipeline, fake_engine):
+async def test_events_are_persisted_and_replayable(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     events = runs_repo.events(started["id"])
     assert len(events) > 4
@@ -287,42 +294,42 @@ async def test_events_are_persisted_and_replayable(pipeline, fake_engine):
 
     # A finished run replays from the database, so restarting the service doesn't
     # lose the timeline the way v1's in-memory history did.
-    q = orch.subscribe(started["id"])
+    q = orch.subscribe(user_id, started["id"])
     first = q.get_nowait()
     assert first["run_id"] == started["id"]
 
 
-async def test_second_run_is_rejected_while_one_is_active(pipeline, fake_engine):
+async def test_second_run_is_rejected_while_one_is_active(pipeline, fake_engine, user_id):
     fake_engine["engine"] = FakeEngine(hang=True)
     orch = Orchestrator()
-    started = await orch.start()
+    started = await orch.start(user_id)
     await asyncio.sleep(0.6)
     with pytest.raises(RunBusyError):
-        await orch.start()
-    await orch.stop(started["id"])
+        await orch.start(user_id)
+    await orch.stop(user_id, started["id"])
 
 
 # --------------------------------------------------------------------------- #
 # Stop / resume / rerun
 # --------------------------------------------------------------------------- #
-async def test_stop_cancels_the_running_phase(pipeline, fake_engine):
+async def test_stop_cancels_the_running_phase(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     engine = FakeEngine(hang=True)
     fake_engine["engine"] = engine
 
     orch = Orchestrator()
-    started = await orch.start()
+    started = await orch.start(user_id)
     for _ in range(100):                      # wait until scoring is actually in flight
-        run = runs_repo.get(started["id"])
+        run = runs_repo.get(user_id, started["id"])
         if any(p["key"] == "score" and p["status"] == "running" for p in run["phases"]):
             break
         await asyncio.sleep(0.05)
 
-    await orch.stop(started["id"])
-    await _drain(orch, started["id"])
+    await orch.stop(user_id, started["id"])
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     assert run["status"] == "cancelled"
     assert engine.stopped is True
     by_key = {p["key"]: p for p in run["phases"]}
@@ -330,46 +337,46 @@ async def test_stop_cancels_the_running_phase(pipeline, fake_engine):
     assert by_key["score"]["status"] in ("cancelled", "error")
 
 
-async def test_resume_skips_completed_phases(pipeline, fake_engine):
+async def test_resume_skips_completed_phases(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     engine = FakeEngine(hang=True)
     fake_engine["engine"] = engine
     orch = Orchestrator()
-    started = await orch.start()
+    started = await orch.start(user_id)
     for _ in range(100):
-        run = runs_repo.get(started["id"])
+        run = runs_repo.get(user_id, started["id"])
         if any(p["key"] == "score" and p["status"] == "running" for p in run["phases"]):
             break
         await asyncio.sleep(0.05)
-    await orch.stop(started["id"])
-    await _drain(orch, started["id"])
+    await orch.stop(user_id, started["id"])
+    await _drain(orch, user_id, started["id"])
 
     scrape_started = runs_repo.get_phase(started["id"], "scrape")["started_at"]
 
     fake_engine["engine"] = FakeEngine()       # this time scoring succeeds
-    await orch.resume(started["id"])
-    await _drain(orch, started["id"])
+    await orch.resume(user_id, started["id"])
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     assert run["status"] == "done"
     # Untouched: resume must not re-scrape, or "resume" would just mean "start over".
     assert runs_repo.get_phase(started["id"], "scrape")["started_at"] == scrape_started
     assert runs_repo.get_phase(started["id"], "score")["status"] == "done"
 
 
-async def test_rerun_invalidates_downstream_phases(pipeline, fake_engine):
+async def test_rerun_invalidates_downstream_phases(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
-    first_attempts = {p["key"]: p["attempt"] for p in runs_repo.get(started["id"])["phases"]}
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
+    first_attempts = {p["key"]: p["attempt"] for p in runs_repo.get(user_id, started["id"])["phases"]}
 
-    await orch.rerun(started["id"], "score")
-    await _drain(orch, started["id"])
+    await orch.rerun(user_id, started["id"], "score")
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     after = {p["key"]: p["attempt"] for p in run["phases"]}
     assert run["status"] == "done"
     # score and report re-ran; scrape and filter did not.
@@ -379,26 +386,26 @@ async def test_rerun_invalidates_downstream_phases(pipeline, fake_engine):
     assert after["filter"] == first_attempts["filter"]
 
 
-async def test_rerun_rejects_an_unknown_phase(pipeline, fake_engine):
+async def test_rerun_rejects_an_unknown_phase(pipeline, fake_engine, user_id):
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
     with pytest.raises(ValueError):
-        await orch.rerun(started["id"], "not-a-phase")
+        await orch.rerun(user_id, started["id"], "not-a-phase")
 
 
 # --------------------------------------------------------------------------- #
 # Failure handling
 # --------------------------------------------------------------------------- #
-async def test_failed_phase_skips_dependents_but_still_reports(pipeline, fake_engine):
+async def test_failed_phase_skips_dependents_but_still_reports(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     fake_engine["engine"] = FakeEngine(fail="model said no")
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     by_key = {p["key"]: p for p in run["phases"]}
     assert run["status"] == "error"
     assert by_key["score"]["status"] == "error"
@@ -406,7 +413,7 @@ async def test_failed_phase_skips_dependents_but_still_reports(pipeline, fake_en
     assert by_key["report"]["status"] == "done"
 
 
-async def test_transient_failure_is_retried(pipeline, fake_engine):
+async def test_transient_failure_is_retried(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     attempts = {"n": 0}
@@ -421,27 +428,27 @@ async def test_transient_failure_is_retried(pipeline, fake_engine):
 
     fake_engine["engine"] = Flaky()
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     assert attempts["n"] == 2
     assert runs_repo.get_phase(started["id"], "score")["status"] == "done"
 
 
-async def test_permanent_failure_is_not_retried(pipeline, fake_engine):
+async def test_permanent_failure_is_not_retried(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     engine = FakeEngine(fail="the profile is missing required fields")
     fake_engine["engine"] = engine
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     assert len(engine.calls) == 1          # no pointless retry of a real fault
     assert runs_repo.get_phase(started["id"], "score")["status"] == "error"
 
 
-async def test_missing_output_artifact_is_a_failure(pipeline, fake_engine):
+async def test_missing_output_artifact_is_a_failure(pipeline, fake_engine, user_id):
     """An agent that says "done" without writing its artifact has not done the phase."""
     from core.repo import runs as runs_repo
 
@@ -452,22 +459,22 @@ async def test_missing_output_artifact_is_a_failure(pipeline, fake_engine):
 
     fake_engine["engine"] = Liar()
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     phase = runs_repo.get_phase(started["id"], "score")
     assert phase["status"] == "error"
     assert "scored.json" in phase["error"]
 
 
-async def test_phase_selection_runs_only_what_was_asked(pipeline, fake_engine):
+async def test_phase_selection_runs_only_what_was_asked(pipeline, fake_engine, user_id):
     from core.repo import runs as runs_repo
 
     orch = Orchestrator()
-    started = await orch.start(only=["scrape", "filter"])
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id, only=["scrape", "filter"])
+    await _drain(orch, user_id, started["id"])
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     assert [p["key"] for p in run["phases"]] == ["scrape", "filter"]
     assert run["status"] == "done"
 
@@ -475,7 +482,7 @@ async def test_phase_selection_runs_only_what_was_asked(pipeline, fake_engine):
 # --------------------------------------------------------------------------- #
 # Cost
 # --------------------------------------------------------------------------- #
-async def test_metered_usage_is_recorded_against_the_phase(pipeline, fake_engine):
+async def test_metered_usage_is_recorded_against_the_phase(pipeline, fake_engine, user_id):
     from engines.base import Usage
     from core.repo import cost as cost_repo
     from core.repo import runs as runs_repo
@@ -484,20 +491,20 @@ async def test_metered_usage_is_recorded_against_the_phase(pipeline, fake_engine
         usage=Usage(tokens_in=10_000, tokens_out=2_000,
                     model="claude-opus-5", source="metered"))
     orch = Orchestrator()
-    started = await orch.start(engine="claude_api")
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id, engine="claude_api")
+    await _drain(orch, user_id, started["id"])
 
-    entries = cost_repo.for_run(started["id"])
+    entries = cost_repo.for_run(user_id, started["id"])
     assert len(entries) == 1
     assert entries[0]["phase_key"] == "score"
     assert entries[0]["usd"] > 0
 
-    run = runs_repo.get(started["id"])
+    run = runs_repo.get(user_id, started["id"])
     assert run["tokens_in"] == 10_000
     assert run["cost_usd"] > 0
 
 
-async def test_subscription_usage_is_free_but_counted(pipeline, fake_engine):
+async def test_subscription_usage_is_free_but_counted(pipeline, fake_engine, user_id):
     from engines.base import Usage
     from core.repo import cost as cost_repo
 
@@ -505,10 +512,10 @@ async def test_subscription_usage_is_free_but_counted(pipeline, fake_engine):
         usage=Usage(tokens_in=50_000, tokens_out=8_000,
                     model="claude-opus-5", source="subscription"))
     orch = Orchestrator()
-    started = await orch.start(engine="claude_code")
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id, engine="claude_code")
+    await _drain(orch, user_id, started["id"])
 
-    summary = cost_repo.summary(run_id=started["id"])
+    summary = cost_repo.summary(user_id, run_id=started["id"])
     assert summary["usd"] == 0.0
     assert summary["subscription_tokens"] == 58_000
 
@@ -516,12 +523,12 @@ async def test_subscription_usage_is_free_but_counted(pipeline, fake_engine):
 # --------------------------------------------------------------------------- #
 # Prompt construction
 # --------------------------------------------------------------------------- #
-async def test_llm_program_pins_the_run_paths(pipeline, fake_engine):
+async def test_llm_program_pins_the_run_paths(pipeline, fake_engine, user_id):
     engine = FakeEngine()
     fake_engine["engine"] = engine
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     program = engine.calls[0]
     assert program.startswith("# Phase: ATS scoring")
@@ -532,27 +539,27 @@ async def test_llm_program_pins_the_run_paths(pipeline, fake_engine):
     assert "do not run any later phase" in program.lower()
 
 
-async def test_llm_phase_model_defaults_to_its_tier(pipeline, fake_engine):
+async def test_llm_phase_model_defaults_to_its_tier(pipeline, fake_engine, user_id):
     """The 'score' test phase defaults to model_tier='reasoning' — with no per-phase
     override configured, it should resolve to claude_code's reasoning-tier model."""
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     assert fake_engine["kwargs"]["model"] == "sonnet"
 
 
-async def test_llm_phase_model_override_is_honoured(pipeline, fake_engine):
+async def test_llm_phase_model_override_is_honoured(pipeline, fake_engine, user_id):
     """An explicit per-phase choice (including the opt-in-only 'max'/Opus tier) wins
     over the tier default — Opus must never be picked *by default*, but the user can
     still choose it deliberately, phase by phase."""
     from core.repo import settings as settings_repo
 
-    settings_repo.set_pipeline_phase_config({"score": {"enabled": True, "model": "opus"}})
+    settings_repo.set_pipeline_phase_config(user_id, {"score": {"enabled": True, "model": "opus"}})
 
     orch = Orchestrator()
-    started = await orch.start()
-    await _drain(orch, started["id"])
+    started = await orch.start(user_id)
+    await _drain(orch, user_id, started["id"])
 
     assert fake_engine["kwargs"]["model"] == "opus"
 
@@ -572,15 +579,15 @@ def test_no_llm_phase_program_starts_with_a_dash():
         assert not body.startswith("-"), f"{phase.key}'s program starts with '-': {body[:20]!r}"
 
 
-async def test_orphaned_runs_are_marked_after_a_restart(store):
+async def test_orphaned_runs_are_marked_after_a_restart(store, user_id):
     from core.repo import runs as runs_repo
 
     rid = runs_repo.new_run_id()
-    runs_repo.create(rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
-    runs_repo.set_status(rid, "running")
+    runs_repo.create(user_id, rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
+    runs_repo.set_status(user_id, rid, "running")
     runs_repo.phase_start(rid, "scrape")
 
     assert runs_repo.reset_orphans() == 1
-    run = runs_repo.get(rid)
+    run = runs_repo.get(user_id, rid)
     assert run["status"] == "error"
     assert "interrupted" in run["error"]

@@ -34,17 +34,18 @@ KNOWN = (RAW, SCRAPE_STATUS, DEDUPED, FILTERED, DISCOVERED, RELEVANT, SCORED,
          NOTIFY_RECEIPT)
 
 
-def runs_root() -> Path:
+def runs_root(user_id: int) -> Path:
     from core.paths import runs_root as _root
-    return _root()
+    return _root(user_id)
 
 
 class ArtifactStore:
     """Filesystem access for one run's artifacts."""
 
-    def __init__(self, run_id: str):
+    def __init__(self, user_id: int, run_id: str):
+        self.user_id = user_id
         self.run_id = run_id
-        self.dir = runs_root() / run_id
+        self.dir = runs_root(user_id) / run_id
         self.dir.mkdir(parents=True, exist_ok=True)
 
     # -- paths ---------------------------------------------------------- #
@@ -56,10 +57,15 @@ class ArtifactStore:
         return self.dir / "events.jsonl"
 
     def env(self) -> dict[str, str]:
-        """Environment every phase subprocess inherits so it writes into this run."""
+        """Environment every phase subprocess inherits so it writes into this run.
+
+        `JOBPILOT_USER_ID` is what makes `scripts/jp_secrets.py` and `scripts/feedback.py`
+        resolve secrets and feedback rows for the right account.
+        """
         return {
             "JOBPILOT_RUN_ID": self.run_id,
             "JOBPILOT_RUN_DIR": str(self.dir),
+            "JOBPILOT_USER_ID": str(self.user_id),
         }
 
     # -- read / write --------------------------------------------------- #
@@ -129,9 +135,9 @@ class ArtifactStore:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
-def latest_with(name: str, *, before: str | None = None) -> ArtifactStore | None:
+def latest_with(user_id: int, name: str, *, before: str | None = None) -> ArtifactStore | None:
     """Most recent run that has artifact `name` — how a fresh run reuses prior work."""
-    root = runs_root()
+    root = runs_root(user_id)
     if not root.exists():
         return None
     for d in sorted((p for p in root.iterdir() if p.is_dir()),
@@ -139,5 +145,5 @@ def latest_with(name: str, *, before: str | None = None) -> ArtifactStore | None
         if before and d.name >= before:
             continue
         if (d / f"{name}.json").exists():
-            return ArtifactStore(d.name)
+            return ArtifactStore(user_id, d.name)
     return None

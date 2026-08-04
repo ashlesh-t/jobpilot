@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -28,6 +30,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
@@ -79,13 +82,13 @@ def test_disabled_slots_do_not_get_a_timer(client, monkeypatch):
     import scheduler as scheduler_module
 
     jobs: list[str] = []
-    monkeypatch.setattr(scheduler_module.scheduler, "jobs", lambda: jobs)
+    monkeypatch.setattr(scheduler_module.scheduler, "jobs", lambda user_id: jobs)
 
     slot = client.post("/api/schedule/slots", json={"name": "s", "time": "09:00"}).json()["slots"][0]
     client.put(f"/api/schedule/slots/{slot['id']}", json={"enabled": False})
 
     from core.repo import schedule as schedule_repo
-    assert schedule_repo.list_all(enabled_only=True) == []
+    assert schedule_repo.list_all(client.user_id, enabled_only=True) == []
 
 
 def test_catchup_grace_is_configurable_and_bounded(client):
@@ -110,43 +113,43 @@ def test_service_install_and_uninstall(client):
 def test_missed_slot_is_caught_up_once(client):
     from core.repo import schedule as schedule_repo
 
-    schedule_repo.create(name="morning", time="09:30")
+    schedule_repo.create(client.user_id, name="morning", time="09:30")
     now = datetime(2026, 8, 1, 11, 0, tzinfo=IST)     # 90 minutes after the slot
 
-    due = schedule_repo.missed_since_downtime(grace_hours=6, now=now)
+    due = schedule_repo.missed_since_downtime(client.user_id, grace_hours=6, now=now)
     assert [d["name"] for d in due] == ["morning"]
 
     # Serving it records the occurrence, not the wall clock — so it can't fire twice.
-    schedule_repo.record_fire(due[0]["id"], run_id="r1", when=now)
-    assert schedule_repo.missed_since_downtime(grace_hours=6, now=now + timedelta(minutes=5)) == []
+    schedule_repo.record_fire(client.user_id, due[0]["id"], run_id="r1", when=now)
+    assert schedule_repo.missed_since_downtime(client.user_id, grace_hours=6, now=now + timedelta(minutes=5)) == []
 
 
 def test_a_long_outage_does_not_queue_a_run_per_missed_day(client):
     """A laptop closed for a week must produce one run, not seven."""
     from core.repo import schedule as schedule_repo
 
-    schedule_repo.create(name="morning", time="09:30")
+    schedule_repo.create(client.user_id, name="morning", time="09:30")
     now = datetime(2026, 8, 8, 11, 0, tzinfo=IST)     # a week later
-    due = schedule_repo.missed_since_downtime(grace_hours=6, now=now)
+    due = schedule_repo.missed_since_downtime(client.user_id, grace_hours=6, now=now)
     assert len(due) == 1                              # only the most recent occurrence
 
 
 def test_a_stale_miss_is_skipped(client):
     from core.repo import schedule as schedule_repo
 
-    schedule_repo.create(name="morning", time="09:30")
+    schedule_repo.create(client.user_id, name="morning", time="09:30")
     now = datetime(2026, 8, 1, 23, 0, tzinfo=IST)     # 13.5 hours later
-    assert schedule_repo.missed_since_downtime(grace_hours=6, now=now) == []
+    assert schedule_repo.missed_since_downtime(client.user_id, grace_hours=6, now=now) == []
 
 
 def test_slots_respect_their_own_timezone(client):
     from core.repo import schedule as schedule_repo
 
-    schedule_repo.create(name="ny", time="09:30", timezone="America/New_York")
+    schedule_repo.create(client.user_id, name="ny", time="09:30", timezone="America/New_York")
     # 11:00 IST is 01:30 in New York — the 09:30 NY slot hasn't come round yet today,
     # so the most recent occurrence is yesterday's and long out of grace.
     now = datetime(2026, 8, 1, 11, 0, tzinfo=IST)
-    assert schedule_repo.missed_since_downtime(grace_hours=6, now=now) == []
+    assert schedule_repo.missed_since_downtime(client.user_id, grace_hours=6, now=now) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +161,7 @@ async def test_no_network_retries_rather_than_failing(client, monkeypatch):
     import scheduler as scheduler_module
     from core.repo import schedule as schedule_repo
 
-    slot = schedule_repo.create(name="morning", time="09:30")
+    slot = schedule_repo.create(client.user_id, name="morning", time="09:30")
 
     attempts = {"n": 0}
 
@@ -168,7 +171,7 @@ async def test_no_network_retries_rather_than_failing(client, monkeypatch):
 
     started: list[dict] = []
 
-    async def fake_start(**kwargs):
+    async def fake_start(user_id, **kwargs):
         started.append(kwargs)
         return {"id": "run-1"}
 
@@ -178,11 +181,11 @@ async def test_no_network_retries_rather_than_failing(client, monkeypatch):
     real_sleep = asyncio.sleep
     monkeypatch.setattr(scheduler_module.asyncio, "sleep", lambda *_a: real_sleep(0))
 
-    await scheduler_module._start(slot, trigger="schedule")
+    await scheduler_module._start(client.user_id, slot, trigger="schedule")
 
     assert attempts["n"] == 3             # retried, then succeeded
     assert started and started[0]["trigger"] == "schedule"
-    assert schedule_repo.get(slot["id"])["last_run_id"] == "run-1"
+    assert schedule_repo.get(client.user_id, slot["id"])["last_run_id"] == "run-1"
 
 
 async def test_a_busy_run_skips_the_slot_instead_of_stacking(client, monkeypatch):
@@ -190,13 +193,13 @@ async def test_a_busy_run_skips_the_slot_instead_of_stacking(client, monkeypatch
     from core.repo import schedule as schedule_repo
     from orchestrator.runner import RunBusyError
 
-    slot = schedule_repo.create(name="morning", time="09:30")
+    slot = schedule_repo.create(client.user_id, name="morning", time="09:30")
 
-    async def busy(**_kwargs):
+    async def busy(_user_id, **_kwargs):
         raise RunBusyError("already running")
 
     monkeypatch.setattr(scheduler_module, "has_network", lambda: True)
     monkeypatch.setattr(scheduler_module.manager, "start_run", busy)
 
-    await scheduler_module._start(slot, trigger="schedule")
-    assert "already running" in schedule_repo.get(slot["id"])["last_outcome"]
+    await scheduler_module._start(client.user_id, slot, trigger="schedule")
+    assert "already running" in schedule_repo.get(client.user_id, slot["id"])["last_outcome"]

@@ -6,6 +6,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
 from core import tailoring
 
 
@@ -102,7 +103,7 @@ def test_ats_score_is_case_insensitive():
 # --------------------------------------------------------------------------- #
 def test_folder_and_file_naming():
     assert tailoring.resume_basename("ashlesh tiwari") == "Ashlesh_Tiwari_Resume"
-    folder = tailoring.folder_for("abc123", "Swiss Re")
+    folder = tailoring.folder_for(1, "abc123", "Swiss Re")
     assert folder.name == "abc123-SwissRe"
 
 
@@ -117,18 +118,24 @@ def store(tmp_path, monkeypatch):
     db.dispose()
 
 
-def test_write_result_produces_the_documented_layout(store):
+@pytest.fixture()
+def user_id(store):
+    from core.repo import users as users_repo
+    return users_repo.create(username="tester", password="testpass123")["id"]
+
+
+def test_write_result_produces_the_documented_layout(store, user_id):
     from core.repo import jobs as jobs_repo
 
-    jobs_repo.upsert_scored([{"job_id": "abc123", "company": "Swiss Re", "role": "SDE"}])
+    jobs_repo.upsert_scored(user_id, [{"job_id": "abc123", "company": "Swiss Re", "role": "SDE"}])
 
     record = tailoring.write_result(
-        job_id="abc123", company="Swiss Re", full_name="Ada Lovelace",
+        user_id=user_id, job_id="abc123", company="Swiss Re", full_name="Ada Lovelace",
         tex_source=_valid_tex(), jd_skills=["Go", "Docker", "Rust"],
         base_text="I know Go", engine="claude_code",
     )
 
-    folder = store / "resumes" / "tailored" / "abc123-SwissRe"
+    folder = store / "users" / str(user_id) / "resumes" / "tailored" / "abc123-SwissRe"
     assert (folder / "Ada_Lovelace_Resume.tex").exists()
     assert (folder / "meta.json").exists()
 
@@ -142,12 +149,12 @@ def test_write_result_produces_the_documented_layout(store):
     assert record["has_tex"] is True
 
 
-def test_write_result_records_validation_problems_without_crashing(store):
+def test_write_result_records_validation_problems_without_crashing(store, user_id):
     from core.repo import jobs as jobs_repo
 
-    jobs_repo.upsert_scored([{"job_id": "j1", "company": "Acme"}])
+    jobs_repo.upsert_scored(user_id, [{"job_id": "j1", "company": "Acme"}])
     record = tailoring.write_result(
-        job_id="j1", company="Acme", full_name="Ada Lovelace",
+        user_id=user_id, job_id="j1", company="Acme", full_name="Ada Lovelace",
         tex_source=_valid_tex() + "\\includegraphics{x.png}", jd_skills=["Go"],
     )
     # The .tex is still written — the user can fix it in Overleaf.
@@ -156,17 +163,17 @@ def test_write_result_records_validation_problems_without_crashing(store):
     assert "images" in record["error"]
 
 
-def test_write_result_is_idempotent_per_job(store):
+def test_write_result_is_idempotent_per_job(store, user_id):
     from core.repo import jobs as jobs_repo
     from core.repo import tailored as tailored_repo
 
-    jobs_repo.upsert_scored([{"job_id": "j1", "company": "Acme"}])
-    first = tailoring.write_result(job_id="j1", company="Acme", full_name="Ada L",
+    jobs_repo.upsert_scored(user_id, [{"job_id": "j1", "company": "Acme"}])
+    first = tailoring.write_result(user_id=user_id, job_id="j1", company="Acme", full_name="Ada L",
                                    tex_source=_valid_tex(), jd_skills=["Go"])
-    second = tailoring.write_result(job_id="j1", company="Acme", full_name="Ada L",
+    second = tailoring.write_result(user_id=user_id, job_id="j1", company="Acme", full_name="Ada L",
                                     tex_source=_valid_tex(), jd_skills=["Go"])
     assert first["id"] == second["id"]
-    assert tailored_repo.count() == 1
+    assert tailored_repo.count(user_id) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +194,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
@@ -197,7 +205,7 @@ def _seed_ready(client, tmp_path):
 
     from core.repo import jobs as jobs_repo
 
-    jobs_repo.upsert_scored([{
+    jobs_repo.upsert_scored(client.user_id, [{
         "job_id": "j1", "company": "Swiss Re", "role": "Golang Engineer",
         "jd_full": "We need Go, Docker and Kubernetes.",
         "matched_skills": ["Go", "Docker"], "missing_skills": ["Kafka"],
@@ -217,7 +225,7 @@ def test_tailor_requires_a_job(client):
 def test_tailor_requires_a_profile_and_resume(client):
     from core.repo import jobs as jobs_repo
 
-    jobs_repo.upsert_scored([{"job_id": "j1", "company": "Acme"}])
+    jobs_repo.upsert_scored(client.user_id, [{"job_id": "j1", "company": "Acme"}])
     r = client.post("/api/tailored/jobs/j1")
     assert r.status_code == 409
     assert "profile" in r.json()["detail"].lower()
@@ -264,7 +272,7 @@ def test_tailor_end_to_end_with_a_fake_backend(client, tmp_path, monkeypatch):
 
     # Tailoring is metered work — it must show up in the cost ledger.
     from core.repo import cost as cost_repo
-    assert cost_repo.summary(window="month")["usd"] > 0
+    assert cost_repo.summary(client.user_id, window="month")["usd"] > 0
 
     assert client.delete(f"/api/tailored/{body['id']}").status_code == 200
     assert client.get("/api/tailored").json()["count"] == 0

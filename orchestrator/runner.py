@@ -11,8 +11,10 @@ What v1 could not do and this can:
   * **Survive a restart.** Every event is persisted, so a finished run's timeline is
     still replayable after the service is restarted.
 
-One run is active at a time. For a single-user local tool that is the correct, and
-predictable, behaviour.
+One run is active at a time **per account** — `Orchestrator.active` is keyed by
+`user_id`, so two people on the same instance can run concurrently without blocking
+each other, while a single account still gets the simple, predictable "one run at a
+time" behaviour.
 """
 from __future__ import annotations
 
@@ -54,12 +56,13 @@ def _is_transient(message: str) -> bool:
 class _ActiveRun:
     """Everything the orchestrator needs about the run currently executing."""
 
-    def __init__(self, run_id: str, mode: str, engine_name: str, keys: list[str]):
+    def __init__(self, user_id: int, run_id: str, mode: str, engine_name: str, keys: list[str]):
+        self.user_id = user_id
         self.id = run_id
         self.mode = mode
         self.engine_name = engine_name
         self.keys = keys
-        self.store = ArtifactStore(run_id)
+        self.store = ArtifactStore(user_id, run_id)
         self.subscribers: set[asyncio.Queue] = set()
         self.task: asyncio.Task | None = None
         self.proc: asyncio.subprocess.Process | None = None
@@ -71,91 +74,94 @@ class _ActiveRun:
 
 class Orchestrator:
     def __init__(self):
-        self.active: _ActiveRun | None = None
+        self.active: dict[int, _ActiveRun] = {}
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
-    async def start(self, *, mode: str = "auto", engine: str | None = None,
+    async def start(self, user_id: int, *, mode: str = "auto", engine: str | None = None,
                     only: list[str] | None = None, skip: list[str] | None = None,
                     trigger: str = "manual", slot_name: str = "") -> dict:
         from core.repo import runs as runs_repo
         from core.repo import settings as settings_repo
 
         async with self._lock:
-            if self.active is not None:
-                raise RunBusyError(f"run {self.active.id} is already in progress")
+            existing = self.active.get(user_id)
+            if existing is not None:
+                raise RunBusyError(f"run {existing.id} is already in progress")
 
-            engine_name = engine or settings_repo.engine_config()["provider"]
+            engine_name = engine or settings_repo.engine_config(user_id)["provider"]
             keys = P.selection(only, skip)
             run_id = runs_repo.new_run_id()
-            runs_repo.create(run_id, mode=mode, engine=engine_name, phase_keys=keys,
+            runs_repo.create(user_id, run_id, mode=mode, engine=engine_name, phase_keys=keys,
                              trigger=trigger, slot_name=slot_name)
 
-            run = _ActiveRun(run_id, mode, engine_name, keys)
+            run = _ActiveRun(user_id, run_id, mode, engine_name, keys)
             run.store.truncate_events()
-            self.active = run
+            self.active[user_id] = run
 
         run.task = asyncio.create_task(self._execute(run))
-        return runs_repo.get(run_id)
+        return runs_repo.get(user_id, run_id)
 
-    async def resume(self, run_id: str) -> dict:
+    async def resume(self, user_id: int, run_id: str) -> dict:
         """Continue a stopped or failed run from its first incomplete phase."""
         from core.repo import runs as runs_repo
 
-        record = runs_repo.get(run_id)
+        record = runs_repo.get(user_id, run_id)
         if record is None:
             raise UnknownRunError(run_id)
 
         async with self._lock:
-            if self.active is not None:
-                raise RunBusyError(f"run {self.active.id} is already in progress")
+            existing = self.active.get(user_id)
+            if existing is not None:
+                raise RunBusyError(f"run {existing.id} is already in progress")
             pending = [p["key"] for p in record["phases"]
                        if p["status"] not in ("done", "skipped")]
             if not pending:
                 return record
-            run = _ActiveRun(run_id, record["mode"], record["engine"],
+            run = _ActiveRun(user_id, run_id, record["mode"], record["engine"],
                              [p["key"] for p in record["phases"]])
             run.done_keys = [p["key"] for p in record["phases"] if p["status"] == "done"]
-            self.active = run
+            self.active[user_id] = run
 
-        runs_repo.set_status(run_id, "running", error="")
+        runs_repo.set_status(user_id, run_id, "running", error="")
         self._emit(run, "log", "started",
                    f"resuming from '{pending[0]}' — {len(run.done_keys)} phases already done")
         run.task = asyncio.create_task(self._execute(run))
-        return runs_repo.get(run_id)
+        return runs_repo.get(user_id, run_id)
 
-    async def rerun(self, run_id: str, phase_key: str) -> dict:
+    async def rerun(self, user_id: int, run_id: str, phase_key: str) -> dict:
         """Reset `phase_key` and everything downstream, then run from there."""
         from core.repo import runs as runs_repo
 
-        record = runs_repo.get(run_id)
+        record = runs_repo.get(user_id, run_id)
         if record is None:
             raise UnknownRunError(run_id)
         P.get(phase_key)  # validates
 
         async with self._lock:
-            if self.active is not None:
-                raise RunBusyError(f"run {self.active.id} is already in progress")
+            existing = self.active.get(user_id)
+            if existing is not None:
+                raise RunBusyError(f"run {existing.id} is already in progress")
             reset = runs_repo.invalidate_from(run_id, phase_key)
-            run = _ActiveRun(run_id, record["mode"], record["engine"],
+            run = _ActiveRun(user_id, run_id, record["mode"], record["engine"],
                              [p["key"] for p in record["phases"]])
             run.done_keys = [p["key"] for p in record["phases"]
                              if p["status"] == "done" and p["key"] not in reset]
-            self.active = run
+            self.active[user_id] = run
 
-        runs_repo.set_status(run_id, "running", error="")
+        runs_repo.set_status(user_id, run_id, "running", error="")
         self._emit(run, "log", "started",
                    f"rerunning '{phase_key}' — also redoing {', '.join(reset[1:]) or 'nothing downstream'}")
         run.task = asyncio.create_task(self._execute(run))
-        return runs_repo.get(run_id)
+        return runs_repo.get(user_id, run_id)
 
-    async def stop(self, run_id: str | None = None) -> dict | None:
+    async def stop(self, user_id: int, run_id: str | None = None) -> dict | None:
         """Cancel the active run: graceful first, hard after a grace period."""
         from core.repo import runs as runs_repo
 
-        run = self.active
+        run = self.active.get(user_id)
         if run is None or (run_id and run.id != run_id):
             return None
 
@@ -181,7 +187,7 @@ class Orchestrator:
                 await asyncio.wait_for(asyncio.shield(run.task), timeout=20)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 run.task.cancel()
-        return runs_repo.get(run.id)
+        return runs_repo.get(run.user_id, run.id)
 
     # ------------------------------------------------------------------ #
     # Execution
@@ -189,7 +195,7 @@ class Orchestrator:
     async def _execute(self, run: _ActiveRun) -> None:
         from core.repo import runs as runs_repo
 
-        runs_repo.set_status(run.id, "running")
+        runs_repo.set_status(run.user_id, run.id, "running")
         self._emit(run, "log", "started",
                    f"run {run.id} started ({run.engine_name}, mode={run.mode})")
 
@@ -200,7 +206,7 @@ class Orchestrator:
 
         try:
             statuses = {p["key"]: p["status"]
-                        for p in (runs_repo.get(run.id) or {}).get("phases", [])}
+                        for p in (runs_repo.get(run.user_id, run.id) or {}).get("phases", [])}
             for key in run.keys:
                 if statuses.get(key) in ("done", "skipped"):
                     run.done_keys.append(key)
@@ -225,11 +231,11 @@ class Orchestrator:
             await asyncio.sleep(0.4)  # let the tail drain Layer A's last lines
             self._finalize(run, failed)
         except asyncio.CancelledError:
-            runs_repo.set_status(run.id, "cancelled", ended=True)
+            runs_repo.set_status(run.user_id, run.id, "cancelled", ended=True)
             self._emit(run, "done", "error", "run cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
-            runs_repo.set_status(run.id, "error", error=str(exc), ended=True)
+            runs_repo.set_status(run.user_id, run.id, "error", error=str(exc), ended=True)
             self._emit(run, "done", "error", str(exc))
         finally:
             tail_stop.set()
@@ -237,8 +243,8 @@ class Orchestrator:
                 await tail_task
             self._restore_env(previous_env)
             self._close_subscribers(run)
-            if self.active is run:
-                self.active = None
+            if self.active.get(run.user_id) is run:
+                del self.active[run.user_id]
 
     def _finalize(self, run: _ActiveRun, failed: list[str]) -> None:
         from core.repo import runs as runs_repo
@@ -253,7 +259,7 @@ class Orchestrator:
 
         self._update_scan(run)
         summary = self._summary(run, failed)
-        runs_repo.set_status(run.id, status, error="" if status != "error" else message,
+        runs_repo.set_status(run.user_id, run.id, status, error="" if status != "error" else message,
                              summary=summary, ended=True)
         self._emit(run, "done", "done" if status == "done" else "error", message,
                    data={"summary": summary, "failed": failed})
@@ -394,7 +400,7 @@ class Orchestrator:
         from core import model_catalog
         from core.repo import settings as settings_repo
 
-        cfg = settings_repo.engine_config()
+        cfg = settings_repo.engine_config(run.user_id)
         kwargs: dict = {}
 
         # Model choice is per-phase, not a single engine-wide setting: a phase tagged
@@ -402,7 +408,7 @@ class Orchestrator:
         # by default, "reasoning" phases (relevance, score, intel) get the stronger one.
         # model_locked phases (salary) ignore whatever the user configured and always
         # get their tier's default — see orchestrator.phases and core.model_catalog.
-        phase_cfg = settings_repo.pipeline_phase_config().get(phase.key, {})
+        phase_cfg = settings_repo.pipeline_phase_config(run.user_id).get(phase.key, {})
         requested = None if phase.model_locked else phase_cfg.get("model")
         model = model_catalog.resolve(run.engine_name, phase.model_tier, requested)
         if model and run.engine_name in ("claude_code", "claude_api", "gemini"):
@@ -413,7 +419,7 @@ class Orchestrator:
         if run.engine_name == "generic_cli" and cfg.get("command_template"):
             kwargs["command_template"] = cfg["command_template"]
 
-        engine = engines.get_engine(run.engine_name, **kwargs)
+        engine = engines.get_engine(run.engine_name, user_id=run.user_id, **kwargs)
         ok, reason = engine.available()
         if not ok:
             return False, f"engine '{run.engine_name}' unavailable: {reason}", None
@@ -468,13 +474,21 @@ class Orchestrator:
 
     def _program_for(self, run: _ActiveRun, phase: P.Phase) -> str:
         """The prompt handed to the agent: the phase skill plus its concrete paths."""
+        from core.paths import cache_dir, ensure_user_dirs
+
+        user_cache_dir = ensure_user_dirs(run.user_id) / "cache"
+        user_cache_dir.mkdir(parents=True, exist_ok=True)
         lines = [
             self._skill_body(phase),
             "",
             "RUN CONTEXT (authoritative — use these exact paths):",
-            f"  run_id:      {run.id}",
-            f"  run_dir:     {run.store.dir}",
-            f"  run_mode:    {run.mode}",
+            f"  run_id:            {run.id}",
+            f"  run_dir:           {run.store.dir}",
+            f"  run_mode:          {run.mode}",
+            f"  user_cache_dir:    {user_cache_dir}    "
+            "(this account's own data — e.g. learning.json)",
+            f"  instance_cache_dir: {cache_dir()}    "
+            "(shared across every account — e.g. company_intel.json)",
         ]
         for name in phase.inputs:
             lines.append(f"  input:       {run.store.path(name)}")
@@ -496,12 +510,13 @@ class Orchestrator:
         from core import pricing
         from core.repo import cost as cost_repo
 
-        usd, source = pricing.price_usage(usage, engine=run.engine_name)
+        usd, source = pricing.price_usage(usage, run.user_id, engine=run.engine_name)
         tokens_in = getattr(usage, "tokens_in", 0) or 0
         tokens_out = getattr(usage, "tokens_out", 0) or 0
         if not (tokens_in or tokens_out or usd):
             return 0.0, 0, 0
         cost_repo.record(
+            run.user_id,
             engine=run.engine_name, model=getattr(usage, "model", "") or "",
             tokens_in=tokens_in, tokens_out=tokens_out,
             cache_read=getattr(usage, "cache_read", 0) or 0,
@@ -536,12 +551,13 @@ class Orchestrator:
 
     def _report_path(self, run: _ActiveRun) -> Path:
         from core.paths import reports_dir
-        reports_dir().mkdir(parents=True, exist_ok=True)
-        return reports_dir() / f"{run.id}-{run.mode}.xlsx"
+        d = reports_dir(run.user_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{run.id}-{run.mode}.xlsx"
 
     def _scan_id(self, run: _ActiveRun) -> int | None:
         from core.repo import runs as runs_repo
-        return runs_repo.scan_id_for_run(run.id)
+        return runs_repo.scan_id_for_run(run.user_id, run.id)
 
     def _update_scan(self, run: _ActiveRun) -> None:
         from core.models import utcnow
@@ -557,7 +573,7 @@ class Orchestrator:
         jobs_new = jobs_repo.counts_for_scan(scan_id)["new"] if scan_id else 0
 
         runs_repo.update_scan(
-            run.id,
+            run.user_id, run.id,
             ended_at=utcnow(),
             jobs_raw=run.store.count("raw"),
             jobs_after_filter=run.store.count("filtered"),
@@ -568,7 +584,7 @@ class Orchestrator:
         )
         # Jobs whose deadline passed while this run was going are stale from now on.
         with contextlib.suppress(Exception):
-            jobs_repo.mark_stale()
+            jobs_repo.mark_stale(run.user_id)
 
     def _summary(self, run: _ActiveRun, failed: list[str]) -> str:
         parts = [
@@ -639,7 +655,7 @@ class Orchestrator:
             await asyncio.sleep(0.3)
 
     # -- subscriptions --------------------------------------------------- #
-    def subscribe(self, run_id: str, after_seq: int = 0) -> asyncio.Queue:
+    def subscribe(self, user_id: int, run_id: str, after_seq: int = 0) -> asyncio.Queue:
         """Queue of events for `run_id`, replaying history from `after_seq` first."""
         from core.repo import runs as runs_repo
 
@@ -647,15 +663,15 @@ class Orchestrator:
         for event in runs_repo.events(run_id, after_seq=after_seq):
             q.put_nowait(event)
 
-        run = self.active
+        run = self.active.get(user_id)
         if run is not None and run.id == run_id:
             run.subscribers.add(q)
         else:
             q.put_nowait(None)  # finished run: history only, then end the stream
         return q
 
-    def unsubscribe(self, run_id: str, q: asyncio.Queue) -> None:
-        run = self.active
+    def unsubscribe(self, user_id: int, run_id: str, q: asyncio.Queue) -> None:
+        run = self.active.get(user_id)
         if run is not None and run.id == run_id:
             run.subscribers.discard(q)
 
@@ -687,11 +703,12 @@ class Orchestrator:
                 os.environ[key] = value
 
     # -- status ---------------------------------------------------------- #
-    def is_busy(self) -> bool:
-        return self.active is not None
+    def is_busy(self, user_id: int) -> bool:
+        return user_id in self.active
 
-    def active_run_id(self) -> str | None:
-        return self.active.id if self.active else None
+    def active_run_id(self, user_id: int) -> str | None:
+        run = self.active.get(user_id)
+        return run.id if run else None
 
 
 # module-level singleton — one orchestrator per service process

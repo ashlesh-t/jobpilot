@@ -19,6 +19,7 @@ safe and runs automatically on the next `jobpilot start`/`serve`, no manual step
 from __future__ import annotations
 
 from alembic import op
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 revision = "0002_bypass_permissions"
@@ -30,11 +31,19 @@ depends_on = None
 def upgrade() -> None:
     from core.models import Setting
 
+    # Queried by key alone (not session.get, which needs the full PK) so this keeps
+    # working whether Setting's primary key is `key` alone (as of this revision's
+    # original release) or `(user_id, key)` (from 0004 onward) — a brand-new install
+    # runs every revision in sequence against whatever core.models looks like today.
     session = Session(bind=op.get_bind())
     try:
-        row = session.get(Setting, "engine")
-        if row and isinstance(row.value, dict) and row.value.get("permission_mode") == "acceptEdits":
-            row.value = {**row.value, "permission_mode": "bypassPermissions"}
+        rows = session.scalars(select(Setting).where(Setting.key == "engine")).all()
+        changed = False
+        for row in rows:
+            if isinstance(row.value, dict) and row.value.get("permission_mode") == "acceptEdits":
+                row.value = {**row.value, "permission_mode": "bypassPermissions"}
+                changed = True
+        if changed:
             session.commit()
     finally:
         session.close()

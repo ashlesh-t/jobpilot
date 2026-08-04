@@ -1,4 +1,9 @@
-"""Runs / phases / events repository — the durable backing for the live run view."""
+"""Runs / phases / events repository — the durable backing for the live run view.
+
+`Phase` and `RunEvent` carry no `user_id` of their own — they hang off `run_id`, and a
+run already belongs to exactly one user, so scoping the parent `Run`/`Scan` lookups is
+what protects them. Phase/event functions here take `run_id` alone, same as before.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -15,7 +20,11 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def new_run_id() -> str:
-    """Second-granularity UTC stamp, uniquified if a run already exists in that second."""
+    """Second-granularity UTC stamp, uniquified if a run already exists in that second.
+
+    Run ids are global (not per-user) — they're timestamp-derived, so collisions are
+    only possible across concurrent runs regardless of who owns them.
+    """
     base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     with session_scope() as s:
         if s.get(Run, base) is None:
@@ -29,25 +38,25 @@ def new_run_id() -> str:
 # --------------------------------------------------------------------------- #
 # Runs
 # --------------------------------------------------------------------------- #
-def create(run_id: str, *, mode: str, engine: str, phase_keys: list[str],
+def create(user_id: int, run_id: str, *, mode: str, engine: str, phase_keys: list[str],
            trigger: str = "manual", slot_name: str = "") -> dict:
     with session_scope() as s:
-        run = Run(id=run_id, mode=mode, engine=engine, trigger=trigger,
+        run = Run(id=run_id, user_id=user_id, mode=mode, engine=engine, trigger=trigger,
                   slot_name=slot_name, status=RunStatus.pending.value)
         s.add(run)
         for i, key in enumerate(phase_keys):
             s.add(Phase(run_id=run_id, phase_key=key, position=i,
                         status=PhaseStatus.pending.value))
-        s.add(Scan(run_id=run_id, mode=mode, engine=engine))
+        s.add(Scan(run_id=run_id, user_id=user_id, mode=mode, engine=engine))
         s.flush()
         return to_dict(run)
 
 
-def set_status(run_id: str, status: str, *, error: str = "", summary: str | None = None,
+def set_status(user_id: int, run_id: str, status: str, *, error: str = "", summary: str | None = None,
                ended: bool = False) -> None:
     with session_scope() as s:
         run = s.get(Run, run_id)
-        if run is None:
+        if run is None or run.user_id != user_id:
             return
         run.status = status
         if error:
@@ -79,10 +88,10 @@ def to_dict(run: Run, *, with_phases: bool = True) -> dict:
     return d
 
 
-def get(run_id: str) -> dict | None:
+def get(user_id: int, run_id: str) -> dict | None:
     with session_scope() as s:
         run = s.get(Run, run_id)
-        if run is None:
+        if run is None or run.user_id != user_id:
             return None
         d = to_dict(run)
         scan = s.scalar(select(Scan).where(Scan.run_id == run_id))
@@ -90,25 +99,31 @@ def get(run_id: str) -> dict | None:
         return d
 
 
-def active() -> dict | None:
+def active(user_id: int) -> dict | None:
     with session_scope() as s:
         run = s.scalar(
             select(Run)
-            .where(Run.status.in_([RunStatus.pending.value, RunStatus.running.value,
+            .where(Run.user_id == user_id,
+                   Run.status.in_([RunStatus.pending.value, RunStatus.running.value,
                                    RunStatus.waiting_network.value]))
             .order_by(Run.started_at.desc()))
         return to_dict(run) if run else None
 
 
-def history(limit: int = 50, offset: int = 0) -> list[dict]:
+def history(user_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
     with session_scope() as s:
         runs = s.scalars(
-            select(Run).order_by(Run.started_at.desc()).offset(offset).limit(limit)).all()
+            select(Run).where(Run.user_id == user_id)
+            .order_by(Run.started_at.desc()).offset(offset).limit(limit)).all()
         return [to_dict(r) for r in runs]
 
 
 def reset_orphans() -> int:
-    """Mark runs left 'running' by a crash or restart as errored. Called at startup."""
+    """Mark runs left 'running' by a crash or restart as errored. Called at startup.
+
+    Instance-wide maintenance, not a per-user action — every account's stuck runs get
+    cleaned up when the service comes back up, so this deliberately has no user_id.
+    """
     with session_scope() as s:
         stuck = s.scalars(select(Run).where(
             Run.status.in_([RunStatus.running.value, RunStatus.pending.value]))).all()
@@ -277,21 +292,21 @@ def scan_to_dict(scan: Scan) -> dict:
     }
 
 
-def scan_for_run(run_id: str) -> dict | None:
+def scan_for_run(user_id: int, run_id: str) -> dict | None:
     with session_scope() as s:
-        scan = s.scalar(select(Scan).where(Scan.run_id == run_id))
+        scan = s.scalar(select(Scan).where(Scan.run_id == run_id, Scan.user_id == user_id))
         return scan_to_dict(scan) if scan else None
 
 
-def scan_id_for_run(run_id: str) -> int | None:
+def scan_id_for_run(user_id: int, run_id: str) -> int | None:
     with session_scope() as s:
-        scan = s.scalar(select(Scan).where(Scan.run_id == run_id))
+        scan = s.scalar(select(Scan).where(Scan.run_id == run_id, Scan.user_id == user_id))
         return scan.id if scan else None
 
 
-def update_scan(run_id: str, **fields: Any) -> None:
+def update_scan(user_id: int, run_id: str, **fields: Any) -> None:
     with session_scope() as s:
-        scan = s.scalar(select(Scan).where(Scan.run_id == run_id))
+        scan = s.scalar(select(Scan).where(Scan.run_id == run_id, Scan.user_id == user_id))
         if scan is None:
             return
         for k, v in fields.items():
@@ -299,7 +314,8 @@ def update_scan(run_id: str, **fields: Any) -> None:
                 setattr(scan, k, v)
 
 
-def scans(limit: int = 50) -> list[dict]:
+def scans(user_id: int, limit: int = 50) -> list[dict]:
     with session_scope() as s:
-        rows = s.scalars(select(Scan).order_by(Scan.started_at.desc()).limit(limit)).all()
+        rows = s.scalars(select(Scan).where(Scan.user_id == user_id)
+                         .order_by(Scan.started_at.desc()).limit(limit)).all()
         return [scan_to_dict(x) for x in rows]

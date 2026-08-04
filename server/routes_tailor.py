@@ -4,13 +4,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core import tailoring  # noqa: E402
 from core.repo import jobs as jobs_repo  # noqa: E402
 from core.repo import profiles as profiles_repo  # noqa: E402
@@ -52,28 +53,28 @@ JOB DESCRIPTION:
 
 
 @router.get("")
-async def list_tailored():
+async def list_tailored(user: dict = Depends(get_current_user)):
     from core import backends
 
     has_tectonic = tailoring.has_tectonic()
-    return {"items": tailored_repo.list_all(), "count": tailored_repo.count(),
+    return {"items": tailored_repo.list_all(user["id"]), "count": tailored_repo.count(user["id"]),
             "tectonic": has_tectonic,
             # Shown in the "no PDF compiler" card so the fix is one copyable line.
             "tectonic_hints": [] if has_tectonic else backends.tectonic_install_hints()}
 
 
 @router.get("/{tailored_id}")
-async def get_tailored(tailored_id: int):
-    record = tailored_repo.get(tailored_id)
+async def get_tailored(tailored_id: int, user: dict = Depends(get_current_user)):
+    record = tailored_repo.get(user["id"], tailored_id)
     if record is None:
         raise HTTPException(status_code=404, detail="not found")
-    record["files"] = tailoring.list_folder(record["folder_name"])
+    record["files"] = tailoring.list_folder(user["id"], record["folder_name"])
     return record
 
 
 @router.get("/{tailored_id}/download/{kind}")
-async def download(tailored_id: int, kind: str):
-    record = tailored_repo.get(tailored_id)
+async def download(tailored_id: int, kind: str, user: dict = Depends(get_current_user)):
+    record = tailored_repo.get(user["id"], tailored_id)
     if record is None:
         raise HTTPException(status_code=404, detail="not found")
     path = Path(record["pdf_path"] if kind == "pdf" else record["tex_path"] or "")
@@ -88,41 +89,42 @@ async def download(tailored_id: int, kind: str):
 
 
 @router.delete("/{tailored_id}")
-async def delete_tailored(tailored_id: int):
-    if not tailored_repo.remove(tailored_id):
+async def delete_tailored(tailored_id: int, user: dict = Depends(get_current_user)):
+    if not tailored_repo.remove(user["id"], tailored_id):
         raise HTTPException(status_code=404, detail="not found")
-    return {"ok": True, "items": tailored_repo.list_all()}
+    return {"ok": True, "items": tailored_repo.list_all(user["id"])}
 
 
 @router.post("/jobs/{job_id}")
-async def tailor_for_job(job_id: str):
+async def tailor_for_job(job_id: str, user: dict = Depends(get_current_user)):
     """Rewrite the active resume for one job.
 
     Synchronous by design: it takes seconds, and a background task would need its own
     progress surface for no real benefit.
     """
-    job = jobs_repo.get(job_id)
+    job = jobs_repo.get(user["id"], job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
 
-    profile = profiles_repo.current()
+    profile = profiles_repo.current(user["id"])
     if not profile:
         raise HTTPException(
             status_code=409,
             detail="No profile yet — upload a resume and build your profile first.")
 
-    base = resumes_repo.active()
+    base = resumes_repo.active(user["id"])
     if base is None:
         raise HTTPException(status_code=409, detail="No active resume to tailor from.")
 
     jd_skills = list(job.get("matched_skills") or []) + list(job.get("missing_skills") or [])
-    engine_name = settings_repo.engine_config()["provider"]
+    engine_name = settings_repo.engine_config(user["id"])["provider"]
 
-    tex_source, cost, detail = await _generate(job, profile, engine_name)
+    tex_source, cost, detail = await _generate(user["id"], job, profile, engine_name)
     if tex_source is None:
         raise HTTPException(status_code=502, detail=detail)
 
     record = tailoring.write_result(
+        user_id=user["id"],
         job_id=job_id,
         company=job.get("company", ""),
         full_name=profile.get("name", ""),
@@ -136,7 +138,8 @@ async def tailor_for_job(job_id: str):
     return record
 
 
-async def _generate(job: dict, profile: dict, engine_name: str) -> tuple[str | None, float, str]:
+async def _generate(user_id: int, job: dict, profile: dict,
+                    engine_name: str) -> tuple[str | None, float, str]:
     """Ask the agent for the tailored LaTeX. Returns (source, usd, detail)."""
     import json
     import re
@@ -146,7 +149,7 @@ async def _generate(job: dict, profile: dict, engine_name: str) -> tuple[str | N
     from core.repo import cost as cost_repo
 
     try:
-        engine = engines.get_engine(engine_name)
+        engine = engines.get_engine(engine_name, user_id=user_id)
         ok, reason = engine.available()
         if not ok:
             return None, 0.0, f"The {engine_name} backend isn't ready: {reason}"
@@ -172,8 +175,9 @@ async def _generate(job: dict, profile: dict, engine_name: str) -> tuple[str | N
 
     usd = 0.0
     if result.usage:
-        usd, source = pricing.price_usage(result.usage, engine=engine_name)
+        usd, source = pricing.price_usage(result.usage, user_id, engine=engine_name)
         cost_repo.record(
+            user_id,
             engine=engine_name, model=getattr(result.usage, "model", "") or "",
             tokens_in=result.usage.tokens_in, tokens_out=result.usage.tokens_out,
             usd=usd, source=source, kind="tailor", phase_key="tailor",
