@@ -26,11 +26,14 @@ def get_notifier(name: str) -> Notifier:
     return cls()
 
 
-def list_notifiers() -> list[dict]:
+def list_notifiers(user_id: int | None = None) -> list[dict]:
+    """`user_id` set (the in-process server/doctor.py path) reads that account's own
+    secrets; unset (the subprocess delivery path, `JOBPILOT_USER_ID` env-scoped) keeps
+    each Notifier's own default resolution unchanged."""
     out = []
     for name, cls in _REGISTRY.items():
         n = cls()
-        ok, reason = n.available()
+        ok, reason = n.available(user_id)
         out.append({"name": name, "label": n.label, "available": ok, "reason": reason})
     return out
 
@@ -43,7 +46,7 @@ def enabled_notifiers(channels: list[str]) -> list[Notifier]:
             n = get_notifier(name)
         except ValueError:
             continue
-        if n.available()[0]:
+        if n.available(None)[0]:
             result.append(n)
     return result
 

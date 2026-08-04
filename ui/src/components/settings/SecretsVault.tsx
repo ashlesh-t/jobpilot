@@ -178,13 +178,15 @@ function SecretRow({ secret }: { secret: SecretEntry }) {
   )
 }
 
-export function SecretsVault() {
+export function SecretsVault({ groups }: { groups?: string[] } = {}) {
   const { data: secrets, isLoading } = useSecrets()
 
   const grouped = (secrets ?? []).reduce<Record<string, SecretEntry[]>>((acc, secret) => {
     ;(acc[secret.group] ??= []).push(secret)
     return acc
   }, {})
+
+  const order = groups ?? GROUP_ORDER
 
   return (
     <Card
@@ -203,7 +205,7 @@ export function SecretsVault() {
         <SkeletonRows rows={5} />
       ) : (
         <div className="space-y-6">
-          {GROUP_ORDER.filter((g) => grouped[g]?.length).map((group) => (
+          {order.filter((g) => grouped[g]?.length).map((group) => (
             <section key={group}>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
                 {GROUP_TITLES[group] ?? group}

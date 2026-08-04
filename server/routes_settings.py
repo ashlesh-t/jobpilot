@@ -3,7 +3,8 @@
 Credential rule, enforced here: a secret's value is **never** included in a list
 response. `GET /api/secrets` returns presence plus a mask; the plaintext is only ever
 returned by the explicit `POST /api/secrets/{key}/reveal`, which the UI puts behind a
-confirmation. Values are written through the OS keyring and never touch the database.
+confirmation. Values are encrypted at rest per-account (core/secrets.py, core/crypto.py)
+— never the OS keyring, never plaintext in the database.
 """
 from __future__ import annotations
 
@@ -104,8 +105,8 @@ async def put_secret(key: str, req: SecretValue, user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail=f"unknown credential {key!r}")
     if not req.value.strip():
         raise HTTPException(status_code=400, detail="value cannot be empty")
-    backend = secrets_lib.set(user["id"], key, req.value.strip())
-    return {"key": key, "stored_in": backend, "masked": secrets_lib.mask(req.value.strip())}
+    secrets_lib.set(user["id"], key, req.value.strip())
+    return {"key": key, "stored_in": "database", "masked": secrets_lib.mask(req.value.strip())}
 
 
 @router.post("/secrets/{key}/reveal")
@@ -220,6 +221,63 @@ def _test_credential(user_id: int, key: str) -> tuple[bool, str]:
         return False, f"Adzuna returned HTTP {r.status_code}"
 
     return True, "stored"
+
+
+# --------------------------------------------------------------------------- #
+# QR codes — scan-to-open for a setup URL, same intent as jobpilot/tui/theme.py::qr()
+# but rendered for a browser instead of a terminal.
+# --------------------------------------------------------------------------- #
+@router.get("/qr")
+async def qr_code(data: str, user: dict = Depends(get_current_user)):
+    """SVG QR code of `data` (a URL) — no Pillow dependency (unlike the qrcode
+    package's default PIL image factory), so this doesn't need a new dependency."""
+    import qrcode
+    import qrcode.image.svg
+    from fastapi.responses import Response
+
+    if not data or len(data) > 2000:
+        raise HTTPException(status_code=400, detail="data must be a non-empty URL under 2000 chars")
+    img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, border=1)
+    from io import BytesIO
+    buf = BytesIO()
+    img.save(buf)
+    return Response(content=buf.getvalue(), media_type="image/svg+xml")
+
+
+# --------------------------------------------------------------------------- #
+# Telegram chat-id auto-capture — single-shot poll the wizard calls every ~2s while
+# showing the bot's QR code, mirroring the old CLI's _poll_telegram_chat_id loop
+# (jobpilot/tui/steps.py, pre-multi-user) but driven client-side instead of one long
+# server-side block, which fits a stateless HTTP request better.
+# --------------------------------------------------------------------------- #
+@router.post("/secrets/TELEGRAM_BOT_TOKEN/link-chat")
+async def link_telegram_chat(user: dict = Depends(get_current_user)):
+    token = secrets_lib.get(user["id"], "TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise HTTPException(status_code=400, detail="set the bot token first")
+
+    chat_id = _poll_telegram_chat_id(token)
+    if chat_id is None:
+        return {"found": False}
+
+    secrets_lib.set(user["id"], "TELEGRAM_CHAT_ID", chat_id)
+    return {"found": True, "chat_id": chat_id}
+
+
+def _poll_telegram_chat_id(token: str) -> str | None:
+    try:
+        import requests
+        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                         params={"timeout": 0, "limit": 10}, timeout=10)
+        result = r.json().get("result") or []
+    except Exception:  # noqa: BLE001
+        return None
+    for update in reversed(result):
+        for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+            chat = (update.get(key) or {}).get("chat")
+            if chat and chat.get("id") is not None:
+                return str(chat["id"])
+    return None
 
 
 # --------------------------------------------------------------------------- #

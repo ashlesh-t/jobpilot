@@ -336,7 +336,7 @@ async def get_engines(user: dict = Depends(get_current_user)):
 @app.get("/notifiers")
 async def get_notifiers(user: dict = Depends(get_current_user)):
     import notify  # noqa
-    return {"notifiers": notify.list_notifiers()}
+    return {"notifiers": notify.list_notifiers(user_id=user["id"])}
 
 
 @app.post("/secrets")
@@ -352,7 +352,7 @@ async def save_discord(req: DiscordRequest, user: dict = Depends(get_current_use
     secrets_lib.set(user["id"], "DISCORD_WEBHOOK_URL", req.webhook_url)
     import notify  # noqa
     n = notify.get_notifier("discord")
-    ok, reason = n.available()
+    ok, reason = n.available(user["id"])
     if not ok:
         return {"ok": False, "error": reason}
     try:

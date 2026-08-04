@@ -135,18 +135,18 @@ def _check_tectonic() -> dict:
                 "not installed — resume tailoring falls back to DOCX")
 
 
-def _check_notifiers() -> list[dict]:
+def _check_notifiers(user_id: int) -> list[dict]:
     import notify  # noqa
     rows = []
-    for info in notify.list_notifiers():
+    for info in notify.list_notifiers(user_id=user_id):
         status = "ok" if info["available"] else "warn"
         rows.append(_row(info["label"], "notify", status, info["reason"] or "ready"))
     return rows
 
 
-def _check_apify() -> dict:
-    from jp_secrets import get_secret_optional  # noqa
-    token = get_secret_optional("APIFY_TOKEN")
+def _check_apify(user_id: int) -> dict:
+    from core import secrets
+    token = secrets.get(user_id, "APIFY_TOKEN")
     if not token:
         return _row("Apify", "paid-sources", "warn", "APIFY_TOKEN not set — native-only runs")
     try:
@@ -160,10 +160,10 @@ def _check_apify() -> dict:
         return _row("Apify", "paid-sources", "warn", f"could not verify: {exc}")
 
 
-def _check_adzuna() -> dict:
-    from jp_secrets import get_secret_optional  # noqa
-    app_id = get_secret_optional("ADZUNA_APP_ID")
-    app_key = get_secret_optional("ADZUNA_APP_KEY")
+def _check_adzuna(user_id: int) -> dict:
+    from core import secrets
+    app_id = secrets.get(user_id, "ADZUNA_APP_ID")
+    app_key = secrets.get(user_id, "ADZUNA_APP_KEY")
     if not app_id or not app_key:
         return _row("Adzuna", "source", "warn", "not configured — skipped (optional)")
     try:
@@ -223,9 +223,9 @@ def run_doctor(user_id: int, live: bool = False) -> dict:
         ("Database", _check_database),
         ("Profile", lambda: _check_profile_and_resume(user_id)),
         ("Engines", _check_engines),
-        ("Notifiers", _check_notifiers),
-        ("Apify", lambda: [_check_apify()]),
-        ("Adzuna", lambda: [_check_adzuna()]),
+        ("Notifiers", lambda: _check_notifiers(user_id)),
+        ("Apify", lambda: [_check_apify(user_id)]),
+        ("Adzuna", lambda: [_check_adzuna(user_id)]),
         ("LaTeX", lambda: [_check_tectonic()]),
         ("Telegram channels", lambda: [_check_telegram_scraper()]),
     ):
