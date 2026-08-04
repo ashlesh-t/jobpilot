@@ -33,7 +33,12 @@ export function useTailored() {
   return useQuery({
     queryKey: ['tailored'],
     queryFn: () =>
-      api.get<{ items: TailoredResume[]; count: number; tectonic: boolean }>('/api/tailored'),
+      api.get<{
+        items: TailoredResume[]
+        count: number
+        tectonic: boolean
+        tectonic_hints?: string[]
+      }>('/api/tailored'),
   })
 }
 

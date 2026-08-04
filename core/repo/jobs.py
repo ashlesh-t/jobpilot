@@ -312,7 +312,16 @@ def get(job_id: str) -> dict | None:
              "ats_before": t.ats_before, "ats_after": t.ats_after, "status": t.status}
             for t in tail
         ]
-        return d
+        company = row.company
+
+    # Each of these manages its own session_scope() — separate, lightweight reads,
+    # not nested in the one above. Lets JobDetail's existing useJob hook pick up both
+    # for free, with no new read endpoint.
+    from . import contacts as contacts_repo
+    from . import referrals as referrals_repo
+    d["contacts"] = contacts_repo.for_company(company)
+    d["referrals"] = referrals_repo.for_job(job_id)
+    return d
 
 
 def facets() -> dict:

@@ -4,7 +4,7 @@
 # JobPilot — Claude Code plugin manifest
 name = "jobpilot"
 display_name = "JobPilot"
-version = "2.0.0"
+version = "2.1.0"
 description = "Automated job-hunt pipeline: scrape -> score -> notify via Telegram"
 author = "Ashlesh"
 license = "MIT"
@@ -27,8 +27,28 @@ name = "jobpilot-clear"
 path = "skills/jobpilot-clear"
 
 [[skills]]
-name = "resume-validate"
-path = "skills/resume-validate"
+name = "job-feedback"
+path = "skills/job-feedback"
+
+[[skills]]
+name = "job-phase-discover"
+path = "skills/job-phase-discover"
+
+[[skills]]
+name = "job-phase-relevance"
+path = "skills/job-phase-relevance"
+
+[[skills]]
+name = "job-phase-score"
+path = "skills/job-phase-score"
+
+[[skills]]
+name = "job-phase-intel"
+path = "skills/job-phase-intel"
+
+[[skills]]
+name = "job-phase-salary"
+path = "skills/job-phase-salary"
 
 # Slash command -> skill mapping
 [commands]
@@ -36,6 +56,12 @@ job-setup = "skills/job-setup"
 job-search = "skills/job-search"
 job-tailor = "skills/job-tailor"
 jobpilot-clear = "skills/jobpilot-clear"
+job-feedback = "skills/job-feedback"
+job-phase-discover = "skills/job-phase-discover"
+job-phase-relevance = "skills/job-phase-relevance"
+job-phase-score = "skills/job-phase-score"
+job-phase-intel = "skills/job-phase-intel"
+job-phase-salary = "skills/job-phase-salary"
 
 [install_instructions]
 # Replace <USERNAME> with your GitHub username before publishing.

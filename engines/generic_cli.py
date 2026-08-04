@@ -22,7 +22,14 @@ import shlex
 import shutil
 from pathlib import Path
 
-from .base import EventCB, RunEngine, RunEvent, RunResult, Usage
+from .base import (
+    EventCB,
+    RunEngine,
+    RunEvent,
+    RunResult,
+    SUBPROCESS_STREAM_LIMIT,
+    Usage,
+)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
@@ -102,6 +109,7 @@ class GenericCliEngine(RunEngine):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=SUBPROCESS_STREAM_LIMIT,
             )
         except OSError as exc:
             msg = f"could not start {cmd[0]}: {exc}"

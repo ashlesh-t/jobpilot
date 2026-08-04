@@ -113,9 +113,10 @@ class FakeEngine:
 
 @pytest.fixture()
 def fake_engine(monkeypatch):
-    holder = {"engine": FakeEngine()}
+    holder = {"engine": FakeEngine(), "kwargs": None}
 
     def _get_engine(name=None, **kwargs):
+        holder["kwargs"] = kwargs
         return holder["engine"]
 
     import engines
@@ -138,8 +139,27 @@ def test_real_registry_is_ordered_and_consistent():
         assert phase.kind in ("python", "llm")
         if phase.kind == "llm":
             assert phase.skill, f"{phase.key} is an llm phase with no skill"
+            assert phase.model_tier in ("fast", "reasoning")
         else:
             assert phase.script, f"{phase.key} is a python phase with no script"
+
+
+def test_salary_is_locked_to_the_fast_tier():
+    """Explicit product requirement: salary research is simple lookup work, so it
+    always runs on the fast tier and is never user-configurable."""
+    from orchestrator import phases as real
+
+    salary = real.BY_KEY["salary"]
+    assert salary.model_tier == "fast"
+    assert salary.model_locked is True
+
+
+def test_discover_prefers_the_fast_tier():
+    """Mostly WebFetch/WebSearch calls with light filtering — no need for a reasoning
+    model by default (the user can still opt into one per phase)."""
+    from orchestrator import phases as real
+
+    assert real.BY_KEY["discover"].model_tier == "fast"
 
 
 def test_every_llm_phase_has_a_skill_file():
@@ -504,11 +524,52 @@ async def test_llm_program_pins_the_run_paths(pipeline, fake_engine):
     await _drain(orch, started["id"])
 
     program = engine.calls[0]
-    assert program.startswith("/job-phase-score")
+    assert program.startswith("# Phase: ATS scoring")
+    assert "---" not in program.splitlines()[0]  # frontmatter stripped — see _skill_body
     assert started["id"] in program
     assert "filtered.json" in program        # its input
     assert "scored.json" in program          # its output
     assert "do not run any later phase" in program.lower()
+
+
+async def test_llm_phase_model_defaults_to_its_tier(pipeline, fake_engine):
+    """The 'score' test phase defaults to model_tier='reasoning' — with no per-phase
+    override configured, it should resolve to claude_code's reasoning-tier model."""
+    orch = Orchestrator()
+    started = await orch.start()
+    await _drain(orch, started["id"])
+
+    assert fake_engine["kwargs"]["model"] == "sonnet"
+
+
+async def test_llm_phase_model_override_is_honoured(pipeline, fake_engine):
+    """An explicit per-phase choice (including the opt-in-only 'max'/Opus tier) wins
+    over the tier default — Opus must never be picked *by default*, but the user can
+    still choose it deliberately, phase by phase."""
+    from core.repo import settings as settings_repo
+
+    settings_repo.set_pipeline_phase_config({"score": {"enabled": True, "model": "opus"}})
+
+    orch = Orchestrator()
+    started = await orch.start()
+    await _drain(orch, started["id"])
+
+    assert fake_engine["kwargs"]["model"] == "opus"
+
+
+def test_no_llm_phase_program_starts_with_a_dash():
+    """A program text starting with '-' gets misread as a CLI flag by claude's
+    Commander.js parser ("unknown option") when it lands as -p's value — regression
+    guard for the SKILL.md frontmatter bug."""
+    from orchestrator import phases as real
+    from orchestrator.runner import Orchestrator
+
+    orch = Orchestrator()
+    for phase in real.PHASES:
+        if phase.kind != "llm":
+            continue
+        body = orch._skill_body(phase)
+        assert not body.startswith("-"), f"{phase.key}'s program starts with '-': {body[:20]!r}"
 
 
 async def test_orphaned_runs_are_marked_after_a_restart(store):

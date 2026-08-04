@@ -52,13 +52,18 @@ Read `config/target_companies.json`. If `"enabled"` is not `true`, skip to step 
 
 1. Keep companies matching `job_market_focus` from preferences (`india` → india/both,
    `global` → global/both, `both` → all).
-2. `WebFetch` each `careers_url` and extract roles visible without JavaScript — title,
-   location, apply URL. A blank body means an SPA-only page: log it and move on.
-3. Keep roles whose title matches any of `role_types` (case-insensitive).
-4. Set `source_board = "direct-<company_slug>"` and `has_jd: false` when there's no
+2. **Skip any company whose entry has both `ats` and `token` set** — those are covered
+   natively and for free by `scripts/scrapers/ats_boards.py` (part of the `scrape`
+   phase), with no 5-role cap and no LLM cost. WebFetching their careers page here would
+   just duplicate that work at a higher cost. Log `[careers] <Company>: skipped — covered
+   by ats_boards (<ats>)`.
+3. `WebFetch` each remaining `careers_url` and extract roles visible without JavaScript —
+   title, location, apply URL. A blank body means an SPA-only page: log it and move on.
+4. Keep roles whose title matches any of `role_types` (case-insensitive).
+5. Set `source_board = "direct-<company_slug>"` and `has_jd: false` when there's no
    description text.
-5. Cap **5 roles per company**.
-6. Log `[careers] <Company>: N roles added` or `skipped — SPA-only / 0 matches`.
+6. Cap **5 roles per company**.
+7. Log `[careers] <Company>: N roles added` or `skipped — SPA-only / 0 matches`.
 
 ## Step 2 — Targeted web search
 

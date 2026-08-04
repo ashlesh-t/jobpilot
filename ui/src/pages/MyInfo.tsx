@@ -4,9 +4,12 @@ import { CheckCircle2, CircleAlert, RefreshCw, Stethoscope, XCircle } from 'luci
 import { useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ResumeManager } from '@/components/resumes/ResumeManager'
+import { ContactsPanel } from '@/components/settings/ContactsPanel'
 import { PreferencesForm } from '@/components/settings/PreferencesForm'
 import { ProfileForm } from '@/components/settings/ProfileForm'
 import { SecretsVault } from '@/components/settings/SecretsVault'
+import { TelegramChannelsPanel } from '@/components/settings/TelegramChannelsPanel'
 import { HelpTip, PageHelp } from '@/components/ui/Help'
 import { Card, Chip, SkeletonRows, Spinner } from '@/components/ui/primitives'
 import { useDoctor } from '@/lib/hooks'
@@ -14,8 +17,11 @@ import type { DoctorRow } from '@/lib/hooks'
 
 const TABS = [
   { id: 'profile', label: 'Profile' },
+  { id: 'resumes', label: 'Resumes' },
   { id: 'preferences', label: 'Preferences' },
   { id: 'credentials', label: 'Keys & tokens' },
+  { id: 'telegram', label: 'Telegram channels' },
+  { id: 'contacts', label: 'Contacts' },
   { id: 'health', label: 'Health' },
 ] as const
 
@@ -161,8 +167,11 @@ export function MyInfoPage() {
       </div>
 
       {tab === 'profile' && <ProfileForm />}
+      {tab === 'resumes' && <ResumeManager />}
       {tab === 'preferences' && <PreferencesForm />}
       {tab === 'credentials' && <SecretsVault />}
+      {tab === 'telegram' && <TelegramChannelsPanel />}
+      {tab === 'contacts' && <ContactsPanel />}
       {tab === 'health' && <HealthPanel />}
     </>
   )

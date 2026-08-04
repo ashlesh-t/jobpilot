@@ -23,7 +23,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .base import EventCB, RunEngine, RunEvent, RunResult, Usage  # noqa: E402
+from .base import (  # noqa: E402
+    EventCB,
+    RunEngine,
+    RunEvent,
+    RunResult,
+    SUBPROCESS_STREAM_LIMIT,
+    Usage,
+)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 
@@ -33,15 +40,23 @@ class ClaudeCodeEngine(RunEngine):
     label = "Claude Code (Pro/Max subscription)"
     metered = False
 
-    def __init__(self, permission_mode: str | None = None, cli: str = "claude"):
-        # acceptEdits works with the repo allowlist; a headless scheduler may prefer
-        # "bypassPermissions" for zero prompts. Configurable via arg or env.
+    def __init__(self, permission_mode: str | None = None, cli: str = "claude",
+                model: str | None = None):
+        # Every phase runs headless (`claude -p`, no terminal, no human) and every
+        # skill's autonomy contract already forbids asking questions or blocking — so a
+        # permission prompt here can never be answered anyway. "acceptEdits" only covers
+        # file edits, leaving WebFetch/WebSearch/Bash to hang on an unanswerable prompt
+        # (e.g. the discover phase's career-page fetches). bypassPermissions is the
+        # correct default for this fully-unattended execution model, not a workaround.
         self.permission_mode = (
             permission_mode
             or os.environ.get("JOBPILOT_CLAUDE_PERMISSION_MODE")
-            or "acceptEdits"
+            or "bypassPermissions"
         )
         self.cli = cli
+        # An alias ("haiku"/"sonnet"/"opus") or a full model id — see core.model_catalog,
+        # which resolves each phase's tier to one of these before the engine is built.
+        self.model = (model or "").strip()
         self.proc: asyncio.subprocess.Process | None = None
         self._usage = Usage(source="subscription")
 
@@ -52,10 +67,24 @@ class ClaudeCodeEngine(RunEngine):
         if not exe:
             return False, f"`{self.cli}` CLI not found on PATH — install Claude Code"
         try:
+            # Pin cwd explicitly rather than inheriting the calling process's ambient
+            # one: if this service was reinstalled/upgraded while still running, its
+            # own working directory can be a now-deleted path, and a child spawned
+            # into a deleted cwd fails with a confusing, runtime-specific error
+            # (observed: Bun's own mangled "ENOENT ... ENOENT" for the `claude` CLI)
+            # instead of a clear one.
             out = subprocess.run([self.cli, "--version"], capture_output=True,
-                                 text=True, timeout=10)
+                                 text=True, timeout=10, cwd=str(REPO_DIR))
             if out.returncode != 0:
                 return False, f"`{self.cli} --version` failed: {out.stderr.strip()[:120]}"
+        except FileNotFoundError as exc:
+            if str(REPO_DIR) in str(exc):
+                return False, (
+                    f"this service's own install directory is gone ({REPO_DIR}) — it "
+                    "was probably reinstalled/upgraded while still running. Restart "
+                    "it: `jobpilot stop && jobpilot start`"
+                )
+            return False, f"`{self.cli}` not runnable: {exc}"
         except Exception as exc:  # noqa: BLE001
             return False, f"`{self.cli}` not runnable: {exc}"
         return True, ""
@@ -73,12 +102,22 @@ class ClaudeCodeEngine(RunEngine):
             on_event(RunEvent("done", "error", reason, origin="engine"))
             return RunResult(ok=False, error=reason)
 
+        # The data dir (profile, preferences, and every run's artifacts) lives outside
+        # REPO_DIR — for a pip/pipx install it's under site-packages, the data dir is
+        # under the user's home. Claude Code only trusts the cwd by default, so without
+        # --add-dir every phase fails to read/write filtered.json, preferences.json,
+        # discovered.json, etc. with a sandbox/file-access error.
+        from core.paths import jobpilot_dir
+
         cmd = [
             self.cli, "-p", program,
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", self.permission_mode,
+            "--add-dir", str(jobpilot_dir()),
         ]
+        if self.model:
+            cmd += ["--model", self.model]
         env = dict(os.environ)
         env["JOBPILOT_RUN_ID"] = run_id
 
@@ -90,13 +129,14 @@ class ClaudeCodeEngine(RunEngine):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=SUBPROCESS_STREAM_LIMIT,
         )
         # Kept on the instance so the orchestrator's stop() can reach it — in v1 the
         # handle only existed in this local scope, which made cancellation impossible.
         self.proc = proc
 
         final_text = ""
-        self._usage = Usage(source="subscription")
+        self._usage = Usage(source="subscription", model=self.model)
         assert proc.stdout is not None
         async for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").strip()

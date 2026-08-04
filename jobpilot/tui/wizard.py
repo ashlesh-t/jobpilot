@@ -15,6 +15,11 @@ def run_setup(*, non_interactive: bool = False, start_at: int = 0) -> int:
     from core.paths import ensure_dirs
     ensure_dirs()
 
+    # Step 1 reads settings, but the storage step that builds the schema is step 2.
+    # Bring the currently-resolved database up to head first so a fresh install has
+    # tables to read. Step 2 re-runs this against Postgres if the user picks it.
+    _ensure_schema()
+
     if non_interactive or not prompts.is_interactive():
         return _headless()
 
@@ -63,6 +68,27 @@ def run_setup(*, non_interactive: bool = False, start_at: int = 0) -> int:
         index += 1
 
     return 0
+
+
+def _ensure_schema() -> None:
+    """Create/upgrade the schema on the resolved DSN. Never fatal — if the saved DSN
+    points at a Postgres container that is down, fall back to SQLite so setup can run
+    and the storage step can re-provision."""
+    from core import db
+
+    try:
+        db.init_db()
+        return
+    except Exception as exc:  # noqa: BLE001
+        theme.warn(f"Saved database unreachable ({exc}); using the local SQLite file.")
+
+    try:
+        url = db.sqlite_url()
+        db.save_url(url, backend="sqlite", container="")
+        db.dispose()
+        db.init_db(url)
+    except Exception as exc:  # noqa: BLE001
+        theme.error(f"Could not prepare a database: {exc}")
 
 
 def _headless() -> int:

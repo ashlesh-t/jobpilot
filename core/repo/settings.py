@@ -57,7 +57,7 @@ DEFAULTS: dict[str, Any] = {
     "hn_max_results": 100,
     "per_source_cap": 20,
     "schedule_slots_ist": [],
-    "engine": {"provider": "claude_code", "model": "", "permission_mode": "acceptEdits"},
+    "engine": {"provider": "claude_code", "model": "", "permission_mode": "bypassPermissions"},
     "notify_channels": ["telegram"],
     "stale_after_days": 21,
     "setup_complete": False,
@@ -173,6 +173,60 @@ def engine_config() -> dict[str, Any]:
     return {
         "provider": eng.get("provider", "claude_code"),
         "model": eng.get("model", ""),
-        "permission_mode": eng.get("permission_mode", "acceptEdits"),
+        "permission_mode": eng.get("permission_mode", "bypassPermissions"),
         "command_template": eng.get("command_template", ""),
     }
+
+
+def pipeline_phase_config() -> dict[str, dict]:
+    """Every phase's {enabled, model}, defaults filled in from the phase registry.
+
+    `enabled` only matters for optional phases — the run selection always forces
+    required ones on regardless of what's stored (see `enabled_phase_keys`).
+    `model` is None unless the user picked one; the orchestrator then falls back to the
+    phase's tier default for whichever engine is active (see core.model_catalog).
+    """
+    from orchestrator import phases as P
+
+    stored = get("pipeline_phase_config", {}) or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    out: dict[str, dict] = {}
+    for phase in P.PHASES:
+        entry = stored.get(phase.key)
+        entry = entry if isinstance(entry, dict) else {}
+        out[phase.key] = {
+            "enabled": bool(entry.get("enabled", True)),
+            "model": entry.get("model") if phase.kind == "llm" else None,
+        }
+    return out
+
+
+def set_pipeline_phase_config(config: dict[str, dict]) -> dict[str, dict]:
+    """Validate and persist the pipeline editor's choices."""
+    from orchestrator import phases as P
+
+    valid_keys = {p.key for p in P.PHASES}
+    unknown = config.keys() - valid_keys  # `set` is shadowed by this module's own set()
+    if unknown:
+        raise ValueError(f"unknown phase(s): {', '.join(sorted(unknown))}")
+
+    cleaned: dict[str, dict] = {}
+    for key, entry in config.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{key}: expected an object with enabled/model")
+        cleaned[key] = {
+            "enabled": bool(entry.get("enabled", True)),
+            "model": (entry.get("model") or None),
+        }
+    set("pipeline_phase_config", cleaned, export=False)
+    return pipeline_phase_config()
+
+
+def enabled_phase_keys() -> list[str]:
+    """The phase keys a run should include: every required phase, plus whichever
+    optional ones the pipeline editor left enabled."""
+    from orchestrator import phases as P
+
+    cfg = pipeline_phase_config()
+    return [p.key for p in P.PHASES if not p.optional or cfg[p.key]["enabled"]]

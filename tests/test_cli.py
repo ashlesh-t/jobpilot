@@ -34,7 +34,7 @@ def test_parser_exposes_every_subcommand():
     assert actions, "expected a subparser group"
     names = set(actions[0].choices)
     assert names == {"setup", "start", "serve", "stop", "doctor", "view",
-                     "logs", "db", "service", "migrate"}
+                     "logs", "db", "service", "migrate", "upgrade"}
 
 
 def test_parser_defaults():
@@ -171,3 +171,84 @@ def test_setup_non_interactive_provisions_a_database(tmp_path, monkeypatch, caps
     assert "sqlite" in out
     assert (tmp_path / "cache" / "jobpilot.db").exists()
     db.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# upgrade
+# --------------------------------------------------------------------------- #
+def test_upgrade_check_on_a_checkout_never_touches_pypi(store, monkeypatch, capsys):
+    """A source install must not have a published release pulled over the top of it."""
+    monkeypatch.setattr(cli, "_install_source", lambda: ("local", "installed from /src"))
+    monkeypatch.setattr(cli, "_latest_version",
+                        lambda *a, **k: pytest.fail("PyPI must not be queried"))
+
+    args = cli.build_parser().parse_args(["upgrade", "--check"])
+    assert cli._upgrade(args) == 0
+
+    out = capsys.readouterr().out
+    assert "pipx install --force ." in out
+
+
+def test_upgrade_check_reports_a_newer_release_without_installing(store, monkeypatch,
+                                                                  capsys):
+    monkeypatch.setattr(cli, "_install_source", lambda: ("pipx", "installed with pipx"))
+    monkeypatch.setattr(cli, "_latest_version", lambda *a, **k: ("99.0.0", ""))
+    monkeypatch.setattr(cli, "_post_upgrade",
+                        lambda *a, **k: pytest.fail("--check must change nothing"))
+    monkeypatch.setattr(cli.subprocess, "call",
+                        lambda *a, **k: pytest.fail("--check must not install"))
+
+    args = cli.build_parser().parse_args(["upgrade", "--check"])
+    assert cli._upgrade(args) == 0
+    assert "99.0.0" in capsys.readouterr().out
+
+
+def test_upgrade_skips_the_installer_when_already_current(store, monkeypatch, capsys):
+    from jobpilot import __version__
+
+    monkeypatch.setattr(cli, "_install_source", lambda: ("pipx", "installed with pipx"))
+    monkeypatch.setattr(cli, "_latest_version", lambda *a, **k: (__version__, ""))
+    monkeypatch.setattr(cli.subprocess, "call",
+                        lambda *a, **k: pytest.fail("nothing to install"))
+    monkeypatch.setattr(cli, "_post_upgrade", lambda *a, **k: None)
+
+    args = cli.build_parser().parse_args(["upgrade"])
+    assert cli._upgrade(args) == 0
+    assert "Already on the latest release" in capsys.readouterr().out
+
+
+def test_upgrade_survives_an_unreachable_pypi(store, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_install_source", lambda: ("pipx", "installed with pipx"))
+    monkeypatch.setattr(cli, "_latest_version", lambda *a, **k: (None, "no network"))
+    monkeypatch.setattr(cli.subprocess, "call",
+                        lambda *a, **k: pytest.fail("nothing to install"))
+    monkeypatch.setattr(cli, "_post_upgrade", lambda *a, **k: None)
+
+    # Offline is not a failure for a plain upgrade: the local fix-ups still run.
+    args = cli.build_parser().parse_args(["upgrade"])
+    assert cli._upgrade(args) == 0
+    assert "no network" in capsys.readouterr().out
+
+
+def test_upgrade_stops_when_the_installer_fails(store, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_install_source", lambda: ("pip", "installed with pip"))
+    monkeypatch.setattr(cli, "_latest_version", lambda *a, **k: ("99.0.0", ""))
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: 1)
+    monkeypatch.setattr(cli, "_post_upgrade",
+                        lambda *a, **k: pytest.fail("must not run after a failed install"))
+
+    args = cli.build_parser().parse_args(["upgrade"])
+    assert cli._upgrade(args) == 1
+    assert "upgrade failed" in capsys.readouterr().out
+
+
+def test_post_upgrade_applies_migrations_and_exports(store, monkeypatch, capsys):
+    monkeypatch.setattr("core.tailoring.has_tectonic", lambda: True)
+
+    cli._post_upgrade(interactive=False)
+
+    out = capsys.readouterr().out
+    assert "schema up to date" in out
+    assert "preferences exported" in out
+    assert "tectonic found" in out
+    assert (store / "options" / "preferences.json").exists()

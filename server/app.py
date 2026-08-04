@@ -27,7 +27,6 @@ from sse_starlette.sse import EventSourceResponse
 
 from run_manager import manager, RunBusyError, UnknownRunError  # noqa: E402
 from scheduler import scheduler  # noqa: E402
-from telegram_auth import tg_auth  # noqa: E402
 from doctor import run_doctor  # noqa: E402
 
 def _ui_dir() -> Path:
@@ -43,6 +42,11 @@ def _ui_dir() -> Path:
 
 
 UI_DIR = _ui_dir()
+
+
+def _app_version() -> str:
+    from core.version import app_version
+    return app_version()
 
 
 @asynccontextmanager
@@ -63,6 +67,10 @@ from routes_schedule import router as schedule_router  # noqa: E402
 from routes_resumes import router as resumes_router  # noqa: E402
 from routes_tailor import router as tailor_router  # noqa: E402
 from routes_chat import router as chat_router  # noqa: E402
+from routes_about import router as about_router  # noqa: E402
+from routes_telegram_channels import router as telegram_channels_router  # noqa: E402
+from routes_contacts import router as contacts_router  # noqa: E402
+from routes_referrals import router as referrals_router  # noqa: E402
 
 app.include_router(jobs_router)
 app.include_router(settings_router)
@@ -70,6 +78,10 @@ app.include_router(schedule_router)
 app.include_router(resumes_router)
 app.include_router(tailor_router)
 app.include_router(chat_router)
+app.include_router(about_router)
+app.include_router(telegram_channels_router)
+app.include_router(contacts_router)
+app.include_router(referrals_router)
 
 
 # --------------------------------------------------------------------------- #
@@ -93,26 +105,21 @@ class SecretRequest(BaseModel):
     value: str
 
 
-class TelegramStart(BaseModel):
-    phone: str
-
-
-class TelegramCode(BaseModel):
-    token: str
-    code: str
-
-
-class TelegramPassword(BaseModel):
-    token: str
-    password: str
-
-
 class DiscordRequest(BaseModel):
     webhook_url: str
 
 
 class DoneRequest(BaseModel):
     done: bool = True
+
+
+class PhaseConfigEntry(BaseModel):
+    enabled: bool = True
+    model: str | None = None
+
+
+class PipelineRequest(BaseModel):
+    phases: dict[str, PhaseConfigEntry]
 
 
 # --------------------------------------------------------------------------- #
@@ -151,6 +158,38 @@ async def cost_daily(days: int = 30):
 async def list_phases():
     """The phase catalog the UI renders before and during a run."""
     return {"phases": manager.catalog()}
+
+
+@app.get("/models")
+async def list_models(engine: str | None = None):
+    """The selectable models for one engine (or every engine, keyed by name), used by
+    the pipeline editor's per-phase model dropdown. Each entry's `tier` says which
+    Phase.model_tier it satisfies; "max" (Opus) is opt-in only, never a tier default."""
+    from core import model_catalog
+    if engine:
+        return {"models": model_catalog.models_for(engine)}
+    return {"models": model_catalog.CATALOG}
+
+
+@app.get("/pipeline")
+async def get_pipeline():
+    """Every phase's saved {enabled, model} — what the next hunt (from the UI or the
+    scheduler) will run with. `model: null` means "use this phase's tier default for
+    whichever engine is active"."""
+    from core.repo import settings as settings_repo
+    return {"phases": settings_repo.pipeline_phase_config()}
+
+
+@app.put("/pipeline")
+async def put_pipeline(req: PipelineRequest):
+    """Save the choices built in the pipeline editor."""
+    from core.repo import settings as settings_repo
+    try:
+        saved = settings_repo.set_pipeline_phase_config(
+            {key: entry.model_dump() for key, entry in req.phases.items()})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"phases": saved}
 
 
 @app.post("/runs")
@@ -300,29 +339,6 @@ async def set_secret_endpoint(req: SecretRequest):
     return {"ok": True, "backend": backend, "key": req.key}
 
 
-# --------------------------------------------------------------------------- #
-# Schedule
-# --------------------------------------------------------------------------- #
-@app.get("/auth/telegram/status")
-async def telegram_status():
-    return tg_auth.status()
-
-
-@app.post("/auth/telegram/start")
-async def telegram_start(req: TelegramStart):
-    return await tg_auth.start(req.phone)
-
-
-@app.post("/auth/telegram/code")
-async def telegram_code(req: TelegramCode):
-    return await tg_auth.submit_code(req.token, req.code)
-
-
-@app.post("/auth/telegram/password")
-async def telegram_password(req: TelegramPassword):
-    return await tg_auth.submit_password(req.token, req.password)
-
-
 @app.post("/notify/discord")
 async def save_discord(req: DiscordRequest):
     from jp_secrets import set_secret  # noqa
@@ -387,7 +403,8 @@ async def doctor(live: bool = False):
 @app.get("/health")
 async def health():
     active = manager.active()
-    return {"ok": True, "active_run": active["id"] if active else None}
+    return {"ok": True, "active_run": active["id"] if active else None,
+            "version": _app_version()}
 
 
 # --------------------------------------------------------------------------- #

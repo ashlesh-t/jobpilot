@@ -19,8 +19,11 @@ import platform
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from . import secrets
+
+REPO_DIR = Path(__file__).resolve().parent.parent
 
 CLAUDE_INSTALL_URL = "https://claude.com/download"
 CLAUDE_NPM = "npm install -g @anthropic-ai/claude-code"
@@ -53,9 +56,11 @@ class BackendInfo:
         return d
 
 
-def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess | None:
+def _run(cmd: list[str], timeout: int = 15,
+         cwd: str | None = None) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              cwd=cwd)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -106,7 +111,18 @@ def probe_claude_code(*, deep: bool = False, cli: str = "claude") -> BackendInfo
     info.found = True
     info.extras["path"] = exe
 
-    proc = _run([cli, "--version"], timeout=15)
+    # If this process's own install directory has been removed (reinstalled/upgraded
+    # while still running), spawning any child fails with a confusing, runtime-specific
+    # error rather than a clear one — catch it here instead of guessing at "broken".
+    if not REPO_DIR.exists():
+        info.detail = (
+            f"this service's own install directory is gone ({REPO_DIR}) — it was "
+            "probably reinstalled/upgraded while still running. Restart it: "
+            "`jobpilot stop && jobpilot start`"
+        )
+        return info
+
+    proc = _run([cli, "--version"], timeout=15, cwd=str(REPO_DIR))
     if proc is None or proc.returncode != 0:
         info.detail = f"`{cli} --version` failed — the install may be broken"
         return info
@@ -330,6 +346,88 @@ def select(backend_id: str) -> dict:
     cfg["provider"] = backend_id
     settings_repo.set("engine", cfg)
     return cfg
+
+
+# --------------------------------------------------------------------------- #
+# tectonic — the LaTeX engine that turns a tailored .tex into a PDF
+# --------------------------------------------------------------------------- #
+TECTONIC_DROP_URL = "https://drop-sh.fullyjustified.net"
+TECTONIC_SITE_URL = "https://tectonic-typesetting.github.io/en-US/install.html"
+
+
+def tectonic_install_hints() -> list[str]:
+    """Package-manager commands for this machine, best guess first."""
+    system = platform.system()
+    if system == "Darwin":
+        return ["brew install tectonic"]
+    if system == "Windows":
+        return ["scoop install tectonic", "cargo install tectonic"]
+    hints = []
+    for binary, command in (("pacman", "sudo pacman -S tectonic"),
+                            ("apt", "sudo apt install tectonic"),
+                            ("dnf", "sudo dnf install tectonic"),
+                            ("zypper", "sudo zypper install tectonic")):
+        if shutil.which(binary):
+            hints.append(command)
+    hints.append("cargo install tectonic")
+    return hints
+
+
+def _local_bin() -> str:
+    return os.path.join(os.path.expanduser("~"), ".local", "bin")
+
+
+def install_tectonic() -> tuple[bool, str]:
+    """Best-effort install of the tectonic binary into ~/.local/bin.
+
+    Uses tectonic's official drop-in installer, which places a self-contained binary in
+    the working directory — no root, no system package manager, no LaTeX distribution.
+    Returns (ok, message) and never raises, mirroring `install_claude_code`.
+    """
+    if shutil.which("tectonic"):
+        return True, "already installed"
+
+    hints = "  or  ".join(tectonic_install_hints())
+
+    if platform.system() == "Windows":
+        return False, f"Install it with:  {hints}   ({TECTONIC_SITE_URL})"
+
+    target = _local_bin()
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as exc:
+        return False, f"could not create {target}: {exc}"
+
+    # Fetch the installer and run it from a file rather than piping a URL into a shell,
+    # so what executes is on disk and inspectable if this ever goes wrong.
+    try:
+        import httpx
+        script = httpx.get(TECTONIC_DROP_URL, timeout=30,
+                           follow_redirects=True).raise_for_status().text
+    except Exception as exc:  # noqa: BLE001
+        return False, (f"could not download the installer ({exc}). "
+                       f"Install it with:  {hints}")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = os.path.join(tmp, "install-tectonic.sh")
+        with open(script_path, "w") as fh:
+            fh.write(script)
+        proc = _run(["sh", script_path], timeout=600, cwd=target)
+
+    if proc is None:
+        return False, f"the installer timed out. Install it with:  {hints}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[-300:]
+        return False, f"{detail or 'the installer failed'}. Install it with:  {hints}"
+
+    if shutil.which("tectonic"):
+        return True, f"installed to {target}"
+    if os.path.exists(os.path.join(target, "tectonic")):
+        return False, (f"downloaded to {target}, but that directory is not on your PATH. "
+                       f'Add it — e.g. export PATH="$HOME/.local/bin:$PATH" in your '
+                       "shell profile — then restart JobPilot.")
+    return False, f"the installer reported success but no binary appeared in {target}"
 
 
 def environment() -> dict:

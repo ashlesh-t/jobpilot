@@ -77,6 +77,15 @@ export function useDeleteResume() {
   })
 }
 
+export function useRenameResume() {
+  const invalidate = useResumeInvalidation()
+  return useMutation({
+    mutationFn: ({ id, label }: { id: number; label: string }) =>
+      api.patch<{ resume: Resume }>(`/api/resumes/${id}`, { label }),
+    onSuccess: invalidate,
+  })
+}
+
 export function useRenameFolder() {
   const invalidate = useResumeInvalidation()
   return useMutation({

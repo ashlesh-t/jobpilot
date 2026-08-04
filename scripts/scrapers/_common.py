@@ -38,6 +38,21 @@ INDIA_OK_TOKENS = (
     "anywhere", "worldwide", "world wide", "global", "asia",
 )
 
+# Location tokens that count as "open to a US-based candidate" — major tech-hub
+# cities/states plus the same remote/anywhere/worldwide tokens INDIA_OK_TOKENS uses,
+# so a genuinely open remote posting isn't rejected just because it names no country.
+US_OK_TOKENS = (
+    # NOTE: no bare "us" token — as a substring it false-matches "austin", "belarus",
+    # "mauritius", etc. "usa"/"u.s."/"united states" are unambiguous enough to keep.
+    "usa", "u.s.", "united states", "remote", "anywhere", "worldwide",
+    "world wide", "global",
+    "new york", "san francisco", "bay area", "seattle", "austin", "boston",
+    "chicago", "los angeles", "denver", "atlanta", "washington", "dc",
+    "california", "texas", "florida", "illinois", "massachusetts", "colorado",
+    "georgia", "virginia", "north carolina", "pennsylvania", "ohio", "michigan",
+    "arizona", "nevada", "oregon", "utah", "minnesota", "new jersey",
+)
+
 
 def http_get(url, params=None, headers=None, timeout=20, retries=2):
     """GET with shared browser headers and light retry. Returns a Response or None."""
@@ -90,13 +105,15 @@ def region_ok(location_text: str, focus: str) -> bool:
     - global / both: keep everything.
     - india: keep only jobs that name an Indian city, or are remote/worldwide/anywhere.
       This stops US/EU-only remote boards from flooding an India-first search.
+    - us: same idea, gated on US_OK_TOKENS instead.
     """
-    if focus != "india":
+    if focus not in ("india", "us"):
         return True
     loc = (location_text or "").lower()
     if not loc:
         return True  # unknown location — keep, let later filters decide
-    return any(tok in loc for tok in INDIA_OK_TOKENS)
+    tokens = INDIA_OK_TOKENS if focus == "india" else US_OK_TOKENS
+    return any(tok in loc for tok in tokens)
 
 
 def build_job(*, company, role, location, jd="", url="", source,

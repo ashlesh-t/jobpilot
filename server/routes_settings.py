@@ -195,8 +195,28 @@ def _test_credential(key: str) -> tuple[bool, str]:
     if key == "GEMINI_API_KEY":
         return True, "stored (not verified — Gemini support is experimental)"
 
-    if key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
-        return True, "stored (verified when you authenticate the channel scraper)"
+    if key in ("ADZUNA_APP_ID", "ADZUNA_APP_KEY"):
+        # Needs the pair together, like TELEGRAM_CHAT_ID needs its bot token.
+        other_key = "ADZUNA_APP_KEY" if key == "ADZUNA_APP_ID" else "ADZUNA_APP_ID"
+        other = secrets_lib.get(other_key)
+        if not other:
+            return False, f"set {other_key} too — Adzuna needs both"
+        app_id = value if key == "ADZUNA_APP_ID" else other
+        app_key = value if key == "ADZUNA_APP_KEY" else other
+        try:
+            import requests
+            r = requests.get(
+                "https://api.adzuna.com/v1/api/jobs/gb/search/1",
+                params={"app_id": app_id, "app_key": app_key, "results_per_page": 1,
+                        "content-type": "application/json"},
+                timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not reach Adzuna: {exc}"
+        if r.status_code == 200:
+            return True, "credentials valid"
+        if r.status_code in (401, 403):
+            return False, "Adzuna rejected that app_id/app_key pair"
+        return False, f"Adzuna returned HTTP {r.status_code}"
 
     return True, "stored"
 

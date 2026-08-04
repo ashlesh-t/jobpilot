@@ -47,7 +47,11 @@ def extract_text(path: Path) -> str:
         try:
             from PyPDF2 import PdfReader
             reader = PdfReader(str(path))
-            return "\n".join((pg.extract_text() or "") for pg in reader.pages)
+            text = "\n".join((pg.extract_text() or "") for pg in reader.pages)
+            if text.strip():
+                return text
+            # PyPDF2 returns empty (not an error) on plenty of real resumes — the
+            # layout-aware reader below usually gets them.
         except Exception:
             pass
         try:

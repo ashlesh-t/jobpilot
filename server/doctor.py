@@ -29,6 +29,11 @@ _NATIVE_SOURCES = [
     ("internshala", {"location": "Bengaluru"}),
     ("hasjob", {}),
     ("yc_startup", {}),
+    ("himalayas", {}),
+    ("workingnomads", {}),
+    ("jobspresso", {}),
+    ("simplify_jobs", {}),
+    ("ats_boards", {}),
 ]
 
 
@@ -155,17 +160,38 @@ def _check_apify() -> dict:
         return _row("Apify", "paid-sources", "warn", f"could not verify: {exc}")
 
 
-def _check_telegram_scraper() -> dict:
-    session = jobpilot_dir() / "cache" / "telegram.session"
+def _check_adzuna() -> dict:
     from jp_secrets import get_secret_optional  # noqa
-    creds = bool(get_secret_optional("TELEGRAM_API_ID") and
-                 get_secret_optional("TELEGRAM_API_HASH"))
-    if session.exists():
-        return _row("Telegram channels", "source", "ok", "session present")
-    if creds:
-        return _row("Telegram channels", "source", "warn",
-                    "API creds set but not authenticated — run the Connections wizard")
-    return _row("Telegram channels", "source", "warn", "not configured (optional)")
+    app_id = get_secret_optional("ADZUNA_APP_ID")
+    app_key = get_secret_optional("ADZUNA_APP_KEY")
+    if not app_id or not app_key:
+        return _row("Adzuna", "source", "warn", "not configured — skipped (optional)")
+    try:
+        import requests  # noqa
+        r = requests.get("https://api.adzuna.com/v1/api/jobs/gb/search/1",
+                         params={"app_id": app_id, "app_key": app_key, "results_per_page": 1,
+                                 "content-type": "application/json"}, timeout=8)
+        if r.status_code == 200:
+            return _row("Adzuna", "source", "ok", "credentials valid")
+        return _row("Adzuna", "source", "fail", f"HTTP {r.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        return _row("Adzuna", "source", "warn", f"could not verify: {exc}")
+
+
+def _check_telegram_scraper() -> dict:
+    """Reads config/telegram_channels.json directly — no session file, no API creds,
+    no auth flow. Fetches the public t.me/s/<channel> web preview."""
+    import json
+    try:
+        cfg = json.loads((REPO_DIR / "config" / "telegram_channels.json").read_text())
+    except Exception as exc:  # noqa: BLE001
+        return _row("Telegram channels", "source", "fail", f"config unreadable: {exc}")
+    if not cfg.get("enabled", False):
+        return _row("Telegram channels", "source", "warn", "disabled in config (optional)")
+    channels = cfg.get("channels", [])
+    if not channels:
+        return _row("Telegram channels", "source", "warn", "no channels configured (optional)")
+    return _row("Telegram channels", "source", "ok", f"{len(channels)} channel(s) configured")
 
 
 def _run_source(mod_name: str, extra: dict) -> dict:
@@ -199,6 +225,7 @@ def run_doctor(live: bool = False) -> dict:
         ("Engines", _check_engines),
         ("Notifiers", _check_notifiers),
         ("Apify", lambda: [_check_apify()]),
+        ("Adzuna", lambda: [_check_adzuna()]),
         ("LaTeX", lambda: [_check_tectonic()]),
         ("Telegram channels", lambda: [_check_telegram_scraper()]),
     ):

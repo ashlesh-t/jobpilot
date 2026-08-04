@@ -34,6 +34,11 @@ class RunManager:
     async def start_run(self, *, mode: str = "auto", engine_name: str | None = None,
                         only: list[str] | None = None, skip: list[str] | None = None,
                         trigger: str = "manual", slot_name: str = "") -> dict:
+        # No explicit selection from this caller — fall back to whatever was saved in
+        # the pipeline editor, so a scheduled run respects it exactly like a manual one.
+        if only is None and skip is None:
+            from core.repo import settings as settings_repo
+            only = settings_repo.enabled_phase_keys()
         return await orchestrator.start(mode=mode, engine=engine_name, only=only,
                                         skip=skip, trigger=trigger, slot_name=slot_name)
 

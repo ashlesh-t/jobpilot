@@ -241,4 +241,11 @@
       transparent
     );
   }
+
+  /* A faint dotted grid — reads as a canvas to drop nodes on, not just a plain box. */
+  .wai-canvas-dots {
+    background-image: radial-gradient(rgb(var(--line)) 1px, transparent 1px);
+    background-size: 16px 16px;
+    background-color: rgb(var(--raised) / 0.4);
+  }
 }

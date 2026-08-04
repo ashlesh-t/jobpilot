@@ -10,6 +10,7 @@ import { NotFoundPage } from '@/pages/NotFound'
 import { ResumesPage } from '@/pages/Resumes'
 import { SchedulerPage } from '@/pages/Scheduler'
 import { SettingsPage } from '@/pages/Settings'
+import { WhoAmI } from '@/pages/WhoAmI'
 
 export const router = createBrowserRouter([
   {
@@ -25,6 +26,7 @@ export const router = createBrowserRouter([
       { path: 'me', element: <MyInfoPage /> },
       { path: 'assistant', element: <AssistantPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'whoami', element: <WhoAmI /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Sparkles,
   UserRound,
 } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
@@ -32,6 +33,7 @@ const NAV: NavItem[] = [
   { to: '/me', label: 'My Info', icon: UserRound },
   { to: '/assistant', label: 'Assistant', icon: MessageSquare },
   { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/whoami', label: 'About JobPilot', icon: Sparkles },
 ]
 
 export function Sidebar({

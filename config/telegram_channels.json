@@ -1,29 +1,14 @@
 {
   "enabled": true,
-  "_note": "Set enabled=false to skip Telegram channel scraping. Run --discover after --auth to validate and refresh this list. Channel usernames must be verified live before use — the seed list here is a starting point only. Add private channels via numeric id field: {\"id\": -1001234567890}.",
+  "_note": "Set enabled=false to skip Telegram channel scraping. Every channel here was validated live (via scripts/scrapers/telegram_channels.py::validate_channel, the public t.me/s/<channel> web preview) before being added — never guessed. Add more from the Telegram channels tab in MyInfo, or core.repo.telegram_channels.add_channel(); both reject an invalid channel immediately rather than storing it. fetch() also self-heals: a channel returning 0 matching jobs is re-validated and dropped if it's gone dead.",
   "max_messages_per_channel": 50,
   "max_age_hours": 24,
   "max_results_total": 60,
   "channels": [
-    {"username": "JobsForSoftwareEngineers", "name": "Jobs for Software Engineers", "members": 0},
-    {"username": "IndiaJobsIT",              "name": "India IT Jobs",               "members": 0},
-    {"username": "TechJobsIndia",            "name": "Tech Jobs India",             "members": 0},
-    {"username": "BangaloreJobs",            "name": "Bangalore Jobs",              "members": 0},
-    {"username": "StartupJobsIndia",         "name": "Startup Jobs India",          "members": 0},
-    {"username": "RemoteJobsIndia",          "name": "Remote Jobs India",           "members": 0},
-    {"username": "FresherJobsIndia",         "name": "Freshers Jobs India",         "members": 0},
-    {"username": "IndiaStartupJobs",         "name": "India Startup Jobs",          "members": 0},
-    {"username": "SoftwareJobsIndia",        "name": "Software Jobs India",         "members": 0},
-    {"username": "HiringIndia",              "name": "Hiring India",                "members": 0},
-    {"username": "JobsforindiA",             "name": "Jobs For India",              "members": 0},
-    {"username": "devjobsindia",             "name": "Dev Jobs India",              "members": 0},
-    {"username": "pythonJobsIndia",          "name": "Python Jobs India",           "members": 0},
-    {"username": "backendJobsIndia",         "name": "Backend Jobs India",          "members": 0},
-    {"username": "mlJobsIndia",              "name": "ML Jobs India",               "members": 0},
-    {"username": "jobsinbengaluru",          "name": "Jobs in Bengaluru",           "members": 0},
-    {"username": "hiringfreshers",           "name": "Hiring Freshers",             "members": 0},
-    {"username": "naukrijobsofficial",       "name": "Naukri Jobs Official",        "members": 0},
-    {"username": "campusJobsIndia",          "name": "Campus Jobs India",           "members": 0},
-    {"username": "freshersjobs_in",          "name": "Freshers Jobs IN",            "members": 0}
+    {"username": "getjobss", "name": "Jobs | Internships | Placement | Interviews", "members": 0},
+    {"username": "fresherjobinfo", "name": "Fresherjobinfo", "members": 0},
+    {"username": "fresheroffcampus", "name": "FresherOffCampus Official Channel", "members": 0},
+    {"username": "fresherjobsadda", "name": "Fresher Jobs Adda", "members": 0},
+    {"username": "FreshersJobsUpdates", "name": "Freshers Jobs Updates", "members": 0}
   ]
 }

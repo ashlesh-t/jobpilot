@@ -27,7 +27,7 @@ class ClaudeApiEngine(RunEngine):
     label = "Anthropic API (metered)"
     metered = True
 
-    def __init__(self, model: str | None = None, permission_mode: str = "acceptEdits"):
+    def __init__(self, model: str | None = None, permission_mode: str = "bypassPermissions"):
         # Empty → let the Agent SDK pick its default model. Set an explicit id in
         # preferences.engine.model only if you want to pin one; passing an invalid
         # id would otherwise break every run.

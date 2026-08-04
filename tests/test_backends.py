@@ -40,11 +40,28 @@ def test_claude_code_missing_cli(store, monkeypatch):
     assert "not found" in info.detail
 
 
+def test_claude_code_probe_detects_a_deleted_install_dir(store, monkeypatch):
+    """A service reinstalled/upgraded while still running ends up with its own cwd
+    pointing at a directory that no longer exists — spawning `claude --version` into
+    that then fails with a confusing, runtime-specific error (observed: Bun's own
+    mangled ENOENT) instead of a clear one. Regression guard for that failure class."""
+    from core import backends
+
+    from pathlib import Path
+
+    monkeypatch.setattr(backends.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setattr(backends, "REPO_DIR", Path("/nonexistent/deleted/jobpilot-bundle"))
+    info = backends.probe_claude_code()
+    assert info.found is True
+    assert "reinstalled/upgraded" in info.detail
+    assert "jobpilot stop && jobpilot start" in info.detail
+
+
 def test_claude_code_shallow_probe_does_not_verify_login(store, monkeypatch):
     from core import backends
 
     monkeypatch.setattr(backends.shutil, "which", lambda _: "/usr/bin/claude")
-    monkeypatch.setattr(backends, "_run", lambda cmd, timeout=15: _proc(stdout="2.1.0"))
+    monkeypatch.setattr(backends, "_run", lambda cmd, timeout=15, **kw: _proc(stdout="2.1.0"))
     info = backends.probe_claude_code(deep=False)
     assert info.found is True
     assert info.checked_deep is False
@@ -56,7 +73,7 @@ def test_claude_code_deep_probe_detects_logged_out(store, monkeypatch):
 
     monkeypatch.setattr(backends.shutil, "which", lambda _: "/usr/bin/claude")
 
-    def fake_run(cmd, timeout=15):
+    def fake_run(cmd, timeout=15, **kw):
         if "--version" in cmd:
             return _proc(stdout="2.1.0")
         return _proc(returncode=1, stderr="Error: not logged in. Run `claude login`.")
@@ -76,7 +93,7 @@ def test_claude_code_deep_probe_success(store, monkeypatch):
     monkeypatch.setattr(backends.shutil, "which", lambda _: "/usr/bin/claude")
     monkeypatch.setattr(
         backends, "_run",
-        lambda cmd, timeout=15: _proc(stdout='{"result": "ok", "is_error": false}'
+        lambda cmd, timeout=15, **kw: _proc(stdout='{"result": "ok", "is_error": false}'
                                       if "-p" in cmd else "2.1.0"))
     info = backends.probe_claude_code(deep=True)
     assert info.ready is True
@@ -88,7 +105,7 @@ def test_claude_code_probe_handles_error_payload(store, monkeypatch):
     monkeypatch.setattr(backends.shutil, "which", lambda _: "/usr/bin/claude")
     monkeypatch.setattr(
         backends, "_run",
-        lambda cmd, timeout=15: _proc(stdout='{"is_error": true, "result": "quota"}'
+        lambda cmd, timeout=15, **kw: _proc(stdout='{"is_error": true, "result": "quota"}'
                                       if "-p" in cmd else "2.1.0"))
     info = backends.probe_claude_code(deep=True)
     assert info.authenticated is False
@@ -184,6 +201,15 @@ def test_select_persists_engine_choice(store):
 
     with pytest.raises(ValueError):
         backends.select("not_a_backend")
+
+
+def test_default_permission_mode_bypasses_prompts(store):
+    """Every phase runs headless with no one able to answer a permission prompt —
+    the default must be one that never blocks on WebFetch/WebSearch/Bash, not just
+    file edits. Regression guard for the discover-phase permission-prompt failure."""
+    from core.repo import settings as settings_repo
+
+    assert settings_repo.engine_config()["permission_mode"] == "bypassPermissions"
 
 
 def test_engine_registry_lists_all_four(store):
@@ -307,3 +333,75 @@ def test_secrets_masking_never_leaks_the_middle():
     assert "abcdefghijklmnop" not in masked
     assert secrets.mask("") == ""
     assert secrets.mask("short") == "•••••"
+
+
+# --------------------------------------------------------------------------- #
+# tectonic — the optional PDF compiler
+# --------------------------------------------------------------------------- #
+def test_install_tectonic_is_a_no_op_when_already_present(monkeypatch):
+    from core import backends
+
+    monkeypatch.setattr(backends.shutil, "which", lambda name: "/usr/bin/tectonic")
+    ok, message = backends.install_tectonic()
+    assert ok and "already installed" in message
+
+
+def test_install_tectonic_reports_a_download_failure_with_a_fallback(monkeypatch, tmp_path):
+    """A dead network must produce a usable instruction, not a stack trace."""
+    from core import backends
+
+    monkeypatch.setattr(backends.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backends.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(backends, "_local_bin", lambda: str(tmp_path / "bin"))
+    monkeypatch.setattr(backends, "tectonic_install_hints", lambda: ["sudo pacman -S tectonic"])
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(
+        httpx.ConnectError("no route to host")))
+
+    ok, message = backends.install_tectonic()
+    assert ok is False
+    assert "sudo pacman -S tectonic" in message
+
+
+def test_install_tectonic_flags_a_binary_that_is_not_on_path(monkeypatch, tmp_path):
+    """Downloading into ~/.local/bin is useless if that isn't on PATH — say so."""
+    from core import backends
+
+    target = tmp_path / "bin"
+    monkeypatch.setattr(backends.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backends.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(backends, "_local_bin", lambda: str(target))
+
+    class FakeResponse:
+        text = "#!/bin/sh\nexit 0\n"
+
+        def raise_for_status(self):
+            return self
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: FakeResponse())
+
+    def fake_run(cmd, timeout=15, cwd=None):
+        (target / "tectonic").write_text("binary")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(backends, "_run", fake_run)
+
+    ok, message = backends.install_tectonic()
+    assert ok is False                     # not usable yet, so don't claim success
+    assert "not on your PATH" in message
+
+
+def test_tectonic_hints_are_platform_specific(monkeypatch):
+    from core import backends
+
+    monkeypatch.setattr(backends.platform, "system", lambda: "Darwin")
+    assert backends.tectonic_install_hints() == ["brew install tectonic"]
+
+    monkeypatch.setattr(backends.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(backends.shutil, "which",
+                        lambda name: "/usr/bin/pacman" if name == "pacman" else None)
+    hints = backends.tectonic_install_hints()
+    assert hints[0] == "sudo pacman -S tectonic"
+    assert "cargo install tectonic" in hints        # always a last resort

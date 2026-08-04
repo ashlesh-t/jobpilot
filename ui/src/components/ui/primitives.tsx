@@ -207,7 +207,9 @@ export function Dialog({
     document.addEventListener('keydown', onKey)
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    ref.current?.focus()
+    // Don't steal focus from an autoFocus field inside the dialog — child mount runs
+    // before this effect, so the input is already focused and typing should just work.
+    if (!ref.current?.contains(document.activeElement)) ref.current?.focus()
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = previousOverflow

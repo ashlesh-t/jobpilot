@@ -20,6 +20,22 @@ export interface PhaseInfo {
   always_attempt: boolean
   weight: number
   position: number
+  /** Which model tier this phase prefers ("fast" | "reasoning"), null for kind="python". */
+  model_tier: string | null
+  /** When true, the model dropdown is disabled — this phase always runs on its tier
+   *  default regardless of what's configured (see orchestrator.phases). */
+  model_locked: boolean
+}
+
+export interface ModelOption {
+  id: string
+  label: string
+  tier: string
+}
+
+export interface PhaseConfig {
+  enabled: boolean
+  model: string | null
 }
 
 export interface RunPhase {
@@ -109,6 +125,8 @@ export interface DoctorRow {
 /* -------------------------------------------------------------------------- */
 export const keys = {
   phases: ['phases'] as const,
+  pipeline: ['pipeline'] as const,
+  models: (engine?: string) => ['models', engine ?? 'all'] as const,
   runs: (limit = 50) => ['runs', limit] as const,
   run: (id: string) => ['run', id] as const,
   doctor: (live: boolean) => ['doctor', live] as const,
@@ -126,6 +144,38 @@ export function usePhaseCatalog() {
     queryFn: () => api.get<{ phases: PhaseInfo[] }>('/phases'),
     staleTime: Infinity, // the catalog only changes when JobPilot itself is upgraded
     select: (data) => data.phases,
+  })
+}
+
+/** Every phase's saved {enabled, model} — what the next hunt runs with. A phase's
+ *  `model: null` means "use this phase's tier default for whichever engine is active". */
+export function usePipelineConfig() {
+  return useQuery({
+    queryKey: keys.pipeline,
+    queryFn: () => api.get<{ phases: Record<string, PhaseConfig> }>('/pipeline'),
+    select: (data) => data.phases,
+  })
+}
+
+export function useSavePipelineConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (phases: Record<string, PhaseConfig>) =>
+      api.put<{ phases: Record<string, PhaseConfig> }>('/pipeline', { phases }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.pipeline }),
+  })
+}
+
+/** The selectable models for one engine — dynamic per provider (Claude's
+ *  haiku/sonnet/opus vs Gemini's flash/pro), used by the pipeline editor's per-phase
+ *  model dropdown. */
+export function useModels(engine: string | undefined) {
+  return useQuery({
+    queryKey: keys.models(engine),
+    queryFn: () => api.get<{ models: ModelOption[] }>(`/models${qs({ engine })}`),
+    select: (data) => data.models,
+    enabled: Boolean(engine),
+    staleTime: Infinity,
   })
 }
 

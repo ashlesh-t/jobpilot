@@ -13,6 +13,7 @@ import type { Preferences } from '@/lib/settings'
 const MARKETS = [
   { value: 'india', label: 'India-focused boards' },
   { value: 'global', label: 'Global remote boards' },
+  { value: 'us', label: 'US remote/onsite boards' },
   { value: 'both', label: 'Both' },
 ]
 

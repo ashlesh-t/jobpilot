@@ -53,8 +53,13 @@ JOB DESCRIPTION:
 
 @router.get("")
 async def list_tailored():
+    from core import backends
+
+    has_tectonic = tailoring.has_tectonic()
     return {"items": tailored_repo.list_all(), "count": tailored_repo.count(),
-            "tectonic": tailoring.has_tectonic()}
+            "tectonic": has_tectonic,
+            # Shown in the "no PDF compiler" card so the fix is one copyable line.
+            "tectonic_hints": [] if has_tectonic else backends.tectonic_install_hints()}
 
 
 @router.get("/{tailored_id}")

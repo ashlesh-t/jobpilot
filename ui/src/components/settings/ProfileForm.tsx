@@ -45,12 +45,12 @@ export function TagInput({
   return (
     <div>
       <div className="mb-2 flex flex-wrap gap-1.5">
-        {values.map((value) => (
-          <span key={value} className="chip-neutral">
+        {values.map((value, i) => (
+          <span key={`${value}-${i}`} className="chip-neutral">
             {value}
             <button
               type="button"
-              onClick={() => onChange(values.filter((v) => v !== value))}
+              onClick={() => onChange(values.filter((_, vi) => vi !== i))}
               className="text-faint hover:text-danger"
               aria-label={`Remove ${value}`}
             >
@@ -67,7 +67,7 @@ export function TagInput({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') {
+            if (e.key === 'Enter') {
               e.preventDefault()
               add()
             }

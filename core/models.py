@@ -111,6 +111,19 @@ APPLICATION_PIPELINE = [
 APPLICATION_TERMINAL = [ApplicationStatus.rejected, ApplicationStatus.ghosted]
 
 
+class ReferralStatus(str, enum.Enum):
+    """Draft-only, always — see server/routes_referrals.py. Nothing here ever sends
+    anything; this only tracks what the user did with a message they drafted."""
+    drafted = "drafted"
+    sent = "sent"
+    responded = "responded"
+    declined = "declined"
+
+
+REFERRAL_PIPELINE = [ReferralStatus.drafted, ReferralStatus.sent, ReferralStatus.responded]
+REFERRAL_TERMINAL = [ReferralStatus.declined]
+
+
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
@@ -323,6 +336,8 @@ class Job(Base):
         back_populates="job", uselist=False, cascade="all, delete-orphan")
     tailored: Mapped[list["TailoredResume"]] = relationship(
         back_populates="job", cascade="all, delete-orphan")
+    referrals: Mapped[list["Referral"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_jobs_effective_score", "effective_score"),
@@ -378,6 +393,49 @@ class TailoredResume(Base):
     __table_args__ = (
         UniqueConstraint("folder_name", name="uq_tailored_folder"),
         Index("ix_tailored_job", "job_id"),
+    )
+
+
+class Contact(Base):
+    """An HR/recruiter contact, imported from a spreadsheet or added by hand —
+    matched to jobs by company name (see core/repo/_company_match.py)."""
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    role: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)  # import|manual
+    created_at: Mapped[datetime] = _ts(default=utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_contacts_company", "company"),)
+
+
+class Referral(Base):
+    """A drafted referral-request message for one job + contact. Draft-only: nothing
+    in this codebase sends it anywhere — the user copies/edits/sends it themselves."""
+    __tablename__ = "referrals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=False)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default=ReferralStatus.drafted.value, nullable=False)
+    # [{"status": "...", "at": "ISO-8601", "note": "..."}] — same audit-trail shape as
+    # Application.status_history.
+    status_history: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    engine: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    created_at: Mapped[datetime] = _ts(default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = _ts(default=utcnow, onupdate=utcnow, nullable=False)
+
+    job: Mapped["Job"] = relationship(back_populates="referrals")
+    contact: Mapped["Contact"] = relationship()
+
+    __table_args__ = (
+        Index("ix_referrals_job", "job_id"),
+        Index("ix_referrals_contact", "contact_id"),
     )
 
 
@@ -466,4 +524,5 @@ class ChatMessage(Base):
 ALL_TABLES = [
     Setting, Profile, Resume, Run, Phase, RunEvent, Scan, Job, Application,
     TailoredResume, CostEntry, UserFeedback, UrlSecurityCache, ScheduleSlot, ChatMessage,
+    Contact, Referral,
 ]

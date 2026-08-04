@@ -148,6 +148,13 @@ def test_telegram_chat_test_requires_the_bot_token(client, fake_vault):
     assert "bot token" in body["detail"]
 
 
+def test_adzuna_test_requires_both_keys(client, fake_vault):
+    fake_vault["ADZUNA_APP_ID"] = "some-id"
+    body = client.post("/api/secrets/ADZUNA_APP_ID/test").json()
+    assert body["ok"] is False
+    assert "ADZUNA_APP_KEY" in body["detail"]
+
+
 def test_discord_test_rejects_a_non_webhook(client, fake_vault):
     fake_vault["DISCORD_WEBHOOK_URL"] = "https://example.com/hook"
     body = client.post("/api/secrets/DISCORD_WEBHOOK_URL/test").json()

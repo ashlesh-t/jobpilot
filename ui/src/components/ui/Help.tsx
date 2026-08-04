@@ -4,7 +4,7 @@
  *  so the product's whole explanatory voice is reviewable in one file. */
 import clsx from 'clsx'
 import { HelpCircle } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { helpFor } from '@/content/help'
@@ -24,8 +24,29 @@ export function HelpTip({
 }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLSpanElement>(null)
+  const tipRef = useRef<HTMLSpanElement>(null)
+  const [shift, setShift] = useState(0)
   const tipId = useId()
   const body = text ?? (id ? helpFor(id) : undefined)
+
+  // The tooltip is centered under its trigger by default — for a trigger near the
+  // edge of the screen (e.g. the last stat tile in a row) that centering pushes half
+  // the box off-screen. Nudge it back on-screen once we know its actual position.
+  useLayoutEffect(() => {
+    if (!open) {
+      setShift(0)
+      return
+    }
+    const el = tipRef.current
+    if (!el) return
+    const margin = 8
+    const rect = el.getBoundingClientRect()
+    if (rect.right > window.innerWidth - margin) {
+      setShift(window.innerWidth - margin - rect.right)
+    } else if (rect.left < margin) {
+      setShift(margin - rect.left)
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -68,10 +89,12 @@ export function HelpTip({
       </button>
       {open && (
         <span
+          ref={tipRef}
           id={tipId}
           role="tooltip"
+          style={{ transform: `translateX(calc(-50% + ${shift}px))` }}
           className={clsx(
-            'absolute left-1/2 z-40 w-64 -translate-x-1/2 rounded-lg border border-line',
+            'absolute left-1/2 z-40 w-64 max-w-[calc(100vw-1rem)] rounded-lg border border-line',
             'bg-surface px-3 py-2 text-xs font-normal leading-relaxed text-muted shadow-pop',
             side === 'top' ? 'bottom-full mb-2' : 'top-full mt-2',
           )}

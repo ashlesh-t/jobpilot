@@ -325,6 +325,8 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     async def _run_script(self, run: _ActiveRun, phase: P.Phase):
         """Run a Layer A script as a child process, streaming its output as events."""
+        from engines.base import SUBPROCESS_STREAM_LIMIT
+
         argv = [sys.executable, *(str(REPO_DIR / part) if part.endswith(".py") else part
                                   for part in phase.script)]
         argv += self._script_args(run, phase)
@@ -340,6 +342,7 @@ class Orchestrator:
             *argv, cwd=str(REPO_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            limit=SUBPROCESS_STREAM_LIMIT,
             env=env,
             start_new_session=True,  # so terminate() reaches the whole process group
         )
@@ -388,13 +391,23 @@ class Orchestrator:
     async def _run_llm(self, run: _ActiveRun, phase: P.Phase):
         """Hand one phase to the configured agent and normalize its events."""
         import engines
-
+        from core import model_catalog
         from core.repo import settings as settings_repo
 
         cfg = settings_repo.engine_config()
         kwargs: dict = {}
-        if run.engine_name == "claude_api" and cfg.get("model"):
-            kwargs["model"] = cfg["model"]
+
+        # Model choice is per-phase, not a single engine-wide setting: a phase tagged
+        # "fast" (mostly WebSearch/WebFetch — discover, salary) runs on the cheap tier
+        # by default, "reasoning" phases (relevance, score, intel) get the stronger one.
+        # model_locked phases (salary) ignore whatever the user configured and always
+        # get their tier's default — see orchestrator.phases and core.model_catalog.
+        phase_cfg = settings_repo.pipeline_phase_config().get(phase.key, {})
+        requested = None if phase.model_locked else phase_cfg.get("model")
+        model = model_catalog.resolve(run.engine_name, phase.model_tier, requested)
+        if model and run.engine_name in ("claude_code", "claude_api", "gemini"):
+            kwargs["model"] = model
+
         if run.engine_name == "claude_code" and cfg.get("permission_mode"):
             kwargs["permission_mode"] = cfg["permission_mode"]
         if run.engine_name == "generic_cli" and cfg.get("command_template"):
@@ -429,10 +442,34 @@ class Orchestrator:
                            f"{phase.output}.json"), result.usage
         return True, "", result.usage
 
+    def _skill_body(self, phase: P.Phase) -> str:
+        """Read the phase's SKILL.md, minus its YAML frontmatter.
+
+        Embedding the file content — rather than passing `phase.skill` (e.g.
+        "/job-phase-discover") through as a literal slash command — means the agent
+        gets the same instructions regardless of whether the invoking CLI has that
+        command registered. `.claude/commands/*.md` is personal, gitignored config and
+        never shipped in the wheel, so relying on slash-command resolution broke every
+        LLM phase for anyone without a hand-maintained mirror of it (see git history).
+
+        The frontmatter (`---\\nname: ...\\ndescription: ...\\n---`) is skill-discovery
+        metadata, not instructions, and it makes the program text start with `---` —
+        which Commander.js-based CLIs (including `claude`) reject as "unknown option"
+        when it lands as the value of `-p`/`--print`. Stripping it fixes both.
+        """
+        name = phase.skill.lstrip("/")
+        path = REPO_DIR / "skills" / name / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        if text.startswith("---\n"):
+            end = text.find("\n---", 4)
+            if end != -1:
+                text = text[end + 4:]
+        return text.lstrip("\n")
+
     def _program_for(self, run: _ActiveRun, phase: P.Phase) -> str:
         """The prompt handed to the agent: the phase skill plus its concrete paths."""
         lines = [
-            phase.skill,
+            self._skill_body(phase),
             "",
             "RUN CONTEXT (authoritative — use these exact paths):",
             f"  run_id:      {run.id}",

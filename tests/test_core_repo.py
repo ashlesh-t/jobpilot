@@ -65,6 +65,73 @@ def test_settings_ignores_unknown_keys(store):
     assert "not_a_preference" not in settings.preferences()
 
 
+def test_pipeline_phase_config_defaults_every_phase(store):
+    from core.repo import settings
+
+    cfg = settings.pipeline_phase_config()
+    from orchestrator import phases as P
+    assert set(cfg) == set(P.PHASE_KEYS)
+    assert all(entry == {"enabled": True, "model": None} for entry in cfg.values())
+    # A python phase's model is always None even if something stray got stored there.
+    assert cfg["scrape"]["model"] is None
+
+
+def test_pipeline_phase_config_rejects_an_unknown_phase(store):
+    from core.repo import settings
+
+    import pytest as pt
+    with pt.raises(ValueError):
+        settings.set_pipeline_phase_config({"not-a-real-phase": {"enabled": True}})
+
+
+def test_pipeline_phase_config_persists_a_choice(store):
+    from core.repo import settings
+
+    settings.set_pipeline_phase_config({"discover": {"enabled": False, "model": "haiku"}})
+    cfg = settings.pipeline_phase_config()
+    assert cfg["discover"] == {"enabled": False, "model": "haiku"}
+    # Untouched phases keep their defaults.
+    assert cfg["score"] == {"enabled": True, "model": None}
+
+
+def test_enabled_phase_keys_always_includes_required_phases(store):
+    """discover/intel/salary/notify are optional; everything else is required and
+    must run regardless of what's stored — a bad config should never silently break
+    the pipeline by dropping a hard dependency."""
+    from core.repo import settings
+
+    settings.set_pipeline_phase_config({
+        "discover": {"enabled": False},
+        "scrape": {"enabled": False},  # required — must be ignored
+    })
+    keys = settings.enabled_phase_keys()
+    assert "scrape" in keys
+    assert "discover" not in keys
+
+
+def test_upgrade_migrates_stale_accept_edits_default(store):
+    """Anyone who ran `jobpilot setup` before the bypassPermissions default existed has
+    the old value baked into their settings row, with no UI to change it by hand —
+    migration 0002 must fix it silently on the very next `jobpilot start`/`serve`,
+    with no manual step, since that's how every existing install actually upgrades."""
+    from alembic import command
+    from core import db
+    from core.migrations import alembic_config
+    from core.repo import settings as settings_repo
+
+    # Simulate an install that predates migration 0002: rewind the tracked revision
+    # and write the settings row the way the old default would have.
+    cfg = alembic_config(db.get_engine().url.render_as_string(hide_password=False))
+    cfg.attributes["connection"] = db.get_engine()
+    command.stamp(cfg, "0001_initial")
+    settings_repo.set("engine", {"provider": "claude_code", "model": "",
+                                 "permission_mode": "acceptEdits"}, export=False)
+
+    db.init_db()  # what every `jobpilot start`/`serve` already calls
+
+    assert settings_repo.engine_config()["permission_mode"] == "bypassPermissions"
+
+
 @pytest.mark.parametrize("text,expected", [
     ("12-18 LPA", (12.0, 18.0)),
     ("₹15 LPA", (15.0, 15.0)),

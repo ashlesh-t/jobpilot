@@ -19,16 +19,19 @@ what makes stop / resume / per-phase rerun possible.
 - **`core/`** — the domain layer. `db.py` (PostgreSQL in Docker, SQLite fallback, one
   SQLAlchemy code path), `models.py`, `migrations/` (Alembic, applied at every start),
   `repo/*` (every query lives here — none in server/ or orchestrator/), `secrets.py`
-  (keyring-first; secrets never enter the database), `pricing.py`, `backends.py`,
-  `tailoring.py`, `export.py`, `migrate_v1.py`.
+  (keyring-first; secrets never enter the database), `pricing.py`, `backends.py`
+  (agent detection + `install_claude_code` / `install_tectonic`), `tailoring.py`,
+  `export.py`, `migrate_v1.py`, `changelog.py` (CHANGELOG.md → structured releases, shared
+  by `jobpilot upgrade` and the About page), `version.py`.
 - **`orchestrator/`** — `phases.py` is the registry: 11 phases, each declaring who runs it
   (`python` = a Layer A script, `llm` = a per-phase skill), its inputs and its output
   artifact. `artifacts.py` gives every run its own directory. `runner.py` executes the
   sequence, holds the child-process handle so a stop actually reaches it, retries transient
   failures, and records cost per phase.
 - **`server/`** — FastAPI. `app.py` plus routers (`routes_jobs`, `routes_settings`,
-  `routes_schedule`, `routes_resumes`, `routes_tailor`, `routes_chat`), `scheduler.py`
-  (catch-up + network retry), `run_manager.py` (a thin adapter over the orchestrator).
+  `routes_schedule`, `routes_resumes`, `routes_tailor`, `routes_chat`, `routes_about`),
+  `scheduler.py` (catch-up + network retry), `run_manager.py` (a thin adapter over the
+  orchestrator).
 - **`ui/`** — React + Vite, built to `ui/dist` and shipped inside the wheel.
 
 - **`engines/` — RunEngine provider adapters.** `claude_code` (Pro/Max subscription, no
@@ -79,8 +82,12 @@ If Apify credit is exhausted/token invalid, the pipeline degrades to native-only
 | `scripts/notify_run.py` | Layer A: builds the digest and delivers it; writes a receipt |
 | `templates/resume/ats_safe.tex` | The ATS-safe LaTeX template tailoring fills in |
 | `schema/init.sql` | **v1 only** — the v2 schema is `core/models.py` + Alembic |
-| `jobpilot/tui/` | The `jobpilot setup` wizard |
+| `jobpilot/tui/` | The `jobpilot setup` wizard. `wizard.py` migrates the DB before step 1 — step 1 reads settings, step 2 creates the schema |
+| `jobpilot/cli.py` | Every subcommand, including `upgrade` (PyPI only; a source install gets the rebuild command, never a published release over the top) |
 | `setup.sh` | **v1 only** — superseded by `jobpilot setup` |
+
+**Version**: `jobpilot/__init__.py` is the source of truth; `pyproject.toml` mirrors it and
+`tests/test_about_api.py` asserts they agree. `core/version.py` resolves it from anywhere.
 
 ## Slash commands (skills)
 

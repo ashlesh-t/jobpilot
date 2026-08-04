@@ -30,17 +30,24 @@ KNOWN_SECRETS: list[dict] = [
     {"key": "APIFY_TOKEN_3", "label": "Apify token (slot 3)", "group": "scraping",
      "help": "A third Apify account for the same rotation."},
     {"key": "TELEGRAM_BOT_TOKEN", "label": "Telegram bot token", "group": "notify",
-     "help": "From @BotFather. Used to send your digest, report and tailored resumes."},
+     "help": "From @BotFather, after /newbot. Paste the whole token — digits, colon and "
+             "letters together, like 123456789:AAH… — not just the numbers, and none of "
+             "the words around it. Used to send your digest, report and tailored resumes."},
     {"key": "TELEGRAM_CHAT_ID", "label": "Telegram chat ID", "group": "notify",
      "help": "Which chat the bot messages. Captured automatically when you message the bot."},
-    {"key": "TELEGRAM_API_ID", "label": "Telegram API ID", "group": "scraping",
-     "help": "Only for scraping job-posting Telegram channels. From my.telegram.org."},
-    {"key": "TELEGRAM_API_HASH", "label": "Telegram API hash", "group": "scraping",
-     "help": "Pairs with the API ID for channel scraping."},
     {"key": "DISCORD_WEBHOOK_URL", "label": "Discord webhook", "group": "notify",
      "help": "Optional second delivery channel. Create one in Channel Settings → Integrations."},
     {"key": "GEMINI_API_KEY", "label": "Gemini API key", "group": "engine",
      "help": "For the Google Gemini backend."},
+    {"key": "ADZUNA_APP_ID", "label": "Adzuna app ID", "group": "scraping",
+     "help": "Adds the Adzuna job board as a free native source. Get one at "
+             "developer.adzuna.com/signup — no card needed, 1,000 calls/month on the "
+             "free tier. After registering, your App ID and App Key are both on the "
+             "dashboard at developer.adzuna.com/admin/. Optional — the free scrapers "
+             "work without it."},
+    {"key": "ADZUNA_APP_KEY", "label": "Adzuna app key", "group": "scraping",
+     "help": "Pairs with the Adzuna app ID — copy both from the same "
+             "developer.adzuna.com/admin/ dashboard page."},
 ]
 
 KNOWN_KEYS = [s["key"] for s in KNOWN_SECRETS]

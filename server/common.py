@@ -96,5 +96,5 @@ def engine_config() -> dict:
     return {
         "provider": eng.get("provider", "claude_code"),
         "model": eng.get("model", ""),
-        "permission_mode": eng.get("permission_mode", "acceptEdits"),
+        "permission_mode": eng.get("permission_mode", "bypassPermissions"),
     }

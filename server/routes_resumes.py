@@ -177,43 +177,51 @@ async def extract_profile(resume_id: int):
 
 
 def _extract_text(path: Path) -> str:
-    """Plain text out of PDF / DOCX / TEX / TXT. Never calls the LLM."""
+    """Plain text out of PDF / DOCX / TEX / TXT. Never calls the LLM.
+
+    Delegates to the Layer A parser, which has a pdfplumber fallback for PDFs PyPDF2
+    can't read and strips LaTeX markup out of `.tex` sources.
+    """
     sys.path.insert(0, str(REPO_DIR / "scripts"))
-    suffix = path.suffix.lower()
-
-    if suffix in (".txt", ".md", ".tex"):
-        return path.read_text(errors="ignore")
-
-    if suffix == ".pdf":
-        try:
-            from PyPDF2 import PdfReader
-            reader = PdfReader(str(path))
-            return "\n".join((page.extract_text() or "") for page in reader.pages)
-        except Exception:
-            return ""
-
-    if suffix == ".docx":
-        try:
-            import docx
-            document = docx.Document(str(path))
-            return "\n".join(p.text for p in document.paragraphs)
-        except Exception:
-            return ""
-
-    return ""
+    try:
+        from resume_parser import extract_text
+        return extract_text(path)
+    except Exception:  # noqa: BLE001 — a missing optional reader must not 500
+        return ""
 
 
+# Kept in step with core.repo.profiles.SKELETON: anything missing here is a field the
+# agent never fills, which then silently weakens scoring (interview_readiness feeds
+# bar_fit) or the digest.
 PROFILE_PROMPT = """Read this resume and return ONLY a JSON object with these keys:
 name, email, phone, skills (array of concrete technical skills),
 experience_years (number), roles_held (array of {title, company, duration}),
 projects (array of {name, stack, description}), education ({degree, college, year}),
-graduation_date, github_url, portfolio_url, linkedin_url, locations (array).
+publications (array of {title, venue, year}), graduation_date, github_url,
+portfolio_url, linkedin_url, locations (array), availability (string),
+notice_period_days (number),
+interview_readiness ({dsa_level, leetcode_url, system_design, spoken_english}).
 
-Rules: never invent anything — leave a field empty if the resume doesn't say.
-List only skills the resume actually claims. Return the JSON and nothing else.
+Rules:
+- Never invent anything. Use "" for a missing string, [] for a missing array,
+  {} for a missing object and 0 for a missing number.
+- List only skills the resume actually claims, as concrete technologies
+  ("PostgreSQL", "FastAPI"), not categories ("backend development").
+- experience_years: total professional experience, excluding internships unless that
+  is all there is. Use 0 for a fresher.
+- interview_readiness: dsa_level is one of "strong", "medium", "weak" or "unknown" —
+  infer it only from explicit evidence (a LeetCode/Codeforces profile, competitive
+  programming wins, a DSA-heavy role). Use "unknown" otherwise. Same for
+  system_design and spoken_english.
+- Return the JSON and nothing else.
 
 RESUME:
 """
+
+# A two-page resume is ~5k characters; this is headroom for long academic CVs while
+# still bounding the prompt. Truncating at 20k used to silently drop the education and
+# projects tail of longer documents.
+MAX_RESUME_CHARS = 60000
 
 
 async def _propose_profile(text: str) -> tuple[dict, str, str]:
@@ -236,7 +244,7 @@ async def _propose_profile(text: str) -> tuple[dict, str, str]:
 
         chunks: list[str] = []
         result = await engine.run(
-            PROFILE_PROMPT + text[:20000], "profile-extract",
+            PROFILE_PROMPT + text[:MAX_RESUME_CHARS], "profile-extract",
             lambda ev: chunks.append(ev.msg or ""),
         )
         blob = (result.artifacts or {}).get("final_text") or "\n".join(chunks)

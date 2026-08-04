@@ -1,5 +1,74 @@
 # Changelog
 
+## v2.1.0 — 2026-08-02
+
+### Release title: "Rough Edges" (minor)
+
+Everything in this release came from running 2.0 end to end and writing down what got in
+the way: setup failing on the first step, a resume library you couldn't find, a PDF
+compiler you had to install yourself, and no way to move to a new version.
+
+### Setup actually completes
+
+- **Fixed the first-run crash.** `jobpilot setup` failed on step 1 with
+  `no such table: settings` on every fresh install — step 1 reads settings, but the
+  storage step that creates the schema is step 2. The wizard now brings the database up to
+  head before any step runs, and falls back to SQLite if a saved Postgres DSN is
+  unreachable.
+- **Telegram tells you what a bot token looks like.** BotFather's reply is easy to
+  misread; setup and the credential vault now say to paste the whole `123456789:AAH…`
+  string, colon included.
+- **Setup offers to install the PDF compiler.** If tectonic is missing, step 6 offers to
+  drop the official static binary into `~/.local/bin` — no root, no package manager, no
+  LaTeX distribution. It warns you if the directory isn't on your `PATH` instead of
+  claiming success.
+
+### Resumes are where you'd look for them
+
+- **A Resumes tab in My Info.** The resume library was only reachable from a collapsed
+  disclosure on Job Hunt.
+- **Always visible on Job Hunt.** Which resume a run will use is not something to hide.
+- **One radio group picks the active resume,** spanning every folder, so a folder holding
+  several resumes no longer makes you guess which one JobPilot reads.
+- **Folders get a real dialog** instead of a browser prompt, with the same name validation
+  the server applies, plus folder rename and per-resume labels.
+
+### Resume reading
+
+- The server now uses the Layer A extractor, which has a pdfplumber fallback for PDFs
+  PyPDF2 returns nothing for, and strips LaTeX markup out of `.tex` sources.
+- The extraction prompt asks for every field in the profile skeleton — including
+  `interview_readiness`, which feeds the interview-bar adjustment in scoring and was
+  simply never being filled.
+- Resume text is no longer truncated at 20k characters, which used to silently drop the
+  education and projects tail of longer CVs.
+- A heuristic (no-agent) read is now reported as a warning rather than a success, because
+  a regex-guessed profile quietly weakens every later score.
+
+### `jobpilot upgrade`
+
+- Updates a pipx or pip install from PyPI, then always applies pending migrations,
+  re-exports `preferences.json` and `profile.json` so the Layer B skills see new keys, and
+  re-checks your tools.
+- `--check` reports what a new release would bring and changes nothing.
+- On a copy installed from a source checkout it prints the rebuild command instead of
+  pulling a published release over your work.
+
+### A page that explains itself
+
+- **New `/whoami`** — what JobPilot is, who it's for, an animated pipeline diagram, and
+  your own numbers: score distribution, sources, application funnel, jobs per run, spend.
+- **In-app changelog**, parsed from this file, with the version you're on badged.
+- **Raise an issue** with a one-click diagnostics copy (version, OS, database, tools).
+
+### Fixed
+
+- The "No PDF compiler installed" card now tells you how to fix it instead of just naming
+  tectonic.
+- `/health` reports the running version; `CHANGELOG.md` ships inside the wheel.
+
+---
+
 ## v2.0.0 — 2026-08-02
 
 ### Release title: "Everything Around the Pipeline" (major)

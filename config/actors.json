@@ -12,7 +12,9 @@
   "retry_empty_runs": false,
   "_native_sources": [
     "internshala", "remoteok", "weworkremotely", "remotive", "arbeitnow", "jobicy",
-    "yc_startup", "hasjob", "instahyre", "wellfound_rss"
+    "yc_startup", "hasjob", "instahyre", "wellfound_rss",
+    "simplify_jobs", "himalayas", "workingnomads", "jobspresso", "adzuna", "ats_boards",
+    "telegram_channels"
   ],
   "disabled_native_sources": [
     "instahyre",
@@ -24,5 +26,5 @@
     "wellfound_rss": "Cloudflare WAF returns 403 on all unauthenticated requests. Use Apify wellfound_scraper on full runs instead.",
     "linkedin_guest": "Unauthenticated LinkedIn endpoint returns 0 jobs consistently (soft-blocked). LinkedIn data sourced exclusively via Apify on full runs."
   },
-  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings. hasjob now uses Atom feed (/feed). yc_startup now uses HN Firebase Jobs API. instahyre and wellfound_rss are disabled — see disabled_native_sources."
+  "_notes": "Apify actors are used only for sources that block native scraping (LinkedIn/Glassdoor/Indeed via proxy, Naukri=recaptcha, Cutshort=client-side API, Wellfound=Cloudflare). _native_sources are scraped free by scripts/scrapers/*. ambitionbox_scraper is salary research only (Layer B), not job listings. hasjob now uses Atom feed (/feed). yc_startup now uses HN Firebase Jobs API. instahyre and wellfound_rss are disabled — see disabled_native_sources. telegram_channels reads the public t.me/s/<channel> web preview — no API keys, no session, no auth; manage the channel list from MyInfo > Telegram channels (each add validated live). ats_boards hits Greenhouse/Lever/Ashby/Workable's free public APIs directly for companies configured in target_companies.json."
 }

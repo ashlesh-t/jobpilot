@@ -10,6 +10,7 @@
     jobpilot db         up | down | status | url
     jobpilot service    install | uninstall | status  (auto-start daemon)
     jobpilot migrate    import state from JobPilot v1
+    jobpilot upgrade    update to the latest release, migrate, re-check tools
     jobpilot --version
 
 Everything runs against the bundled runtime tree resolved by `jobpilot.paths`, so the
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -118,10 +120,176 @@ def _migrate(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# upgrade
+# --------------------------------------------------------------------------- #
+PACKAGE = "jobpilot-ai"
+PYPI_JSON = f"https://pypi.org/pypi/{PACKAGE}/json"
+
+
+def _install_source() -> tuple[str, str]:
+    """How this copy of JobPilot got here: pipx | pip | local | checkout.
+
+    `local` means someone ran `pipx install .` / `pip install .` from a checkout — the
+    installed files are a snapshot of a directory, so pulling from PyPI would silently
+    replace their work with a published release.
+    """
+    prefix_parts = Path(sys.prefix).parts
+    manager = "pipx" if "pipx" in prefix_parts else "pip"
+
+    try:
+        from importlib.metadata import Distribution
+        raw = Distribution.from_name(PACKAGE).read_text("direct_url.json")
+    except Exception:  # noqa: BLE001  — PackageNotFoundError and friends
+        return "checkout", "running from a source checkout (not installed)"
+
+    if raw:
+        try:
+            info = json.loads(raw)
+        except ValueError:
+            info = {}
+        if "dir_info" in info:
+            path = str(info.get("url", "")).replace("file://", "") or "a local directory"
+            return "local", f"installed by {manager} from {path}"
+    return manager, f"installed with {manager}"
+
+
+def _latest_version(timeout: float = 10.0) -> tuple[str | None, str]:
+    try:
+        import httpx
+        data = httpx.get(PYPI_JSON, timeout=timeout).raise_for_status().json()
+        return str(data["info"]["version"]), ""
+    except Exception as exc:  # noqa: BLE001
+        return None, f"could not reach PyPI ({exc})"
+
+
+def _print_release_notes(from_version: str) -> None:
+    from core import changelog
+
+    entries = changelog.since(from_version)
+    if not entries:
+        return
+    print(f"\n==> What's new since {from_version}")
+    for entry in entries:
+        title = f' — "{entry["title"]}"' if entry["title"] else ""
+        print(f"\n  v{entry['version']}{title}")
+        for section in entry["sections"]:
+            for item in section["items"][:6]:
+                print(f"    · {item}")
+
+
+def _post_upgrade(interactive: bool = True) -> None:
+    """Bring everything that isn't Python code up to date with the new release."""
+    _core()
+    from core import backends, tailoring
+    from core.db import init_db
+    from core.repo import profiles as profiles_repo
+    from core.repo import settings as settings_repo
+
+    print("\n==> Applying any new database migrations…")
+    try:
+        init_db()
+        print("    schema up to date")
+    except Exception as exc:  # noqa: BLE001
+        print(f"    ! migration failed: {exc}")
+
+    # The Layer B skills read these files, not the database, so new keys have to land
+    # on disk or the skills keep seeing the old shape.
+    print("==> Refreshing preferences.json and profile.json…")
+    for label, fn in (("preferences", settings_repo.export_preferences),
+                      ("profile", profiles_repo.export)):
+        try:
+            fn()
+            print(f"    {label} exported")
+        except Exception as exc:  # noqa: BLE001
+            print(f"    ! {label} export failed: {exc}")
+
+    print("==> Checking tools…")
+    try:
+        info = backends.probe(backends.selected())
+        print(f"    AI backend: {info.label} — {'ready' if info.found else 'NOT FOUND'}")
+        if not info.found:
+            print("      run `jobpilot setup` to reconfigure it")
+    except Exception:  # noqa: BLE001
+        print("    AI backend: not selected — run `jobpilot setup`")
+
+    if tailoring.has_tectonic():
+        print("    PDF compiler: tectonic found")
+    else:
+        print("    PDF compiler: not installed — tailored resumes stay as LaTeX source")
+        hints = "  or  ".join(backends.tectonic_install_hints())
+        if interactive and sys.stdin.isatty():
+            answer = input("      Install it now into ~/.local/bin? [Y/n] ").strip().lower()
+            if answer in ("", "y", "yes"):
+                ok, message = backends.install_tectonic()
+                print(f"      {'✓' if ok else '!'} {message}")
+                return
+        print(f"      install it with:  {hints}")
+
+
+def _upgrade(args: argparse.Namespace) -> int:
+    _apply_data_dir(args)
+    _core()
+
+    source, detail = _install_source()
+    print(f"==> JobPilot {__version__} — {detail}")
+
+    if source in ("local", "checkout"):
+        print("\n    This copy came from a source checkout, so `upgrade` will not pull a\n"
+              "    published release over the top of it. Update it with:\n\n"
+              "      git pull\n"
+              "      npm --prefix ui run build\n"
+              "      pipx install --force .\n")
+        if args.check:
+            return 0
+        _post_upgrade()
+        print("\n==> Done. Restart a running service with `jobpilot stop && jobpilot start`.")
+        return 0
+
+    latest, why = _latest_version()
+    if latest is None:
+        print(f"    {why} — skipping the version check.")
+        if args.check:
+            return 1
+    elif latest == __version__:
+        print(f"    Already on the latest release ({latest}).")
+    else:
+        from core import changelog
+        direction = "newer" if changelog.is_newer(latest, __version__) else "different"
+        print(f"    PyPI has {latest} ({direction}).")
+        _print_release_notes(__version__)
+
+    if args.check:
+        return 0
+
+    if latest and latest != __version__:
+        cmd = ([shutil.which("pipx") or "pipx", "upgrade", PACKAGE] if source == "pipx"
+               else [sys.executable, "-m", "pip", "install", "--upgrade", PACKAGE])
+        print(f"\n==> {' '.join(cmd)}")
+        try:
+            code = subprocess.call(cmd)
+        except OSError as exc:
+            print(f"    ! could not run the installer: {exc}")
+            return 1
+        if code != 0:
+            print("    ! upgrade failed — nothing else was changed.")
+            return code
+
+    _post_upgrade()
+    print("\n==> Done. Restart a running service with `jobpilot stop && jobpilot start`.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # serve / start / stop
 # --------------------------------------------------------------------------- #
 def _serve(args: argparse.Namespace) -> int:
     _apply_data_dir(args)
+    running = _read_runfile(args)
+    if running and _pid_alive(running["pid"]):
+        print(f"==> JobPilot is already running at http://{running['host']}:{running['port']} "
+              f"(pid {running['pid']}). Only one instance runs at a time — "
+              f"`jobpilot stop` first if you meant to restart it.")
+        return 1
     env = runtime_env()
     host = args.host or os.environ.get("JOBPILOT_HOST", "127.0.0.1")
     port = args.port or int(os.environ.get("JOBPILOT_PORT", "8787"))
@@ -173,10 +341,58 @@ def _start(args: argparse.Namespace) -> int:
     args.host, args.port = host, port
     url = f"http://{host}:{port}"
 
+    if getattr(args, "daemon", False):
+        return _start_daemon(args, host, port, url)
+
     if not args.no_browser:
         _open_browser(url, delay=1.5)
     print(f"==> Starting JobPilot → {url}")
     return _serve(args)
+
+
+def _start_daemon(args: argparse.Namespace, host: str, port: int, url: str) -> int:
+    """Spawn the service detached from this terminal — it keeps running after the
+    shell exits, and only `jobpilot stop` (or the OS) can end it."""
+    d = _data_dir(args.data_dir)
+    logs = d / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    log_path = logs / "server.log"
+
+    env = runtime_env()
+    env["JOBPILOT_HOST"] = host
+    env["JOBPILOT_PORT"] = str(port)
+
+    detach_kwargs: dict = {}
+    if os.name == "nt":
+        detach_kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        detach_kwargs["start_new_session"] = True  # own session — SIGHUP can't reach it
+
+    log_file = open(log_path, "ab")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "server"],
+        cwd=str(bundle_root()), env=env,
+        stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+        close_fds=True, **detach_kwargs,
+    )
+    log_file.close()  # the child holds its own duped fd; ours can close
+
+    for _ in range(40):  # up to 10s for it to come up (or die) before we report status
+        if proc.poll() is not None:
+            print(f"==> JobPilot exited immediately — check {log_path}")
+            return proc.returncode or 1
+        if _read_runfile(args):
+            break
+        time.sleep(0.25)
+
+    if not args.no_browser:
+        _open_browser(url, delay=1.0)
+    print(f"==> JobPilot is running in the background (pid {proc.pid}) → {url}")
+    print(f"    Logs:  jobpilot logs -f")
+    print("    Stop:  jobpilot stop")
+    return 0
 
 
 def _open_browser(url: str, delay: float = 0.0) -> None:
@@ -381,6 +597,9 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--non-interactive", action="store_true")
     t.add_argument("--host", default=None)
     t.add_argument("--port", type=int, default=None)
+    t.add_argument("-d", "--daemon", action="store_true",
+                   help="run in the background — survives closing this terminal; "
+                        "stop it with `jobpilot stop`")
     t.set_defaults(func=_start)
 
     v = _common(sub.add_parser("serve", help="run the local service"))
@@ -418,6 +637,12 @@ def build_parser() -> argparse.ArgumentParser:
     mg = _common(sub.add_parser("migrate", help="import state from JobPilot v1"))
     mg.add_argument("--force", action="store_true", help="re-run even if already imported")
     mg.set_defaults(func=_migrate)
+
+    ug = _common(sub.add_parser("upgrade",
+                                help="update JobPilot, apply migrations, re-check tools"))
+    ug.add_argument("--check", action="store_true",
+                    help="report what a new release would bring, change nothing")
+    ug.set_defaults(func=_upgrade)
     return p
 
 

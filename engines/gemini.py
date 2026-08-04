@@ -19,7 +19,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from .base import EventCB, RunEngine, RunEvent, RunResult, Usage  # noqa: E402
+from .base import (  # noqa: E402
+    EventCB,
+    RunEngine,
+    RunEvent,
+    RunResult,
+    SUBPROCESS_STREAM_LIMIT,
+    Usage,
+)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
@@ -95,6 +102,7 @@ class GeminiEngine(RunEngine):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=SUBPROCESS_STREAM_LIMIT,
             )
         except OSError as exc:
             msg = f"could not start {self.cli}: {exc}"

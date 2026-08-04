@@ -16,6 +16,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 BOTFATHER_URL = "https://t.me/BotFather"
 APIFY_TOKEN_URL = "https://console.apify.com/settings/integrations"
 ANTHROPIC_KEYS_URL = "https://console.anthropic.com/settings/keys"
+ADZUNA_SIGNUP_URL = "https://developer.adzuna.com/signup"
+ADZUNA_DASHBOARD_URL = "https://developer.adzuna.com/admin/"
 
 
 def _validate_email(value: str) -> str | None:
@@ -252,17 +254,22 @@ def step_apify(ctx: dict) -> None:
 
     theme.step_header(4, 6, "Extra job sources (optional)",
                       "JobPilot already scrapes ~8 sources for free. An Apify token "
-                      "adds LinkedIn, Naukri, Glassdoor and Indeed.")
+                      "adds LinkedIn, Naukri, Glassdoor and Indeed; Adzuna adds another "
+                      "free source on top of the built-in scrapers.")
 
+    _setup_apify(secrets)
+    _setup_adzuna(secrets)
+    theme.out()
+
+
+def _setup_apify(secrets) -> None:
     if secrets.has("APIFY_TOKEN"):
-        theme.success(f"Existing token: {secrets.mask(secrets.get('APIFY_TOKEN'))}")
+        theme.success(f"Existing Apify token: {secrets.mask(secrets.get('APIFY_TOKEN'))}")
         if not prompts.ask_confirm("Replace it?", default=False):
-            theme.out()
             return
 
     if not prompts.ask_confirm("Add an Apify token now?", default=False):
         theme.info("Skipped — you can add one any time from My Info.")
-        theme.out()
         return
 
     theme.info(f"Get a free token at {APIFY_TOKEN_URL}")
@@ -270,7 +277,6 @@ def step_apify(ctx: dict) -> None:
     token = prompts.ask_secret("Paste your Apify token", allow_empty=True)
     if not token:
         theme.info("Skipped.")
-        theme.out()
         return
 
     with theme.spinner("Verifying the token…"):
@@ -282,7 +288,64 @@ def step_apify(ctx: dict) -> None:
         theme.error(detail)
         if prompts.ask_confirm("Save it anyway?", default=False):
             secrets.set("APIFY_TOKEN", token)
-    theme.out()
+
+
+def _setup_adzuna(secrets) -> None:
+    if secrets.has("ADZUNA_APP_ID") and secrets.has("ADZUNA_APP_KEY"):
+        theme.success("Adzuna already connected.")
+        if not prompts.ask_confirm("Replace it?", default=False):
+            return
+
+    if not prompts.ask_confirm("Add Adzuna (another free job source) now?", default=False):
+        theme.info("Skipped — you can add it any time from My Info.")
+        return
+
+    theme.panel(
+        f"1. Register for free at [bold]{ADZUNA_SIGNUP_URL}[/bold] — no card needed\n"
+        f"2. Your App ID and App Key are both shown at [bold]{ADZUNA_DASHBOARD_URL}[/bold]\n"
+        "3. Paste each one below\n\n"
+        "[dim]Free tier is 1,000 calls/month — plenty for a couple of runs a day.[/dim]",
+        title="Get Adzuna credentials",
+    )
+    theme.qr(ADZUNA_SIGNUP_URL)
+
+    app_id = prompts.ask_secret("Paste your Adzuna App ID", allow_empty=True)
+    if not app_id:
+        theme.info("Skipped.")
+        return
+    app_key = prompts.ask_secret("Paste your Adzuna App Key", allow_empty=True)
+    if not app_key:
+        theme.info("Skipped.")
+        return
+
+    with theme.spinner("Verifying the credentials…"):
+        ok, detail = _verify_adzuna(app_id, app_key)
+    if ok:
+        secrets.set("ADZUNA_APP_ID", app_id)
+        secrets.set("ADZUNA_APP_KEY", app_key)
+        theme.success("Verified and stored.")
+    else:
+        theme.error(detail)
+        if prompts.ask_confirm("Save it anyway?", default=False):
+            secrets.set("ADZUNA_APP_ID", app_id)
+            secrets.set("ADZUNA_APP_KEY", app_key)
+
+
+def _verify_adzuna(app_id: str, app_key: str) -> tuple[bool, str]:
+    try:
+        import requests
+        r = requests.get(
+            "https://api.adzuna.com/v1/api/jobs/gb/search/1",
+            params={"app_id": app_id, "app_key": app_key, "results_per_page": 1,
+                    "content-type": "application/json"},
+            timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Could not reach Adzuna: {exc}"
+    if r.status_code == 200:
+        return True, "credentials valid"
+    if r.status_code in (401, 403):
+        return False, "Adzuna rejected that App ID/App Key pair — check both were copied in full."
+    return False, f"Adzuna returned HTTP {r.status_code}."
 
 
 def _verify_apify(token: str) -> tuple[bool, str]:
@@ -338,14 +401,22 @@ def _setup_telegram(secrets) -> bool:
     theme.panel(
         "1. Open [bold]@BotFather[/bold] in Telegram (link or QR below)\n"
         "2. Send [bold]/newbot[/bold] and follow the two prompts\n"
-        "3. Copy the token it gives you and paste it here",
+        "3. It replies with [italic]“Use this token to access the HTTP API:”[/italic] "
+        "followed by the token\n"
+        "4. Paste the [bold]whole token[/bold] here — digits, colon and letters together, "
+        "like [bold]123456789:AAH…[/bold]\n\n"
+        "[dim]Not just the numbers, not just the letters, and none of the words "
+        "around it.[/dim]",
         title="Create your bot",
     )
     theme.info(BOTFATHER_URL)
     theme.qr(BOTFATHER_URL)
 
     while True:
-        token = prompts.ask_secret("Paste the bot token", allow_empty=True)
+        token = prompts.ask_secret(
+            "Paste the bot token", allow_empty=True,
+            help_text="the whole thing, e.g. 123456789:AAH…",
+        )
         if not token:
             theme.info("Skipped Telegram.")
             return False
@@ -481,6 +552,7 @@ def step_finish(ctx: dict) -> None:
     from core.repo import settings as settings_repo
 
     theme.step_header(6, 6, "All set")
+    _offer_tectonic()
     settings_repo.mark_setup_complete(True)
     settings_repo.export_preferences()
 
@@ -494,6 +566,25 @@ def step_finish(ctx: dict) -> None:
         "pick run times, and launch your first hunt.",
         title="Next step",
     )
+
+
+def _offer_tectonic() -> None:
+    """Tailored resumes compile to PDF only when tectonic is on PATH. Optional."""
+    from core import backends, tailoring
+
+    if tailoring.has_tectonic():
+        return
+
+    theme.info("No PDF compiler found — tailored resumes would come out as LaTeX "
+               "source instead of a ready-to-send PDF.")
+    if not prompts.ask_confirm("Install the PDF compiler (tectonic) now?", default=True):
+        theme.info("Skipped. Install it later with:  "
+                   + "  or  ".join(backends.tectonic_install_hints()))
+        return
+
+    with theme.spinner("Downloading tectonic (~30s, no admin rights needed)…"):
+        ok, message = backends.install_tectonic()
+    (theme.success if ok else theme.warn)(message)
 
 
 def _final_summary() -> list[tuple[str, str, str]]:
@@ -519,9 +610,19 @@ def _final_summary() -> list[tuple[str, str, str]]:
                  "extra sources enabled" if secrets.has("APIFY_TOKEN")
                  else "not set — free sources only"))
 
+    has_adzuna = secrets.has("ADZUNA_APP_ID") and secrets.has("ADZUNA_APP_KEY")
+    rows.append(("Adzuna", "ok" if has_adzuna else "skip",
+                 "enabled" if has_adzuna else "not set — optional"))
+
     channels = prefs.get("notify_channels") or []
     rows.append(("Delivery", "ok" if channels else "skip",
                  ", ".join(channels) if channels else "web UI only"))
+
+    from core import tailoring
+    has_pdf = tailoring.has_tectonic()
+    rows.append(("PDF compiler", "ok" if has_pdf else "skip",
+                 "tectonic — tailored resumes compile to PDF" if has_pdf
+                 else "not installed — tailored resumes stay as LaTeX source"))
     return rows
 
 

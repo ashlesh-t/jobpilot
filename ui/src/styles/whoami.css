@@ -1,0 +1,253 @@
+/* --------------------------------------------------------------------------
+   WhoAmI page styling.
+
+   Kept out of theme.css because none of it is reusable — it exists for one page.
+   Everything reads the same tokens as the rest of the app, so light and dark both
+   work without a second palette, and every animation is disabled under
+   prefers-reduced-motion.
+   -------------------------------------------------------------------------- */
+
+.wai-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--surface));
+  padding: clamp(1.75rem, 5vw, 3.5rem);
+  isolation: isolate;
+}
+
+/* Two slow, offset radial washes. Cheap (composited transforms only) and subtle
+   enough to survive on the light theme. */
+.wai-hero::before,
+.wai-hero::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  width: 42rem;
+  height: 42rem;
+  border-radius: 9999px;
+  filter: blur(60px);
+  opacity: 0.5;
+  will-change: transform;
+}
+
+.wai-hero::before {
+  top: -22rem;
+  right: -14rem;
+  background: radial-gradient(circle, rgb(var(--accent) / 0.5), transparent 62%);
+  animation: wai-drift-a 22s ease-in-out infinite alternate;
+}
+
+.wai-hero::after {
+  bottom: -26rem;
+  left: -16rem;
+  background: radial-gradient(circle, rgb(var(--info) / 0.35), transparent 62%);
+  animation: wai-drift-b 28s ease-in-out infinite alternate;
+}
+
+:root[data-theme='dark'] .wai-hero::before,
+:root[data-theme='dark'] .wai-hero::after {
+  opacity: 0.32;
+}
+
+@keyframes wai-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(-4rem, 3rem, 0) scale(1.12); }
+}
+
+@keyframes wai-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.08); }
+  to   { transform: translate3d(3rem, -2rem, 0) scale(1); }
+}
+
+/* -- the J/P mark: flies in from opposite sides and locks together, once per visit -- */
+.wai-jp {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.5rem;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.wai-jp-letter {
+  font-size: clamp(2.25rem, 5vw, 3.25rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  opacity: 0;
+}
+
+.wai-jp-j {
+  color: rgb(var(--accent));
+  animation: wai-jp-fly-left 1s cubic-bezier(0.22, 1, 0.36, 1) 0.15s forwards;
+}
+
+.wai-jp-p {
+  color: rgb(var(--ink));
+  margin-left: -0.1rem;
+  animation: wai-jp-fly-right 1s cubic-bezier(0.22, 1, 0.36, 1) 0.35s forwards;
+}
+
+@keyframes wai-jp-fly-left {
+  0%   { opacity: 0; transform: translateX(-2.75rem) rotate(-28deg) scale(0.6); }
+  55%  { opacity: 1; transform: translateX(0) rotate(0deg) scale(1.1); }
+  75%  { transform: translateX(0) rotate(0deg) scale(0.95); }
+  100% { opacity: 1; transform: translateX(0) rotate(0deg) scale(1); }
+}
+
+@keyframes wai-jp-fly-right {
+  0%   { opacity: 0; transform: translateX(2.75rem) rotate(28deg) scale(0.6); }
+  55%  { opacity: 1; transform: translateX(0) rotate(0deg) scale(1.1); }
+  75%  { transform: translateX(0) rotate(0deg) scale(0.95); }
+  100% { opacity: 1; transform: translateX(0) rotate(0deg) scale(1); }
+}
+
+.wai-title {
+  font-size: clamp(1.9rem, 5vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  background: linear-gradient(
+    100deg,
+    rgb(var(--ink)) 15%,
+    rgb(var(--accent)) 55%,
+    rgb(var(--ink)) 92%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: wai-sheen 9s ease-in-out infinite;
+}
+
+@keyframes wai-sheen {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* -- the pipeline diagram ------------------------------------------------- */
+.wai-pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
+  counter-reset: wai-step;
+}
+
+.wai-step {
+  position: relative;
+  flex: 1 1 8rem;
+  min-width: 7.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--raised));
+  padding: 0.75rem 0.85rem;
+  overflow: hidden;
+}
+
+/* A pulse that travels the row, one step at a time — the animation-delay is set
+   per step from the component. */
+.wai-step::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    120deg,
+    transparent 20%,
+    rgb(var(--accent) / 0.16) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: wai-pulse 6s linear infinite;
+  animation-delay: var(--wai-delay, 0s);
+}
+
+@keyframes wai-pulse {
+  0%   { transform: translateX(-100%); }
+  22%  { transform: translateX(100%); }
+  100% { transform: translateX(100%); }
+}
+
+.wai-step-index {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(var(--faint));
+}
+
+.wai-step-name {
+  margin-top: 0.15rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgb(var(--ink));
+}
+
+.wai-step-note {
+  margin-top: 0.1rem;
+  font-size: 0.7rem;
+  color: rgb(var(--muted));
+}
+
+.wai-step[data-layer='b'] {
+  border-color: rgb(var(--accent) / 0.45);
+}
+
+/* -- scroll reveal --------------------------------------------------------- */
+.wai-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.wai-reveal[data-shown='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+/* -- bento grid ------------------------------------------------------------ */
+.wai-bento {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.wai-bento > .wai-wide {
+  grid-column: span 2;
+}
+
+@media (max-width: 48rem) {
+  .wai-bento > .wai-wide {
+    grid-column: span 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wai-hero::before,
+  .wai-hero::after,
+  .wai-title,
+  .wai-step::after,
+  .wai-jp-letter {
+    animation: none;
+  }
+  .wai-jp-letter {
+    opacity: 1;
+    transform: none;
+  }
+  .wai-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 30rem) {
+  /* Not enough room next to the title on small screens — the mark would overlap it. */
+  .wai-jp {
+    display: none;
+  }
+}
