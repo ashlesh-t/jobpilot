@@ -15,6 +15,7 @@ export function Card({
   children,
   className,
   bodyClassName,
+  interactive,
 }: {
   title?: ReactNode
   subtitle?: ReactNode
@@ -22,9 +23,12 @@ export function Card({
   children?: ReactNode
   className?: string
   bodyClassName?: string
+  /** Lift-on-hover treatment for a card that represents one clickable/navigable
+   *  thing (a stat tile, a linked row) — leave off for static panels/tables. */
+  interactive?: boolean
 }) {
   return (
-    <section className={clsx('card', className)}>
+    <section className={clsx('card', interactive && 'card-hover', className)}>
       {(title || actions) && (
         <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
@@ -227,7 +231,7 @@ export function Dialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[6vh] animate-fade-in"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-[6vh] backdrop-blur-sm animate-fade-in"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -343,8 +347,17 @@ export function ProgressBar({ value, tone = 'accent' }: { value: number; tone?: 
   }[tone]
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-      <div className={clsx('h-full rounded-full transition-all duration-500', bar)}
-           style={{ width: `${pct}%` }} />
+      <div
+        className={clsx('h-full rounded-full ease-spring transition-all duration-500', bar)}
+        style={
+          tone === 'accent'
+            ? {
+                width: `${pct}%`,
+                backgroundImage: 'linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-2)))',
+              }
+            : { width: `${pct}%` }
+        }
+      />
     </div>
   )
 }

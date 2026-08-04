@@ -31,16 +31,21 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-2.5">
-          <span className="grid h-9 w-9 place-items-center rounded-lg bg-accent text-sm font-bold text-accent-ink">
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm animate-slide-up">
+        <div className="mb-7 flex items-center justify-center gap-2.5">
+          <span
+            className="grid h-10 w-10 place-items-center rounded-xl text-base font-bold text-accent-ink shadow-[0_1px_0_0_rgb(255_255_255/0.2)_inset,0_4px_14px_-3px_rgb(var(--accent)/0.55)]"
+            style={{
+              backgroundImage: 'linear-gradient(135deg, rgb(var(--accent)), rgb(var(--accent-2)))',
+            }}
+          >
             JP
           </span>
-          <span className="text-base font-semibold tracking-tight text-ink">JobPilot</span>
+          <span className="text-lg font-semibold tracking-tight text-ink">JobPilot</span>
         </div>
 
-        <Card title="Log in" subtitle="Welcome back.">
+        <Card title="Log in" subtitle="Welcome back." className="shadow-pop">
           <form className="space-y-4" onSubmit={onSubmit}>
             <label className="block">
               <span className="label">Username</span>

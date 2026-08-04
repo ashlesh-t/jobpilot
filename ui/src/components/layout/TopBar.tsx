@@ -50,7 +50,7 @@ export function TopBar({ title }: { title: string }) {
   const Icon = THEME_ICON[choice]
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-4 border-b border-line bg-canvas/85 px-6 backdrop-blur">
+    <header className="glass sticky top-0 z-30 flex h-14 shrink-0 items-center gap-4 border-b px-6 shadow-[0_1px_0_0_rgb(var(--shadow-color)/0.04)]">
       <h1 className="truncate text-[15px] font-semibold tracking-tight text-ink">{title}</h1>
 
       <div className="ml-auto flex items-center gap-2">

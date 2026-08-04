@@ -133,7 +133,7 @@ export const help: Record<string, string> = {
 
   /* -- secrets / connections ---------------------------------------------- */
   'secrets.storage':
-    'Stored in your operating system keyring, never in the database and never in a file JobPilot syncs anywhere.',
+    "Encrypted at rest and stored under your account only — other accounts on this instance can't see or use it.",
   'secrets.reveal':
     'Shows the full value once. Nothing is written to logs.',
   'secrets.anthropic':

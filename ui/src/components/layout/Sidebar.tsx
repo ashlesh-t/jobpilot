@@ -56,7 +56,12 @@ export function Sidebar({
           collapsed && 'justify-center px-0',
         )}
       >
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-sm font-bold text-accent-ink">
+        <span
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm font-bold text-accent-ink shadow-[0_1px_0_0_rgb(255_255_255/0.2)_inset,0_2px_8px_-2px_rgb(var(--accent)/0.55)]"
+          style={{
+            backgroundImage: 'linear-gradient(135deg, rgb(var(--accent)), rgb(var(--accent-2)))',
+          }}
+        >
           JP
         </span>
         {!collapsed && (
@@ -74,17 +79,20 @@ export function Sidebar({
             end={end}
             title={collapsed ? label : undefined}
             className={({ isActive }) =>
-              clsx(
-                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                collapsed && 'justify-center px-0',
-                isActive
-                  ? 'bg-accent-soft text-accent'
-                  : 'text-muted hover:bg-raised hover:text-ink',
-              )
+              clsx('nav-item', collapsed && 'justify-center px-0', isActive && 'nav-item-active')
             }
           >
-            <Icon className="h-[18px] w-[18px] shrink-0" />
-            {!collapsed && <span className="truncate">{label}</span>}
+            {({ isActive }) => (
+              <>
+                <Icon
+                  className={clsx(
+                    'h-[18px] w-[18px] shrink-0 transition-transform duration-150',
+                    isActive && 'scale-105',
+                  )}
+                />
+                {!collapsed && <span className="truncate">{label}</span>}
+              </>
+            )}
           </NavLink>
         ))}
       </nav>

@@ -41,7 +41,7 @@ function SecretRow({ secret }: { secret: SecretEntry }) {
     if (!draft.trim()) return
     try {
       await save.mutateAsync({ key: secret.key, value: draft })
-      toast.success(`${secret.label} saved to your system keyring.`)
+      toast.success(`${secret.label} saved.`)
       setEditing(false)
       setDraft('')
       setRevealed(null)
@@ -191,11 +191,11 @@ export function SecretsVault({ groups }: { groups?: string[] } = {}) {
   return (
     <Card
       title="Keys and tokens"
-      subtitle="Stored in your operating system keyring — never in the database, never in a log"
+      subtitle="Encrypted and stored under your account — never in plain text, never in a log"
       actions={
         <Chip tone="neutral" icon={<KeyRound className="h-3 w-3" />}>
           <span className="flex items-center gap-1">
-            Keyring
+            Encrypted
             <HelpTip id="secrets.storage" />
           </span>
         </Chip>
