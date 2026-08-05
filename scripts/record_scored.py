@@ -4,8 +4,11 @@ Called by the scoring phase:
   python3 scripts/record_scored.py <scored.json> [--scan-id N]
 
 Writes through `core.repo.jobs.upsert_scored()`, which owns the upsert semantics:
-discovery and scoring fields are refreshed, while application status and tailoring
-history on an existing row are left alone.
+discovery/listing fields land on the shared `Job` row, scoring fields on this user's
+own `JobUserScore` row — application status and tailoring history on an existing row
+are left alone either way. Requires `JOBPILOT_USER_ID` in the environment — every
+pipeline subprocess the orchestrator spawns sets it (see orchestrator/runner.py, and
+scripts/jp_secrets.py for the same read-user-from-env pattern).
 
 If `core` isn't importable — a plugin-only checkout without the server dependencies —
 it falls back to the v1 SQLite writer so a chat-driven run still records its jobs.
@@ -35,6 +38,16 @@ def legacy_db_path() -> Path:
     return jobpilot_dir() / "cache" / "jobs.sqlite"
 
 
+def _user_id() -> int | None:
+    raw = os.environ.get("JOBPILOT_USER_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _load(path: str) -> list[dict] | None:
     try:
         data = json.loads(Path(path).read_text())
@@ -45,14 +58,17 @@ def _load(path: str) -> list[dict] | None:
 
 
 def record_via_core(jobs: list[dict], scan_id: int | None) -> dict | None:
-    """Preferred path. Returns counts, or None when core isn't available."""
+    """Preferred path. Returns counts, or None when core (or a user) isn't available."""
+    user_id = _user_id()
+    if user_id is None:
+        return None
     try:
         from core.db import init_db
         from core.repo import jobs as jobs_repo
     except Exception:
         return None
     init_db()
-    return jobs_repo.upsert_scored(jobs, scan_id=scan_id)
+    return jobs_repo.upsert_scored(user_id, jobs, scan_id=scan_id)
 
 
 def record_via_sqlite(jobs: list[dict]) -> dict:
@@ -140,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     result = record_via_core(jobs, scan_id)
     if result is None:
         result = record_via_sqlite(jobs)
-        print(f"[record] core unavailable — wrote {result['inserted']} jobs to jobs.sqlite")
+        reason = "no JOBPILOT_USER_ID set" if _user_id() is None else "core unavailable"
+        print(f"[record] {reason} — wrote {result['inserted']} jobs to jobs.sqlite")
     else:
         print(f"Recorded {result['inserted']} new and {result['updated']} updated jobs")
     return result["inserted"] + result["updated"]

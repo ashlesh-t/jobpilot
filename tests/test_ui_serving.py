@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 REPO = Path(__file__).resolve().parent.parent
 DIST = REPO / "ui" / "dist"
 
@@ -35,6 +37,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        signup(c)
         yield c
     db.dispose()
 

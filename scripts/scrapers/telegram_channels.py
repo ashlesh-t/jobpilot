@@ -1,25 +1,26 @@
 """Telegram job channel scraper — pure Python, NO LLM, NO Apify.
 
-Reads recent messages from curated public Telegram job channels using the
-Telethon MTProto user client. Every URL extracted from messages is run through
-the URL security pipeline before the job is added to the output.
+Reads recent messages from curated public Telegram job channels via the public
+`t.me/s/<channel>` web preview — plain server-rendered HTML, no login, no API
+key, no phone number. This works for any public channel (which job channels
+always are); private channels aren't supported by this approach and never were
+a target here. Every URL extracted from messages is run through the URL
+security pipeline before the job is added to the output.
 
-First-time setup (one-time interactive):
-  python3 scripts/scrapers/telegram_channels.py --auth
+Managing the channel list:
+  from scripts.scrapers import telegram_channels
+  telegram_channels.validate_channel("getjobss")   # live check, no side effect
+  # add/remove/list channels live in core/repo/telegram_channels.py, which calls
+  # validate_channel() before ever accepting one — see that module, not this CLI.
 
 Normal use (called by run_native_scrapers):
   from scrapers import telegram_channels
   jobs = telegram_channels.fetch(keywords, max_results=60, focus="india")
 
-Requires:
-  - ~/.claude/job-hunt-ai/cache/telegram.session   (created by --auth)
-  - TELEGRAM_API_ID + TELEGRAM_API_HASH secrets    (from my.telegram.org)
-  - telethon installed (pip install telethon)
-  - scripts/url_security.py
+Requires: scripts/url_security.py. No API keys, no session file, no telethon.
 """
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 import os
@@ -30,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import build_job, matches_keywords, split_terms  # noqa: E402
+from _common import build_job, http_get, matches_keywords, split_terms  # noqa: E402
 
 REPO_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -40,29 +41,79 @@ def _jobpilot_dir() -> Path:
     return Path(os.path.expanduser(raw))
 
 
-def _session_path() -> Path:
-    return _jobpilot_dir() / "cache" / "telegram"
+def _config_path() -> Path:
+    return REPO_DIR / "config" / "telegram_channels.json"
 
 
 def _load_config() -> dict:
-    cfg_path = REPO_DIR / "config" / "telegram_channels.json"
     try:
-        return json.loads(cfg_path.read_text())
+        return json.loads(_config_path().read_text())
     except Exception:
         return {"enabled": False, "channels": [], "max_messages_per_channel": 50,
                 "max_age_hours": 24, "max_results_total": 60}
 
 
-def _load_secrets() -> tuple[int | None, str | None]:
-    """Return (api_id, api_hash) from secrets store."""
-    try:
-        from jp_secrets import get_secret_optional  # noqa
-        api_id_raw = get_secret_optional("TELEGRAM_API_ID")
-        api_hash = get_secret_optional("TELEGRAM_API_HASH")
-        api_id = int(api_id_raw) if api_id_raw else None
-        return api_id, api_hash
-    except Exception:
-        return None, None
+def _save_config(cfg: dict) -> None:
+    _config_path().write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+# --------------------------------------------------------------------------- #
+# Channel-list management — core/repo/telegram_channels.py is a thin wrapper over
+# these, the same way core/secrets.py wraps scripts/jp_secrets.py.
+# --------------------------------------------------------------------------- #
+
+def list_channels() -> list[dict]:
+    return _load_config().get("channels", [])
+
+
+def add_channel(username: str) -> dict:
+    """Validate live, then persist. Raises ValueError if the channel isn't real —
+    never silently stores a guess."""
+    username = username.lstrip("@").strip()
+    if not username:
+        raise ValueError("channel username can't be empty")
+    check = validate_channel(username)
+    if not check["valid"]:
+        raise ValueError(f"@{username}: {check['reason']}")
+
+    cfg = _load_config()
+    channels = cfg.setdefault("channels", [])
+    if any(c.get("username", "").lower() == username.lower() for c in channels):
+        raise ValueError(f"@{username} is already in your channel list")
+    channels.append({"username": username, "name": username, "members": 0})
+    _save_config(cfg)
+    return check
+
+
+def remove_channel(username: str) -> bool:
+    username = username.lstrip("@").strip().lower()
+    cfg = _load_config()
+    channels = cfg.get("channels", [])
+    kept = [c for c in channels if c.get("username", "").lower() != username]
+    if len(kept) == len(channels):
+        return False
+    cfg["channels"] = kept
+    _save_config(cfg)
+    return True
+
+
+def revalidate_all() -> list[dict]:
+    """Re-check every configured channel live; drop any that are now dead."""
+    cfg = _load_config()
+    channels = cfg.get("channels", [])
+    results = []
+    kept = []
+    for ch in channels:
+        username = ch.get("username", "")
+        check = validate_channel(username) if username else {"username": username, "valid": False,
+                                                               "reason": "no username"}
+        results.append(check)
+        if check["valid"]:
+            kept.append(ch)
+    if len(kept) != len(channels):
+        cfg["channels"] = kept
+        _save_config(cfg)
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -178,143 +229,151 @@ def _parse_message(text: str, channel_slug: str, safe_urls: list[str]) -> dict |
 
 
 # --------------------------------------------------------------------------- #
-# Async Telethon fetch
+# Public web-preview fetch (no auth, no session)
 # --------------------------------------------------------------------------- #
 
-async def _fetch_channel_async(
-    client,
-    channel_identifier,
+_POST_RE = re.compile(r'data-post="([^/"]+)/(\d+)"')
+_MSG_TEXT_RE = re.compile(r'class="tgme_widget_message_text[^"]*"\s+dir="auto">(.*?)</div>', re.S)
+_MSG_TIME_RE = re.compile(r'<time[^>]*datetime="([^"]+)"')
+
+
+def _fetch_preview_page(channel: str, before: int | None = None) -> str | None:
+    """One page of `https://t.me/s/<channel>` — plain HTML, no auth required."""
+    params = {"before": before} if before else None
+    resp = http_get(f"https://t.me/s/{channel}", params=params, timeout=15, retries=1)
+    return resp.text if resp else None
+
+
+def _parse_preview_html(html_text: str) -> list[tuple[int, str, str]]:
+    """Every message in a preview page: (message_id, inner_html, iso_datetime).
+
+    Returned in DOM order — oldest first within the page, matching how Telegram
+    renders it (like a chat scroll), not newest-first.
+    """
+    posts = list(_POST_RE.finditer(html_text))
+    out = []
+    for i, m in enumerate(posts):
+        msg_id = int(m.group(2))
+        start = m.end()
+        end = posts[i + 1].start() if i + 1 < len(posts) else len(html_text)
+        block = html_text[start:end]
+        text_m = _MSG_TEXT_RE.search(block)
+        if not text_m:
+            continue
+        time_m = _MSG_TIME_RE.search(block)
+        out.append((msg_id, text_m.group(1), time_m.group(1) if time_m else ""))
+    return out
+
+
+def validate_channel(channel: str) -> dict:
+    """Live check: is this a real, public, readable Telegram channel?
+
+    Doubles as both the add-channel validator (reject synchronously, never
+    silently store a guess) and the self-heal check during normal fetch() (a
+    channel returning 0 messages gets re-validated and dropped if dead).
+    """
+    channel = channel.lstrip("@").strip()
+    if not channel:
+        return {"username": channel, "valid": False, "reason": "empty channel name"}
+    html_text = _fetch_preview_page(channel)
+    if html_text is None:
+        return {"username": channel, "valid": False, "reason": "unreachable or 404"}
+    messages = _parse_preview_html(html_text)
+    if not messages:
+        return {"username": channel, "valid": False,
+                "reason": "no messages found — private, empty, or nonexistent"}
+    member_m = re.search(r'tgme_channel_info_counter[^>]*>\s*<span[^>]*>([\d.,\sKMk]+)</span>', html_text)
+    return {
+        "username": channel,
+        "valid": True,
+        "member_count_label": (member_m.group(1).strip() if member_m else ""),
+        "sample": _clean_text(messages[-1][1])[:120],
+    }
+
+
+def _fetch_channel_sync(
+    channel: str,
     keyword_terms: list[str],
     max_messages: int,
     cutoff: datetime,
     security_db,
 ) -> list[dict]:
-    """Fetch and process messages from one Telegram channel.
-
-    channel_identifier may be a @username string or a numeric chat ID (int).
-    """
+    """Fetch and process recent messages from one public channel, paginating
+    backward via ?before=<id> until max_messages, the cutoff, or an empty page."""
     try:
         from url_security import check_url  # noqa
     except ImportError:
         def check_url(url, conn):
             return {"safe": True, "risk_label": "safe", "risk_score": 0}
 
+    channel_slug = channel.lower().replace("_", "-")
     jobs: list[dict] = []
-    label = str(channel_identifier)
-    channel_slug = label.lstrip("@").lower().replace("_", "-").replace("-100", "")
+    before: int | None = None
+    seen_ids: set[int] = set()
 
-    try:
-        entity = await client.get_entity(channel_identifier)
-    except Exception as exc:
-        print(f"[telegram] channel {label} inaccessible: {exc}", file=sys.stderr)
-        return []
+    for _page in range(6):  # hard cap — a handful of pages is enough recent history
+        html_text = _fetch_preview_page(channel, before=before)
+        if not html_text:
+            if before is None:
+                print(f"[telegram] channel {channel} inaccessible", file=sys.stderr)
+            break
+        messages = _parse_preview_html(html_text)
+        if not messages:
+            break
 
-    async for msg in client.iter_messages(entity, limit=max_messages):
-        if not msg.date:
-            continue
-        # Ensure timezone-aware comparison
-        msg_date = msg.date
-        if msg_date.tzinfo is None:
-            msg_date = msg_date.replace(tzinfo=timezone.utc)
-        if msg_date < cutoff:
-            break  # messages are ordered newest-first; stop when too old
-
-        text = msg.text or ""
-        if not text or len(text) < 20:
-            continue
-        if not matches_keywords(text, keyword_terms):
-            continue
-
-        # Extract and security-check all URLs
-        raw_urls = _extract_urls(text)
-        safe_urls: list[str] = []
-        for url in raw_urls[:5]:  # cap URLs per message
-            result = check_url(url, security_db)
-            if result["risk_label"] == "dangerous":
-                print(f"[telegram] DANGEROUS URL blocked: {url} "
-                      f"(score={result['risk_score']})", file=sys.stderr)
+        oldest_id = messages[0][0]
+        stop = False
+        for msg_id, text_html, iso_date in reversed(messages):  # newest first within page
+            if msg_id in seen_ids:
                 continue
-            safe_urls.append(result.get("final_url", url))
+            seen_ids.add(msg_id)
 
-        # Only proceed if we have at least one safe URL OR no URLs at all
-        # (some messages are text-only job descriptions)
-        if raw_urls and not safe_urls:
-            continue  # all URLs were dangerous — skip this post
+            msg_date = None
+            if iso_date:
+                try:
+                    msg_date = datetime.fromisoformat(iso_date)
+                except ValueError:
+                    msg_date = None
+            if msg_date and msg_date < cutoff:
+                stop = True
+                break
 
-        job = _parse_message(text, channel_slug, safe_urls)
-        if not job:
-            continue
+            text = _clean_text(text_html)
+            if not text or len(text) < 20:
+                continue
+            if not matches_keywords(text, keyword_terms):
+                continue
 
-        # Flag suspicious links in the job dict for Claude to see
-        suspicious = [u for u in raw_urls if u in safe_urls and
-                      check_url(u, security_db).get("risk_label") == "suspicious"]
-        if suspicious:
-            job["url_suspicious"] = True
+            raw_urls = _extract_urls(text)
+            safe_urls: list[str] = []
+            for url in raw_urls[:5]:
+                result = check_url(url, security_db)
+                if result["risk_label"] == "dangerous":
+                    print(f"[telegram] DANGEROUS URL blocked: {url} "
+                          f"(score={result['risk_score']})", file=sys.stderr)
+                    continue
+                safe_urls.append(result.get("final_url", url))
+            if raw_urls and not safe_urls:
+                continue
 
-        jobs.append(job)
+            job = _parse_message(text, channel_slug, safe_urls)
+            if not job:
+                continue
+            suspicious = [u for u in raw_urls if u in safe_urls and
+                          check_url(u, security_db).get("risk_label") == "suspicious"]
+            if suspicious:
+                job["url_suspicious"] = True
+            jobs.append(job)
+
+            if len(jobs) >= max_messages:
+                stop = True
+                break
+
+        if stop or len(jobs) >= max_messages:
+            break
+        before = oldest_id  # walk further back next page
 
     return jobs
-
-
-async def _fetch_async(
-    keywords: str,
-    max_results: int,
-    hours_old: int,
-    focus: str,
-) -> list[dict]:
-    """Main async orchestrator — iterates all configured channels."""
-    try:
-        from telethon import TelegramClient  # noqa
-    except ImportError:
-        print("[telegram] telethon not installed — skipping. Run: pip install telethon",
-              file=sys.stderr)
-        return []
-
-    try:
-        from url_security import open_db  # noqa
-        security_db = open_db()
-    except Exception:
-        security_db = None  # security checks degraded but don't fail
-
-    api_id, api_hash = _load_secrets()
-    if not api_id or not api_hash:
-        print("[telegram] TELEGRAM_API_ID / TELEGRAM_API_HASH not set — skipping.",
-              file=sys.stderr)
-        return []
-
-    cfg = _load_config()
-    if not cfg.get("enabled", False):
-        return []
-
-    keyword_terms = split_terms(keywords)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_old)
-    max_per_channel = cfg.get("max_messages_per_channel", 50)
-
-    all_jobs: list[dict] = []
-    seen_ids: set[str] = set()
-
-    async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
-        for ch in cfg.get("channels", []):
-            # Support both @username and numeric chat ID for private channels.
-            chat_id = ch.get("id")
-            username = ch.get("username", "")
-            identifier = chat_id if chat_id else (username if username else None)
-            if not identifier:
-                continue
-            label = str(chat_id) if chat_id else f"@{username}"
-            jobs = await _fetch_channel_async(
-                client, identifier, keyword_terms, max_per_channel,
-                cutoff, security_db,
-            )
-            print(f"[telegram] {label}: {len(jobs)} matching jobs", file=sys.stderr)
-            for j in jobs:
-                if j["job_id"] not in seen_ids:
-                    seen_ids.add(j["job_id"])
-                    all_jobs.append(j)
-                    if len(all_jobs) >= max_results:
-                        return all_jobs
-
-    return all_jobs
 
 
 # --------------------------------------------------------------------------- #
@@ -325,220 +384,75 @@ def fetch(keywords: str = "", location: str = "", max_results: int = 60,
           hours_old: int = 24, focus: str = "india") -> list[dict]:
     """Read recent Telegram job channel messages and return canonical job dicts.
 
-    Returns [] if session file is missing, Telethon not installed, or config disabled.
-    Never raises.
+    Returns [] if config is disabled or has no channels. Never raises.
     """
-    if not _session_path().with_suffix(".session").exists():
-        print("[telegram] no session file — run: python3 scripts/scrapers/telegram_channels.py --auth",
-              file=sys.stderr)
-        return []
-    try:
-        return asyncio.run(_fetch_async(keywords, max_results, hours_old, focus))
-    except Exception as exc:
-        print(f"[telegram] fetch failed: {exc}", file=sys.stderr)
-        return []
-
-
-# --------------------------------------------------------------------------- #
-# Channel discovery + validation (Plan D hybrid approach)
-# --------------------------------------------------------------------------- #
-
-SEED_CHANNELS = [
-    # India tech job channels (broad candidates — validated via --discover)
-    "JobsForSoftwareEngineers", "IndiaJobsIT", "TechJobsIndia", "BangaloreJobs",
-    "StartupJobsIndia", "RemoteJobsIndia", "FresherJobsIndia", "IndiaStartupJobs",
-    "SoftwareJobsIndia", "HiringIndia", "JobsforindiA", "devjobsindia",
-    "pythonJobsIndia", "mlJobsIndia", "backendJobsIndia", "freshersjobs_in",
-    "naukrijobsofficial", "hiringfreshers", "campusJobsIndia", "jobsinbengaluru",
-    # Additional broad candidates
-    "techjobsindia", "bengalurujobs", "startupjobsindia", "remotejobsindia",
-    "softwarejobsindia", "freshersjobsindia", "linkedinjobalerts", "indiastartupjobs",
-    "techJobsIndia2", "sde_jobs_india", "india_tech_jobs", "bangalore_tech_jobs",
-    "job_openings_india", "hiring_india_tech", "swe_jobs_india", "fresher_jobs_2025",
-    "softwarejobs_india", "india_startup_hiring", "techrecruiting_india",
-]
-
-_DISCOVERY_QUERIES = [
-    "jobs india",
-    "freshers jobs india",
-    "bangalore jobs hiring",
-    "startup jobs india",
-    "tech hiring india",
-]
-
-# Keywords that must appear (case-insensitive) in a discovered channel's title or username
-# for it to be considered a job channel. Seed channels bypass this filter.
-_JOB_KEYWORDS = {
-    "job", "jobs", "hiring", "career", "careers", "recruit", "vacancy",
-    "vacancies", "fresher", "freshers", "placement", "intern", "internship",
-    "work", "employ", "opportunity", "opportunities",
-}
-
-_MIN_MEMBERS_DISCOVERED = 500  # ignore low-traffic channels found via global search
-
-
-async def _discover_async() -> None:
-    """Validate seed channels + discover new ones via Telegram global search."""
-    try:
-        from telethon import TelegramClient  # noqa
-        from telethon.tl.functions.contacts import SearchRequest  # noqa
-        from telethon.tl.types import Channel  # noqa
-    except ImportError:
-        print("telethon not installed. Run: pip install telethon")
-        sys.exit(1)
-
-    api_id, api_hash = _load_secrets()
-    if not api_id or not api_hash:
-        print("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set first.")
-        sys.exit(1)
-
     cfg = _load_config()
-    cfg_path = REPO_DIR / "config" / "telegram_channels.json"
+    if not cfg.get("enabled", False):
+        return []
+    channels = cfg.get("channels", [])
+    if not channels:
+        return []
 
-    # Collect candidates: seed + existing config channels
-    existing_usernames = {ch["username"] for ch in cfg.get("channels", [])}
-    candidates: set[str] = set(SEED_CHANNELS) | existing_usernames
+    try:
+        from url_security import open_db  # noqa
+        security_db = open_db()
+    except Exception:
+        security_db = None
 
-    async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
-        # Discover via global search
-        print(f"[discover] Running {len(_DISCOVERY_QUERIES)} global search queries...")
-        discovered_usernames: set[str] = set()
-        for query in _DISCOVERY_QUERIES:
-            try:
-                result = await client(SearchRequest(q=query, limit=25))
-                for chat in getattr(result, "chats", []):
-                    username = getattr(chat, "username", None)
-                    title = getattr(chat, "title", "") or ""
-                    if not username:
-                        continue
-                    # Filter: title or username must contain a job-related keyword
-                    combined = (title + " " + username).lower()
-                    if any(kw in combined for kw in _JOB_KEYWORDS):
-                        discovered_usernames.add(username)
-            except Exception as exc:
-                print(f"[discover] search '{query}' failed: {exc}", file=sys.stderr)
+    keyword_terms = split_terms(keywords)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_old)
+    max_per_channel = cfg.get("max_messages_per_channel", 50)
 
-        candidates |= discovered_usernames
+    all_jobs: list[dict] = []
+    seen_ids: set[str] = set()
+    dead: list[str] = []
 
-        print(f"[discover] Validating {len(candidates)} candidate channels...")
-        live: list[dict] = []
-        dead: list[str] = []
-        original_usernames = {ch["username"] for ch in cfg.get("channels", [])}
-        seed_set = set(SEED_CHANNELS)
+    for ch in channels:
+        username = ch.get("username", "")
+        if not username:
+            continue
+        try:
+            jobs = _fetch_channel_sync(username, keyword_terms, max_per_channel,
+                                       cutoff, security_db)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[telegram] @{username} failed: {exc}", file=sys.stderr)
+            jobs = []
+        print(f"[telegram] @{username}: {len(jobs)} matching jobs", file=sys.stderr)
 
-        for username in candidates:
-            is_seed = username in seed_set or username in original_usernames
-            try:
-                entity = await client.get_entity(username)
-                members = getattr(entity, "participants_count", 0) or 0
-                # Apply minimum member threshold only to newly discovered channels
-                if not is_seed and members < _MIN_MEMBERS_DISCOVERED:
-                    continue
-                live.append({"username": username, "members": members})
-            except Exception:
+        if not jobs:
+            # Opportunistic self-heal: a channel returning nothing might be dead,
+            # not just quiet today — check, and only flag it if truly gone.
+            check = validate_channel(username)
+            if not check["valid"]:
                 dead.append(username)
 
-    # Sort by member count descending
-    live.sort(key=lambda c: c["members"], reverse=True)
+        for j in jobs:
+            if j["job_id"] not in seen_ids:
+                seen_ids.add(j["job_id"])
+                all_jobs.append(j)
+                if len(all_jobs) >= max_results:
+                    break
+        if len(all_jobs) >= max_results:
+            break
 
-    newly_discovered = [
-        c["username"] for c in live
-        if c["username"] not in original_usernames and c["username"] not in seed_set
-    ]
+    for username in dead:
+        try:
+            remove_channel(username)
+            print(f"[telegram] {username} dead — removed", file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
 
-    # Write updated config
-    cfg["channels"] = live
-    cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
-
-    print(
-        f"[discover] Live: {len(live)} | Dead/inaccessible: {len(dead)} | "
-        f"Newly discovered: {len(newly_discovered)}"
-    )
-    if len(live) == 0:
-        print(
-            "\n⚠️  WARNING: 0 live channels found after validation.\n"
-            "   All seed channels appear dead or inaccessible.\n"
-            "   Telegram scraping will return 0 jobs until live channels are added.\n"
-            "   Options:\n"
-            "     1. Add known-good channel usernames to config/telegram_channels.json\n"
-            "     2. Add private channel numeric IDs (from Telegram app) as {\"id\": -100...}\n"
-            f"     3. Edit manually: {cfg_path}",
-            file=sys.stderr,
-        )
-    if dead:
-        print(
-            f"[discover] Dead channels: {', '.join(dead)}\n"
-            f"[discover] Edit manually: {cfg_path}",
-            file=sys.stderr,
-        )
-    if newly_discovered:
-        print(f"[discover] New channels: {', '.join(newly_discovered)}")
-
-
-def discover_channels() -> None:
-    """Validate seed + existing channels and discover new ones. Rewrites config."""
-    if not _session_path().with_suffix(".session").exists():
-        print("No session file found. Run --auth first.")
-        sys.exit(1)
-    asyncio.run(_discover_async())
+    return all_jobs
 
 
 # --------------------------------------------------------------------------- #
-# First-time auth
-# --------------------------------------------------------------------------- #
-
-def auth_interactive() -> None:
-    """Authenticate with Telegram (run once). Saves session file."""
-    try:
-        from telethon import TelegramClient  # noqa
-        from telethon.errors import SessionPasswordNeededError  # noqa
-    except ImportError:
-        print("telethon not installed. Run: pip install telethon")
-        sys.exit(1)
-
-    api_id, api_hash = _load_secrets()
-    if not api_id or not api_hash:
-        print("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set first.")
-        print("  1. Visit https://my.telegram.org → Log in → API Development Tools")
-        print("  2. Create an app and copy the API ID and API Hash")
-        print("  3. Run:")
-        print("       python3 -c \"from scripts.secrets import set_secret; "
-              "set_secret('TELEGRAM_API_ID', 'YOUR_ID'); "
-              "set_secret('TELEGRAM_API_HASH', 'YOUR_HASH')\"")
-        sys.exit(1)
-
-    print(f"Session will be saved to: {_session_path()}.session")
-    print("You will receive an OTP on your Telegram app.\n")
-
-    async def _do_auth():
-        async with TelegramClient(str(_session_path()), api_id, api_hash) as client:
-            if not await client.is_user_authorized():
-                phone = input("Enter your phone number (with country code, e.g. +91...): ").strip()
-                await client.send_code_request(phone)
-                code = input("Enter the OTP from Telegram: ").strip()
-                try:
-                    await client.sign_in(phone, code)
-                except SessionPasswordNeededError:
-                    password = input("2FA password: ").strip()
-                    await client.sign_in(password=password)
-            me = await client.get_me()
-            print(f"\nAuthenticated as: {me.first_name} (@{me.username})")
-            print("Session saved. Telegram channel scraper is ready.")
-
-    asyncio.run(_do_auth())
-
-
-# --------------------------------------------------------------------------- #
-# CLI
+# CLI — self-test only. Channel management is validate_channel/add_channel/
+# remove_channel above (exposed via core/repo/telegram_channels.py + the UI);
+# there's no automated *discovery* here — t.me/s/ has no public search endpoint,
+# so finding new channels is a manual, user-driven "add and validate" flow.
 # --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
-    if "--auth" in sys.argv:
-        auth_interactive()
-    elif "--discover" in sys.argv:
-        discover_channels()
-    else:
-        import json as _json
-        results = fetch("software engineer backend", max_results=10)
-        print(f"telegram_channels: {len(results)} jobs", file=sys.stderr)
-        print(_json.dumps(results[:3], indent=2, ensure_ascii=False))
+    results = fetch("software engineer backend", max_results=10)
+    print(f"telegram_channels: {len(results)} jobs", file=sys.stderr)
+    print(json.dumps(results[:3], indent=2, ensure_ascii=False))

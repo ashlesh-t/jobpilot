@@ -18,18 +18,13 @@ JobPilot can learn which companies and roles are realistic for your profile.
 
 Run:
 ```bash
-sqlite3 ~/.claude/job-hunt-ai/cache/jobs.sqlite "
-  SELECT js.job_id, js.company, js.role, js.location, js.match_score,
-         js.tailored_resume_path,
-         COALESCE(uf.status, 'pending') as feedback_status
-  FROM jobs_seen js
-  LEFT JOIN user_feedback uf ON js.job_id = uf.job_id
-  WHERE js.tailored_resume_path IS NOT NULL
-     OR uf.status IS NOT NULL
-  ORDER BY js.last_seen DESC
-  LIMIT 20;
-"
+python3 scripts/feedback_candidates.py --limit 20
 ```
+
+This prints a JSON array of this account's jobs that have an application, a tailored
+resume, or an existing feedback row — each with `job_id`, `company`, `role`,
+`location`, `score`, `feedback_status`, and the `matched_skills`/`archetype`/
+`source_board` Step 3b needs later.
 
 Show the results as a numbered list:
 ```
@@ -74,8 +69,9 @@ Print confirmation after each: `Recorded: DataArt Backend Engineer → interview
 
 ## Step 3b — Update learning weights
 
-After all statuses are recorded, update `~/.claude/job-hunt-ai/cache/learning.json`
-(**read it first**; if missing, start from this template):
+After all statuses are recorded, update `<user_cache_dir>/learning.json` (this
+account's own file — see RUN CONTEXT; **read it first**; if missing, start from this
+template):
 
 ```json
 {"version": 1, "updated_at": "", "outcome_count": 0,
@@ -84,10 +80,10 @@ After all statuses are recorded, update `~/.claude/job-hunt-ai/cache/learning.js
 
 For **each newly recorded outcome** on job J:
 
-1. Get J's signals: read `score_json` from
-   `SELECT score_json FROM score_cache WHERE job_id=? ORDER BY computed_at DESC LIMIT 1;`
-   → `matched_skills`, `archetype`, `source_board`. If no row exists, skip this job
-   (log `learning: no score record for <job_id> — skipped`).
+1. Get J's signals from Step 1's JSON output for that `job_id`: `matched_skills`,
+   `archetype`, `source_board`. If J wasn't in that listing (e.g. tagged via
+   `/job-feedback <job_id> <status>` directly), skip this job (log
+   `learning: no score record for <job_id> — skipped`).
 2. Outcome value `v`: `offer +1.0 | interview +0.6 | applied 0.0 | ghosted -0.3 | rejected -0.6`.
 3. For each signal `s` (each matched skill → `skill_weights`; archetype →
    `archetype_weights`; source_board → `source_weights`), with missing keys starting at 1.0:
@@ -129,6 +125,6 @@ Run /job-feedback again any time to update outcomes.
 - Feedback is stored in `user_feedback` table and cross-referenced in the next
   `/job-search` run so Claude can flag if high-scoring companies consistently reject
   and low-scoring ones give interviews.
-- Outcomes also feed `cache/learning.json` (Step 3b): once ≥5 outcomes exist,
+- Outcomes also feed this account's `learning.json` (Step 3b): once ≥5 outcomes exist,
   `/job-search` nudges *ranking* (never absolute scores) toward what actually gets you
   interviews. Reset it any time with `/jobpilot-clear`.

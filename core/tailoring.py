@@ -67,8 +67,8 @@ def resume_basename(full_name: str) -> str:
     return tailored_repo.resume_basename(full_name)
 
 
-def folder_for(job_id: str, company: str) -> Path:
-    return tailored_repo.folder_for(job_id, company)
+def folder_for(user_id: int, job_id: str, company: str) -> Path:
+    return tailored_repo.folder_for(user_id, job_id, company)
 
 
 # --------------------------------------------------------------------------- #
@@ -181,12 +181,12 @@ def ats_score(text: str, jd_skills: list[str]) -> float:
 # --------------------------------------------------------------------------- #
 # Persisting a result
 # --------------------------------------------------------------------------- #
-def write_result(*, job_id: str, company: str, full_name: str, tex_source: str,
+def write_result(*, user_id: int, job_id: str, company: str, full_name: str, tex_source: str,
                  jd_skills: list[str], base_text: str = "", engine: str = "",
                  cost_usd: float = 0.0, base_resume_id: int | None = None) -> dict:
     """Write the folder, compile, score, and record it. Never raises on a compile error —
     a .tex the user can take to Overleaf is still a useful result."""
-    folder = folder_for(job_id, company)
+    folder = folder_for(user_id, job_id, company)
     folder.mkdir(parents=True, exist_ok=True)
     basename = resume_basename(full_name)
 
@@ -223,6 +223,7 @@ def write_result(*, job_id: str, company: str, full_name: str, tex_source: str,
     (folder / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
     record = tailored_repo.upsert(
+        user_id,
         job_id,
         company=company,
         pdf_path=str(pdf_path) if pdf_path else "",
@@ -241,8 +242,8 @@ def write_result(*, job_id: str, company: str, full_name: str, tex_source: str,
     return record
 
 
-def list_folder(folder_name: str) -> list[dict]:
-    root = tailored_dir() / folder_name
+def list_folder(user_id: int, folder_name: str) -> list[dict]:
+    root = tailored_dir(user_id) / folder_name
     if not root.exists():
         return []
     return [

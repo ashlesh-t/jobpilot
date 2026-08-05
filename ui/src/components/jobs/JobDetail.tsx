@@ -1,13 +1,72 @@
 /** Everything JobPilot knows about one job, and why it scored the way it did. */
-import { Check, ExternalLink, FileText, Undo2, Wand2 } from 'lucide-react'
+import { Check, Copy, ExternalLink, FileText, MessageSquarePlus, Undo2, Wand2 } from 'lucide-react'
+import { useState } from 'react'
 
 import { HelpTip } from '@/components/ui/Help'
 import { useToast } from '@/components/ui/Toast'
-import { Chip, Dialog, ErrorState, Loading, ProgressBar } from '@/components/ui/primitives'
+import { Chip, Dialog, ErrorState, Loading, ProgressBar, StatusChip } from '@/components/ui/primitives'
 import { ApiError } from '@/lib/api'
 import { formatDate, formatLpa, relativeTime, scoreTone } from '@/lib/format'
+import type { Job } from '@/lib/jobs'
 import { useJob, useMarkApplied, useUnmarkApplied } from '@/lib/jobs'
+import { useGenerateReferral, useSetReferralStatus } from '@/lib/referrals'
 import { useTailorJob } from '@/lib/tailored'
+
+const REFERRAL_STATUSES = ['drafted', 'sent', 'responded', 'declined']
+
+function ReferralItem({
+  referral,
+  jobId,
+}: {
+  referral: NonNullable<Job['referrals']>[number]
+  jobId: string
+}) {
+  const setStatus = useSetReferralStatus()
+  const toast = useToast()
+
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(referral.message)
+      toast.success('Copied — paste it wherever you want to send it.')
+    } catch {
+      toast.error('Could not copy to clipboard.')
+    }
+  }
+
+  return (
+    <li className="rounded-lg border border-line p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs text-muted">To {referral.contact_name || 'contact'}</span>
+        <div className="flex items-center gap-2">
+          <StatusChip status={referral.status} />
+          <select
+            className="input h-7 text-xs"
+            value={referral.status}
+            onChange={(e) =>
+              setStatus.mutate({ id: referral.id, status: e.target.value, jobId })
+            }
+          >
+            {REFERRAL_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn-icon"
+            onClick={onCopy}
+            aria-label="Copy message"
+            title="Copy to clipboard"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+      <p className="whitespace-pre-wrap text-sm text-ink">{referral.message}</p>
+    </li>
+  )
+}
 
 function Section({ title, helpId, children }: { title: string; helpId?: string; children: React.ReactNode }) {
   return (
@@ -39,7 +98,9 @@ export function JobDetail({ jobId, onClose }: { jobId: string | null; onClose: (
   const markApplied = useMarkApplied()
   const unmark = useUnmarkApplied()
   const tailor = useTailorJob()
+  const generateReferral = useGenerateReferral()
   const toast = useToast()
+  const [selectedContactId, setSelectedContactId] = useState<number | null>(null)
 
   const onTailor = async () => {
     if (!job) return
@@ -65,6 +126,17 @@ export function JobDetail({ jobId, onClose }: { jobId: string | null; onClose: (
       })
     } catch (e) {
       toast.error(e instanceof ApiError ? e.detail : 'Could not mark that applied.')
+    }
+  }
+
+  const onDraftReferral = async () => {
+    if (!job?.contacts?.length) return
+    const contactId = selectedContactId ?? job.contacts[0].id
+    try {
+      await generateReferral.mutateAsync({ jobId: job.job_id, contactId })
+      toast.success(`Referral message drafted — see it below.`)
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.detail : 'Could not draft that message.')
     }
   }
 
@@ -104,6 +176,34 @@ export function JobDetail({ jobId, onClose }: { jobId: string | null; onClose: (
               {tailor.isPending ? 'Tailoring…' : 'Tailor resume'}
               <HelpTip id="resume.tailor" />
             </button>
+            {job.contacts && job.contacts.length > 0 && (
+              <>
+                {job.contacts.length > 1 && (
+                  <select
+                    className="input h-8 max-w-[10rem] text-xs"
+                    value={selectedContactId ?? job.contacts[0].id}
+                    onChange={(e) => setSelectedContactId(Number(e.target.value))}
+                  >
+                    {job.contacts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name || c.email || `Contact #${c.id}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={onDraftReferral}
+                  disabled={generateReferral.isPending}
+                  title="Draft a referral-request message — you review and send it yourself"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5" />
+                  {generateReferral.isPending ? 'Drafting…' : 'Draft referral message'}
+                  <HelpTip text="Generates a draft you copy/edit and send yourself — nothing is ever sent automatically." />
+                </button>
+              </>
+            )}
             {job.application_status ? (
               <button
                 type="button"
@@ -273,6 +373,19 @@ export function JobDetail({ jobId, onClose }: { jobId: string | null; onClose: (
                     <span className="text-ink">{item.folder_name}</span>
                     <span className="text-faint">{relativeTime(item.created_at)}</span>
                   </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {job.referrals && job.referrals.length > 0 && (
+            <Section
+              title="Referral messages"
+              helpId="referral.draft"
+            >
+              <ul className="space-y-3">
+                {job.referrals.map((r) => (
+                  <ReferralItem key={r.id} referral={r} jobId={job.job_id} />
                 ))}
               </ul>
             </Section>

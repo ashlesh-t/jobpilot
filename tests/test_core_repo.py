@@ -35,6 +35,13 @@ def store(tmp_path, monkeypatch):
     db.dispose()
 
 
+@pytest.fixture()
+def user_id(store):
+    """A real account row — every repo function now scopes its query to one."""
+    from core.repo import users as users_repo
+    return users_repo.create(username="tester", password="testpass123")["id"]
+
+
 def test_schema_has_every_table(store):
     from sqlalchemy import inspect
     from core import db
@@ -45,24 +52,92 @@ def test_schema_has_every_table(store):
         assert model.__tablename__ in names
 
 
-def test_settings_roundtrip_and_export(store):
+def test_settings_roundtrip_and_export(store, user_id):
     from core.repo import settings
 
-    settings.update_preferences({"locations": ["Bengaluru", "Remote"], "score_threshold": 70})
-    prefs = settings.preferences()
+    settings.update_preferences(user_id, {"locations": ["Bengaluru", "Remote"], "score_threshold": 70})
+    prefs = settings.preferences(user_id)
     assert prefs["locations"] == ["Bengaluru", "Remote"]
     assert prefs["score_threshold"] == 70
     # Layer A scripts read preferences.json directly, so it must stay in sync.
     import json
-    exported = json.loads((store / "options" / "preferences.json").read_text())
+    exported = json.loads(
+        (store / "users" / str(user_id) / "options" / "preferences.json").read_text())
     assert exported["locations"] == ["Bengaluru", "Remote"]
 
 
-def test_settings_ignores_unknown_keys(store):
+def test_settings_ignores_unknown_keys(store, user_id):
     from core.repo import settings
 
-    settings.update_preferences({"locations": ["Pune"], "not_a_preference": 1})
-    assert "not_a_preference" not in settings.preferences()
+    settings.update_preferences(user_id, {"locations": ["Pune"], "not_a_preference": 1})
+    assert "not_a_preference" not in settings.preferences(user_id)
+
+
+def test_pipeline_phase_config_defaults_every_phase(store, user_id):
+    from core.repo import settings
+
+    cfg = settings.pipeline_phase_config(user_id)
+    from orchestrator import phases as P
+    assert set(cfg) == set(P.PHASE_KEYS)
+    assert all(entry == {"enabled": True, "model": None} for entry in cfg.values())
+    # A python phase's model is always None even if something stray got stored there.
+    assert cfg["scrape"]["model"] is None
+
+
+def test_pipeline_phase_config_rejects_an_unknown_phase(store, user_id):
+    from core.repo import settings
+
+    import pytest as pt
+    with pt.raises(ValueError):
+        settings.set_pipeline_phase_config(user_id, {"not-a-real-phase": {"enabled": True}})
+
+
+def test_pipeline_phase_config_persists_a_choice(store, user_id):
+    from core.repo import settings
+
+    settings.set_pipeline_phase_config(user_id, {"discover": {"enabled": False, "model": "haiku"}})
+    cfg = settings.pipeline_phase_config(user_id)
+    assert cfg["discover"] == {"enabled": False, "model": "haiku"}
+    # Untouched phases keep their defaults.
+    assert cfg["score"] == {"enabled": True, "model": None}
+
+
+def test_enabled_phase_keys_always_includes_required_phases(store, user_id):
+    """discover/intel/salary/notify are optional; everything else is required and
+    must run regardless of what's stored — a bad config should never silently break
+    the pipeline by dropping a hard dependency."""
+    from core.repo import settings
+
+    settings.set_pipeline_phase_config(user_id, {
+        "discover": {"enabled": False},
+        "scrape": {"enabled": False},  # required — must be ignored
+    })
+    keys = settings.enabled_phase_keys(user_id)
+    assert "scrape" in keys
+    assert "discover" not in keys
+
+
+def test_upgrade_migrates_stale_accept_edits_default(store, user_id):
+    """Anyone who ran `jobpilot setup` before the bypassPermissions default existed has
+    the old value baked into their settings row, with no UI to change it by hand —
+    migration 0002 must fix it silently on the very next `jobpilot start`/`serve`,
+    with no manual step, since that's how every existing install actually upgrades."""
+    from alembic import command
+    from core import db
+    from core.migrations import alembic_config
+    from core.repo import settings as settings_repo
+
+    # Simulate an install that predates migration 0002: rewind the tracked revision
+    # and write the settings row the way the old default would have.
+    cfg = alembic_config(db.get_engine().url.render_as_string(hide_password=False))
+    cfg.attributes["connection"] = db.get_engine()
+    command.stamp(cfg, "0001_initial")
+    settings_repo.set(user_id, "engine", {"provider": "claude_code", "model": "",
+                                 "permission_mode": "acceptEdits"}, export=False)
+
+    db.init_db()  # what every `jobpilot start`/`serve` already calls
+
+    assert settings_repo.engine_config(user_id)["permission_mode"] == "bypassPermissions"
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -90,115 +165,115 @@ def _job(job_id="j1", **kw):
     return base
 
 
-def test_upsert_and_query_jobs(store):
+def test_upsert_and_query_jobs(store, user_id):
     from core.repo import jobs
 
-    res = jobs.upsert_scored([_job("j1"), _job("j2", company="Globex", score=52.0,
+    res = jobs.upsert_scored(user_id, [_job("j1"), _job("j2", company="Globex", score=52.0,
                                               market_salary="6-9 LPA")])
     assert res == {"inserted": 2, "updated": 0}
 
-    page = jobs.query(sort="score", order="desc")
+    page = jobs.query(user_id, sort="score", order="desc")
     assert page["total"] == 2
     assert [i["job_id"] for i in page["items"]] == ["j1", "j2"]
     assert page["items"][0]["salary_max_lpa"] == 24.0
 
     # sort by package
-    by_pkg = jobs.query(sort="package", order="asc")
+    by_pkg = jobs.query(user_id, sort="package", order="asc")
     assert by_pkg["items"][0]["job_id"] == "j2"
 
     # filters
-    assert jobs.query(min_score=60)["total"] == 1
-    assert jobs.query(min_salary=10)["total"] == 1
-    assert jobs.query(search="globex")["total"] == 1
+    assert jobs.query(user_id, min_score=60)["total"] == 1
+    assert jobs.query(user_id, min_salary=10)["total"] == 1
+    assert jobs.query(user_id, search="globex")["total"] == 1
 
 
-def test_upsert_preserves_apply_url_and_updates(store):
+def test_upsert_preserves_apply_url_and_updates(store, user_id):
     from core.repo import jobs
 
-    jobs.upsert_scored([_job("j1")])
-    res = jobs.upsert_scored([_job("j1", application_url="", score=88.0)])
+    jobs.upsert_scored(user_id, [_job("j1")])
+    res = jobs.upsert_scored(user_id, [_job("j1", application_url="", score=88.0)])
     assert res == {"inserted": 0, "updated": 1}
-    row = jobs.get("j1")
+    row = jobs.get(user_id, "j1")
     assert row["application_url"] == "https://acme.test/apply"   # never blanked
     assert row["score"] == 88.0
 
 
-def test_stale_marking_and_filter(store):
+def test_stale_marking_and_filter(store, user_id):
     from datetime import timedelta
 
     from core.db import session_scope
     from core.models import Job, utcnow
     from core.repo import jobs
 
-    jobs.upsert_scored([_job("old"), _job("new")])
+    jobs.upsert_scored(user_id, [_job("old"), _job("new")])
     with session_scope() as s:
         s.get(Job, "old").last_seen = utcnow() - timedelta(days=60)
 
-    assert jobs.mark_stale(days=21) == 1
-    assert jobs.query()["total"] == 1                       # stale hidden by default
-    assert jobs.query(include_stale=True)["total"] == 2
+    assert jobs.mark_stale(user_id, days=21) == 1
+    assert jobs.query(user_id)["total"] == 1                       # stale hidden by default
+    assert jobs.query(user_id, include_stale=True)["total"] == 2
 
 
-def test_stale_marking_uses_deadline(store):
+def test_stale_marking_uses_deadline(store, user_id):
     from core.repo import jobs
 
-    jobs.upsert_scored([_job("expired", last_date="2020-01-01")])
-    assert jobs.mark_stale(days=999) == 1
+    jobs.upsert_scored(user_id, [_job("expired", last_date="2020-01-01")])
+    assert jobs.mark_stale(user_id, days=999) == 1
 
 
-def test_application_lifecycle(store):
+def test_application_lifecycle(store, user_id):
     from core.repo import applications, jobs
 
-    jobs.upsert_scored([_job("j1")])
-    app = applications.mark_applied("j1", note="via referral")
+    jobs.upsert_scored(user_id, [_job("j1")])
+    app = applications.mark_applied(user_id, "j1", note="via referral")
     assert app["status"] == "applied"
     assert len(app["status_history"]) == 1
 
     # idempotent
-    assert applications.mark_applied("j1")["id"] == app["id"]
+    assert applications.mark_applied(user_id, "j1")["id"] == app["id"]
 
-    moved = applications.set_status("j1", "interview", note="round 1 scheduled")
+    moved = applications.set_status(user_id, "j1", "interview", note="round 1 scheduled")
     assert moved["status"] == "interview"
     assert [h["status"] for h in moved["status_history"]] == ["applied", "interview"]
 
-    assert jobs.query(applied_only=True)["total"] == 1
-    assert jobs.query(unapplied_only=True)["total"] == 0
+    assert jobs.query(user_id, applied_only=True)["total"] == 1
+    assert jobs.query(user_id, unapplied_only=True)["total"] == 0
 
-    assert applications.unmark("j1") is True
-    assert applications.get("j1") is None
-    assert jobs.query(unapplied_only=True)["total"] == 1
+    assert applications.unmark(user_id, "j1") is True
+    assert applications.get(user_id, "j1") is None
+    assert jobs.query(user_id, unapplied_only=True)["total"] == 1
 
 
-def test_application_rejects_bad_status(store):
+def test_application_rejects_bad_status(store, user_id):
     from core.repo import applications, jobs
 
-    jobs.upsert_scored([_job("j1")])
-    applications.mark_applied("j1")
+    jobs.upsert_scored(user_id, [_job("j1")])
+    applications.mark_applied(user_id, "j1")
     with pytest.raises(ValueError):
-        applications.set_status("j1", "hired")
+        applications.set_status(user_id, "j1", "hired")
 
 
-def test_application_funnel_is_cumulative(store):
+def test_application_funnel_is_cumulative(store, user_id):
     from core.repo import applications, jobs
 
-    jobs.upsert_scored([_job("a"), _job("b"), _job("c")])
+    jobs.upsert_scored(user_id, [_job("a"), _job("b"), _job("c")])
     for jid in ("a", "b", "c"):
-        applications.mark_applied(jid)
-    applications.set_status("b", "interview")
-    applications.set_status("c", "placed")
+        applications.mark_applied(user_id, jid)
+    applications.set_status(user_id, "b", "interview")
+    applications.set_status(user_id, "c", "placed")
 
-    f = applications.funnel()
+    f = applications.funnel(user_id)
     stages = {x["stage"]: x["count"] for x in f["stages"]}
     assert stages["applied"] == 3
     assert stages["interview"] == 2      # b (at interview) + c (already past it)
     assert stages["placed"] == 1
 
 
-def test_run_phase_lifecycle_and_invalidate(store):
+def test_run_phase_lifecycle_and_invalidate(store, user_id):
     from core.repo import runs
 
     rid = runs.new_run_id()
-    runs.create(rid, mode="native", engine="claude_code",
+    runs.create(user_id, rid, mode="native", engine="claude_code",
                 phase_keys=["scrape", "filter", "score", "report"])
 
     runs.phase_start(rid, "scrape")
@@ -215,7 +290,7 @@ def test_run_phase_lifecycle_and_invalidate(store):
     assert reset == ["score", "report"]
     assert runs.first_incomplete(rid) == "score"
 
-    run = runs.get(rid)
+    run = runs.get(user_id, rid)
     assert run["cost_usd"] == 0.01
     assert run["tokens_in"] == 100
     by_key = {p["key"]: p for p in run["phases"]}
@@ -224,11 +299,11 @@ def test_run_phase_lifecycle_and_invalidate(store):
     assert by_key["score"]["status"] == "pending"
 
 
-def test_run_events_are_sequenced_and_persisted(store):
+def test_run_events_are_sequenced_and_persisted(store, user_id):
     from core.repo import runs
 
     rid = runs.new_run_id()
-    runs.create(rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
+    runs.create(user_id, rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
     for i in range(3):
         runs.add_event(rid, {"stage": "scrape", "msg": f"m{i}", "origin": "layerA"})
 
@@ -237,118 +312,119 @@ def test_run_events_are_sequenced_and_persisted(store):
     assert runs.events(rid, after_seq=2)[0]["msg"] == "m2"
 
 
-def test_reset_orphans_marks_interrupted_runs(store):
+def test_reset_orphans_marks_interrupted_runs(store, user_id):
     from core.repo import runs
 
     rid = runs.new_run_id()
-    runs.create(rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
-    runs.set_status(rid, "running")
+    runs.create(user_id, rid, mode="auto", engine="claude_code", phase_keys=["scrape"])
+    runs.set_status(user_id, rid, "running")
     runs.phase_start(rid, "scrape")
 
     assert runs.reset_orphans() == 1
-    run = runs.get(rid)
+    run = runs.get(user_id, rid)
     assert run["status"] == "error"
     assert run["phases"][0]["status"] == "cancelled"
 
 
-def test_resume_upload_activation_and_removal(store, tmp_path):
+def test_resume_upload_activation_and_removal(store, user_id, tmp_path):
     from core.repo import resumes
 
     src = tmp_path / "my_cv.pdf"
     src.write_bytes(b"%PDF-1.4 fake")
-    first = resumes.add(src, folder="2026")
+    first = resumes.add(user_id, src, folder="2026")
     assert first["is_active"] is True                 # first upload auto-activates
 
     src2 = tmp_path / "other.pdf"
     src2.write_bytes(b"%PDF-1.4 other")
-    second = resumes.add(src2, folder="2026")
+    second = resumes.add(user_id, src2, folder="2026")
     assert second["is_active"] is False
 
-    resumes.set_active(second["id"])
-    assert resumes.active()["id"] == second["id"]
+    resumes.set_active(user_id, second["id"])
+    assert resumes.active(user_id)["id"] == second["id"]
 
-    resumes.remove(second["id"])
-    assert resumes.active()["id"] == first["id"]      # activation falls back
+    resumes.remove(user_id, second["id"])
+    assert resumes.active(user_id)["id"] == first["id"]      # activation falls back
 
 
-def test_resume_rejects_unsupported_type(store, tmp_path):
+def test_resume_rejects_unsupported_type(store, user_id, tmp_path):
     from core.repo import resumes
 
     bad = tmp_path / "resume.exe"
     bad.write_bytes(b"nope")
     with pytest.raises(ValueError):
-        resumes.add(bad)
+        resumes.add(user_id, bad)
 
 
-def test_profile_save_exports_json_and_resets_verification(store):
+def test_profile_save_exports_json_and_resets_verification(store, user_id):
     import json
 
     from core.repo import profiles
 
-    profiles.save({"name": "Ada Lovelace", "skills": ["Go"]}, verified=True,
+    profiles.save(user_id, {"name": "Ada Lovelace", "skills": ["Go"]}, verified=True,
                   resume_hash="hash-a")
-    assert profiles.is_verified() is True
-    on_disk = json.loads((store / "cache" / "profile.json").read_text())
+    assert profiles.is_verified(user_id) is True
+    on_disk = json.loads(
+        (store / "users" / str(user_id) / "cache" / "profile.json").read_text())
     assert on_disk["name"] == "Ada Lovelace"
     assert on_disk["profile_verified"] is True
 
     # New resume hash invalidates the human verification.
-    profiles.save({}, resume_hash="hash-b")
-    assert profiles.is_verified() is False
-    assert profiles.current()["name"] == "Ada Lovelace"   # merge, not replace
+    profiles.save(user_id, {}, resume_hash="hash-b")
+    assert profiles.is_verified(user_id) is False
+    assert profiles.current(user_id)["name"] == "Ada Lovelace"   # merge, not replace
 
 
-def test_tailored_naming_and_upsert(store):
+def test_tailored_naming_and_upsert(store, user_id):
     from core.repo import jobs, tailored
 
     assert tailored.resume_basename("ashlesh tiwari") == "Ashlesh_Tiwari_Resume"
     assert tailored.folder_name("abc123", "Swiss Re") == "abc123-SwissRe"
 
-    jobs.upsert_scored([_job("abc123", company="Swiss Re")])
-    rec = tailored.upsert("abc123", company="Swiss Re", pdf_path="/x/a.pdf",
+    jobs.upsert_scored(user_id, [_job("abc123", company="Swiss Re")])
+    rec = tailored.upsert(user_id, "abc123", company="Swiss Re", pdf_path="/x/a.pdf",
                           ats_before=60, ats_after=82, engine="claude_code")
     assert rec["folder_name"] == "abc123-SwissRe"
-    assert tailored.count() == 1
+    assert tailored.count(user_id) == 1
 
-    again = tailored.upsert("abc123", company="Swiss Re", tex_path="/x/a.tex")
+    again = tailored.upsert(user_id, "abc123", company="Swiss Re", tex_path="/x/a.tex")
     assert again["id"] == rec["id"]           # same folder → same row
     assert again["pdf_path"] == "/x/a.pdf"    # earlier value preserved
 
 
-def test_cost_summary_separates_subscription_tokens(store):
+def test_cost_summary_separates_subscription_tokens(store, user_id):
     from core.repo import cost
 
-    cost.record(engine="claude_api", model="claude-opus-5", tokens_in=1000,
+    cost.record(user_id, engine="claude_api", model="claude-opus-5", tokens_in=1000,
                 tokens_out=500, usd=0.12, run_id="r1", phase_key="score")
-    cost.record(engine="claude_code", tokens_in=4000, tokens_out=900, usd=0.0,
+    cost.record(user_id, engine="claude_code", tokens_in=4000, tokens_out=900, usd=0.0,
                 source="subscription", run_id="r1", phase_key="scrape")
 
-    s = cost.summary(run_id="r1")
+    s = cost.summary(user_id, run_id="r1")
     assert s["usd"] == 0.12
     assert s["tokens_in"] == 5000
     assert s["subscription_tokens"] == 4900
-    assert len(cost.for_run("r1")) == 2
+    assert len(cost.for_run(user_id, "r1")) == 2
 
 
-def test_schedule_slot_crud_and_unique_names(store):
+def test_schedule_slot_crud_and_unique_names(store, user_id):
     from core.repo import schedule
 
-    a = schedule.create(name="morning", time="09:30")
-    b = schedule.create(name="morning", time="14:00")
+    a = schedule.create(user_id, name="morning", time="09:30")
+    b = schedule.create(user_id, name="morning", time="14:00")
     assert b["name"] == "morning-2"
 
-    schedule.update(a["id"], time="10:00", enabled=False)
-    assert schedule.get(a["id"])["time"] == "10:00"
-    assert len(schedule.list_all(enabled_only=True)) == 1
+    schedule.update(user_id, a["id"], time="10:00", enabled=False)
+    assert schedule.get(user_id, a["id"])["time"] == "10:00"
+    assert len(schedule.list_all(user_id, enabled_only=True)) == 1
 
     with pytest.raises(ValueError):
-        schedule.create(name="bad", time="25:00")
+        schedule.create(user_id, name="bad", time="25:00")
 
-    assert schedule.delete(b["id"]) is True
-    assert len(schedule.list_all()) == 1
+    assert schedule.delete(user_id, b["id"]) is True
+    assert len(schedule.list_all(user_id)) == 1
 
 
-def test_missed_slots_returns_one_catchup_per_slot(store):
+def test_missed_slots_returns_one_catchup_per_slot(store, user_id):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
@@ -357,16 +433,16 @@ def test_missed_slots_returns_one_catchup_per_slot(store):
     tz = ZoneInfo("Asia/Kolkata")
     # "Now" is 11:00 IST; a 09:30 slot fired 1.5h ago and was never served.
     now = datetime(2026, 8, 1, 11, 0, tzinfo=tz)
-    schedule.create(name="morning", time="09:30")
-    schedule.create(name="evening", time="18:00")
+    schedule.create(user_id, name="morning", time="09:30")
+    schedule.create(user_id, name="evening", time="18:00")
 
-    due = schedule.missed_since_downtime(grace_hours=6, now=now)
+    due = schedule.missed_since_downtime(user_id, grace_hours=6, now=now)
     assert [d["name"] for d in due] == ["morning"]
 
     # Outside the grace window → skipped rather than a surprise run.
-    assert schedule.missed_since_downtime(grace_hours=1, now=now) == []
+    assert schedule.missed_since_downtime(user_id, grace_hours=1, now=now) == []
 
     # Already served → not due again.
-    schedule.record_fire(due[0]["id"], run_id="r1", when=now)
+    schedule.record_fire(user_id, due[0]["id"], run_id="r1", when=now)
     later = now + timedelta(minutes=5)
-    assert schedule.missed_since_downtime(grace_hours=6, now=later) == []
+    assert schedule.missed_since_downtime(user_id, grace_hours=6, now=later) == []

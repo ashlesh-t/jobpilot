@@ -9,6 +9,7 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { PageHeader } from '@/components/layout/PageHeader'
 import { HelpTip, PageHelp } from '@/components/ui/Help'
@@ -195,6 +196,39 @@ export function ResumesPage() {
             <code className="rounded bg-raised px-1">tectonic</code> to get PDFs directly,
             or paste the source into Overleaf.
           </p>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm font-medium text-accent">
+              How to install it
+            </summary>
+            <div className="mt-2 space-y-2 text-sm text-muted">
+              <p>
+                Easiest: run{' '}
+                <code className="rounded bg-raised px-1">jobpilot upgrade</code> or{' '}
+                <code className="rounded bg-raised px-1">jobpilot setup</code> — both offer
+                to install it into <code className="rounded bg-raised px-1">~/.local/bin</code>,
+                no admin rights needed.
+              </p>
+              {!!data.tectonic_hints?.length && (
+                <div>
+                  <p className="mb-1">Or use your package manager:</p>
+                  <ul className="space-y-1">
+                    {data.tectonic_hints.map((hint) => (
+                      <li key={hint}>
+                        <code className="rounded bg-raised px-1">{hint}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p>
+                Restart JobPilot afterwards — see{' '}
+                <Link to="/whoami#tools" className="text-accent hover:underline">
+                  what's installed
+                </Link>{' '}
+                to confirm it was picked up.
+              </p>
+            </div>
+          </details>
         </Card>
       )}
 

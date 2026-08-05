@@ -41,7 +41,7 @@ function SecretRow({ secret }: { secret: SecretEntry }) {
     if (!draft.trim()) return
     try {
       await save.mutateAsync({ key: secret.key, value: draft })
-      toast.success(`${secret.label} saved to your system keyring.`)
+      toast.success(`${secret.label} saved.`)
       setEditing(false)
       setDraft('')
       setRevealed(null)
@@ -178,7 +178,7 @@ function SecretRow({ secret }: { secret: SecretEntry }) {
   )
 }
 
-export function SecretsVault() {
+export function SecretsVault({ groups }: { groups?: string[] } = {}) {
   const { data: secrets, isLoading } = useSecrets()
 
   const grouped = (secrets ?? []).reduce<Record<string, SecretEntry[]>>((acc, secret) => {
@@ -186,14 +186,16 @@ export function SecretsVault() {
     return acc
   }, {})
 
+  const order = groups ?? GROUP_ORDER
+
   return (
     <Card
       title="Keys and tokens"
-      subtitle="Stored in your operating system keyring — never in the database, never in a log"
+      subtitle="Encrypted and stored under your account — never in plain text, never in a log"
       actions={
         <Chip tone="neutral" icon={<KeyRound className="h-3 w-3" />}>
           <span className="flex items-center gap-1">
-            Keyring
+            Encrypted
             <HelpTip id="secrets.storage" />
           </span>
         </Chip>
@@ -203,7 +205,7 @@ export function SecretsVault() {
         <SkeletonRows rows={5} />
       ) : (
         <div className="space-y-6">
-          {GROUP_ORDER.filter((g) => grouped[g]?.length).map((group) => (
+          {order.filter((g) => grouped[g]?.length).map((group) => (
             <section key={group}>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
                 {GROUP_TITLES[group] ?? group}

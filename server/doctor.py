@@ -29,6 +29,11 @@ _NATIVE_SOURCES = [
     ("internshala", {"location": "Bengaluru"}),
     ("hasjob", {}),
     ("yc_startup", {}),
+    ("himalayas", {}),
+    ("workingnomads", {}),
+    ("jobspresso", {}),
+    ("simplify_jobs", {}),
+    ("ats_boards", {}),
 ]
 
 
@@ -46,7 +51,7 @@ def _check_engines() -> list[dict]:
     return rows
 
 
-def _check_backend(live: bool) -> list[dict]:
+def _check_backend(user_id: int, live: bool) -> list[dict]:
     """The selected agent backend, with a real authentication probe in live mode.
 
     In quick mode this only reports installation — verifying a Claude Code login costs
@@ -56,7 +61,7 @@ def _check_backend(live: bool) -> list[dict]:
 
     try:
         chosen = backends.selected()
-        info = backends.probe(chosen, deep=live)
+        info = backends.probe(chosen, user_id, deep=live)
     except Exception as exc:  # noqa: BLE001
         return [_row("Agent backend", "engine", "fail", str(exc)[:160])]
 
@@ -94,11 +99,11 @@ def _check_database() -> list[dict]:
     return rows
 
 
-def _check_profile_and_resume() -> list[dict]:
+def _check_profile_and_resume(user_id: int) -> list[dict]:
     from core.repo import profiles, resumes  # noqa
 
     rows = []
-    active = resumes.active()
+    active = resumes.active(user_id)
     if active is None:
         rows.append(_row("Active resume", "profile", "fail",
                          "no resume uploaded — add one on the Job Hunt page"))
@@ -109,7 +114,7 @@ def _check_profile_and_resume() -> list[dict]:
         rows.append(_row("Active resume", "profile", "ok",
                          f"{active['folder']}/{active['filename']}"))
 
-    profile = profiles.current()
+    profile = profiles.current(user_id)
     if profile is None:
         rows.append(_row("Profile", "profile", "fail", "not built yet — run setup"))
     elif not profile.get("profile_verified"):
@@ -130,18 +135,18 @@ def _check_tectonic() -> dict:
                 "not installed — resume tailoring falls back to DOCX")
 
 
-def _check_notifiers() -> list[dict]:
+def _check_notifiers(user_id: int) -> list[dict]:
     import notify  # noqa
     rows = []
-    for info in notify.list_notifiers():
+    for info in notify.list_notifiers(user_id=user_id):
         status = "ok" if info["available"] else "warn"
         rows.append(_row(info["label"], "notify", status, info["reason"] or "ready"))
     return rows
 
 
-def _check_apify() -> dict:
-    from jp_secrets import get_secret_optional  # noqa
-    token = get_secret_optional("APIFY_TOKEN")
+def _check_apify(user_id: int) -> dict:
+    from core import secrets
+    token = secrets.get(user_id, "APIFY_TOKEN")
     if not token:
         return _row("Apify", "paid-sources", "warn", "APIFY_TOKEN not set — native-only runs")
     try:
@@ -155,17 +160,38 @@ def _check_apify() -> dict:
         return _row("Apify", "paid-sources", "warn", f"could not verify: {exc}")
 
 
+def _check_adzuna(user_id: int) -> dict:
+    from core import secrets
+    app_id = secrets.get(user_id, "ADZUNA_APP_ID")
+    app_key = secrets.get(user_id, "ADZUNA_APP_KEY")
+    if not app_id or not app_key:
+        return _row("Adzuna", "source", "warn", "not configured — skipped (optional)")
+    try:
+        import requests  # noqa
+        r = requests.get("https://api.adzuna.com/v1/api/jobs/gb/search/1",
+                         params={"app_id": app_id, "app_key": app_key, "results_per_page": 1,
+                                 "content-type": "application/json"}, timeout=8)
+        if r.status_code == 200:
+            return _row("Adzuna", "source", "ok", "credentials valid")
+        return _row("Adzuna", "source", "fail", f"HTTP {r.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        return _row("Adzuna", "source", "warn", f"could not verify: {exc}")
+
+
 def _check_telegram_scraper() -> dict:
-    session = jobpilot_dir() / "cache" / "telegram.session"
-    from jp_secrets import get_secret_optional  # noqa
-    creds = bool(get_secret_optional("TELEGRAM_API_ID") and
-                 get_secret_optional("TELEGRAM_API_HASH"))
-    if session.exists():
-        return _row("Telegram channels", "source", "ok", "session present")
-    if creds:
-        return _row("Telegram channels", "source", "warn",
-                    "API creds set but not authenticated — run the Connections wizard")
-    return _row("Telegram channels", "source", "warn", "not configured (optional)")
+    """Reads config/telegram_channels.json directly — no session file, no API creds,
+    no auth flow. Fetches the public t.me/s/<channel> web preview."""
+    import json
+    try:
+        cfg = json.loads((REPO_DIR / "config" / "telegram_channels.json").read_text())
+    except Exception as exc:  # noqa: BLE001
+        return _row("Telegram channels", "source", "fail", f"config unreadable: {exc}")
+    if not cfg.get("enabled", False):
+        return _row("Telegram channels", "source", "warn", "disabled in config (optional)")
+    channels = cfg.get("channels", [])
+    if not channels:
+        return _row("Telegram channels", "source", "warn", "no channels configured (optional)")
+    return _row("Telegram channels", "source", "ok", f"{len(channels)} channel(s) configured")
 
 
 def _run_source(mod_name: str, extra: dict) -> dict:
@@ -188,17 +214,18 @@ def _run_source(mod_name: str, extra: dict) -> dict:
         return _row(mod_name, "source", "fail", str(exc)[:120])
 
 
-def run_doctor(live: bool = False) -> dict:
+def run_doctor(user_id: int, live: bool = False) -> dict:
     rows: list[dict] = []
     # One failing check must never blank the whole table — that's precisely when the
     # user needs the other rows most.
     for label, check in (
-        ("Agent backend", lambda: _check_backend(live)),
+        ("Agent backend", lambda: _check_backend(user_id, live)),
         ("Database", _check_database),
-        ("Profile", _check_profile_and_resume),
+        ("Profile", lambda: _check_profile_and_resume(user_id)),
         ("Engines", _check_engines),
-        ("Notifiers", _check_notifiers),
-        ("Apify", lambda: [_check_apify()]),
+        ("Notifiers", lambda: _check_notifiers(user_id)),
+        ("Apify", lambda: [_check_apify(user_id)]),
+        ("Adzuna", lambda: [_check_adzuna(user_id)]),
         ("LaTeX", lambda: [_check_tectonic()]),
         ("Telegram channels", lambda: [_check_telegram_scraper()]),
     ):

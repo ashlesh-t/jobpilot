@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
 from orchestrator import phases as P
 
 # The service's own phase list, shrunk to something fast: two Layer A stand-ins around
@@ -61,7 +63,7 @@ class FakeEngine:
             waited += 0.05
         if self.stopped:
             return RunResult(ok=False, error="cancelled")
-        ArtifactStore(run_id).write("scored", [
+        ArtifactStore(int(os.environ.get("JOBPILOT_USER_ID", "0")), run_id).write("scored", [
             {"job_id": "j0", "company": "Acme", "role": "SDE", "score": 88,
              "application_url": "https://x.test"}])
         on_event(RunEvent("score", "done", "scored 1", origin="engine"))
@@ -98,6 +100,7 @@ def client(monkeypatch, tmp_path):
     import app as app_module
     with TestClient(app_module.app) as c:
         c.engine_holder = holder
+        signup(c)
         yield c
     db.dispose()
 
@@ -235,6 +238,46 @@ def test_partial_phase_selection(client):
     detail = client.get(f"/runs/{run_id}").json()
     assert [p["key"] for p in detail["phases"]] == ["scrape"]
     assert detail["status"] == "done"
+
+
+def test_pipeline_config_round_trips_with_defaults(client):
+    phases = client.get("/pipeline").json()["phases"]
+    assert phases["scrape"] == {"enabled": True, "model": None}
+    assert phases["score"] == {"enabled": True, "model": None}
+
+    bad = client.put("/pipeline", json={"phases": {"not-a-real-phase": {"enabled": True}}})
+    assert bad.status_code == 400
+
+    saved = client.put("/pipeline", json={
+        "phases": {"score": {"enabled": True, "model": "opus"}},
+    })
+    assert saved.status_code == 200
+    assert saved.json()["phases"]["score"] == {"enabled": True, "model": "opus"}
+    # Everything else keeps its default — a PUT only touches what it mentions.
+    assert saved.json()["phases"]["scrape"] == {"enabled": True, "model": None}
+
+
+def test_required_phases_cannot_be_disabled_from_a_run(client):
+    """None of scrape/score/report are optional in the test pipeline — 'enabled: false'
+    on a required phase must not exclude it, or a bad config could silently break the
+    whole run instead of just being ignored."""
+    client.put("/pipeline", json={"phases": {"scrape": {"enabled": False}}})
+
+    r = client.post("/runs", json={})
+    run_id = r.json()["run_id"]
+    _consume_stream(client, run_id)
+    detail = client.get(f"/runs/{run_id}").json()
+    assert [p["key"] for p in detail["phases"]] == ["scrape", "score", "report"]
+
+
+def test_models_endpoint_lists_claude_code_tiers(client):
+    models = client.get("/models?engine=claude_code").json()["models"]
+    ids = {m["id"] for m in models}
+    assert {"haiku", "sonnet", "opus"} <= ids
+    tiers = {m["id"]: m["tier"] for m in models}
+    assert tiers["haiku"] == "fast"
+    assert tiers["sonnet"] == "reasoning"
+    assert tiers["opus"] == "max"
 
 
 def test_busy_returns_409(client):

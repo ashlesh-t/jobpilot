@@ -140,7 +140,12 @@ jobpilot logs -f    tail the service log
 jobpilot db         up | down | status | url
 jobpilot service    install | uninstall | status
 jobpilot migrate    import state from JobPilot v1
+jobpilot upgrade    update to the latest release (--check just reports what's new)
 ```
+
+`jobpilot upgrade` does more than swap the code: it applies any new database migrations,
+re-exports `preferences.json` / `profile.json` so the skills see new keys, and re-checks
+your tools — offering to install the PDF compiler if it's still missing.
 
 ## Job sources
 
@@ -186,7 +191,8 @@ The Claude Code plugin still works if you prefer driving it from chat — see
 - Python 3.11+
 - Optional: Docker (for PostgreSQL — SQLite is used otherwise)
 - Optional: `tectonic` (to compile tailored resumes to PDF locally — otherwise you get the
-  Overleaf-ready source)
+  Overleaf-ready source). `jobpilot setup` and `jobpilot upgrade` both offer to install it
+  into `~/.local/bin`, no admin rights required.
 - An AI backend: a Claude Pro/Max subscription, or an Anthropic API key
 
 ## Contributing

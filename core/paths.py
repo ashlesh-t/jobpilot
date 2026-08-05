@@ -19,14 +19,18 @@ def jobpilot_dir() -> Path:
 
 
 def ensure_dirs() -> Path:
-    """Create the full data-directory tree and return its root."""
+    """Create the full instance-wide data-directory tree and return its root.
+
+    Only the genuinely shared subdirectories: DB config, logs, and the `users/` parent.
+    Per-account trees are created on demand by `ensure_user_dirs()`.
+    """
     root = jobpilot_dir()
-    for sub in ("options", "cache", "reports", "runs", "resumes", "resumes/tailored", "logs"):
+    for sub in ("cache", "logs", "users"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root
 
 
-# -- individual paths ------------------------------------------------------- #
+# -- individual paths (instance-wide) ---------------------------------------- #
 def options_dir() -> Path:
     return jobpilot_dir() / "options"
 
@@ -35,39 +39,8 @@ def cache_dir() -> Path:
     return jobpilot_dir() / "cache"
 
 
-def reports_dir() -> Path:
-    return jobpilot_dir() / "reports"
-
-
 def logs_dir() -> Path:
     return jobpilot_dir() / "logs"
-
-
-def resumes_dir() -> Path:
-    return jobpilot_dir() / "resumes"
-
-
-def tailored_dir() -> Path:
-    return resumes_dir() / "tailored"
-
-
-def runs_root() -> Path:
-    """Parent of all run-scoped artifact directories."""
-    return jobpilot_dir() / "runs"
-
-
-def run_dir(run_id: str) -> Path:
-    return runs_root() / run_id
-
-
-def prefs_path() -> Path:
-    """Legacy preferences.json — still written as an export, no longer authoritative."""
-    return options_dir() / "preferences.json"
-
-
-def profile_path() -> Path:
-    """Legacy profile.json — kept in sync for the Layer B skills that read it."""
-    return cache_dir() / "profile.json"
 
 
 def sqlite_path() -> Path:
@@ -86,3 +59,48 @@ def db_config_path() -> Path:
 
 def migrated_marker() -> Path:
     return cache_dir() / ".v1_migrated"
+
+
+# -- individual paths (per-account) ------------------------------------------ #
+def user_dir(user_id: int) -> Path:
+    """Root of one account's private tree: `<jobpilot_dir>/users/<user_id>/`."""
+    return jobpilot_dir() / "users" / str(user_id)
+
+
+def ensure_user_dirs(user_id: int) -> Path:
+    """Create one account's data tree and return its root."""
+    root = user_dir(user_id)
+    for sub in ("options", "cache", "reports", "runs", "resumes", "resumes/tailored", "logs"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def reports_dir(user_id: int) -> Path:
+    return user_dir(user_id) / "reports"
+
+
+def resumes_dir(user_id: int) -> Path:
+    return user_dir(user_id) / "resumes"
+
+
+def tailored_dir(user_id: int) -> Path:
+    return resumes_dir(user_id) / "tailored"
+
+
+def runs_root(user_id: int) -> Path:
+    """Parent of all run-scoped artifact directories for one account."""
+    return user_dir(user_id) / "runs"
+
+
+def run_dir(user_id: int, run_id: str) -> Path:
+    return runs_root(user_id) / run_id
+
+
+def prefs_path(user_id: int) -> Path:
+    """Legacy preferences.json — still written as an export, no longer authoritative."""
+    return user_dir(user_id) / "options" / "preferences.json"
+
+
+def profile_path(user_id: int) -> Path:
+    """Legacy profile.json — kept in sync for the Layer B skills that read it."""
+    return user_dir(user_id) / "cache" / "profile.json"

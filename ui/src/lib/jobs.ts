@@ -52,6 +52,21 @@ export interface Job {
     ats_after: number | null
     status: string
   }[]
+  contacts?: {
+    id: number
+    company: string
+    name: string
+    email: string
+    role: string
+  }[]
+  referrals?: {
+    id: number
+    message: string
+    status: string
+    contact_id: number
+    contact_name: string
+    created_at: string | null
+  }[]
 }
 
 export interface JobPage {

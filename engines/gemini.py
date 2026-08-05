@@ -19,7 +19,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from .base import EventCB, RunEngine, RunEvent, RunResult, Usage  # noqa: E402
+from .base import (  # noqa: E402
+    EventCB,
+    RunEngine,
+    RunEvent,
+    RunResult,
+    SUBPROCESS_STREAM_LIMIT,
+    Usage,
+)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
@@ -31,7 +38,8 @@ class GeminiEngine(RunEngine):
     label = "Google Gemini / Antigravity (experimental)"
     metered = True
 
-    def __init__(self, model: str | None = None, cli: str | None = None):
+    def __init__(self, user_id: int | None = None, model: str | None = None, cli: str | None = None):
+        self.user_id = user_id
         self.model = (model or "").strip()
         self.cli = cli or self._discover_cli()
         self.proc: asyncio.subprocess.Process | None = None
@@ -52,7 +60,7 @@ class GeminiEngine(RunEngine):
         from core import secrets
         # The CLI can be signed in interactively instead of using a key, so a missing
         # key is a warning path rather than a hard failure.
-        if not secrets.get("GEMINI_API_KEY") and not shutil.which(self.cli):
+        if not secrets.get(self.user_id, "GEMINI_API_KEY") and not shutil.which(self.cli):
             return False, "GEMINI_API_KEY not set and the CLI is not signed in"
         return True, ""
 
@@ -82,7 +90,7 @@ class GeminiEngine(RunEngine):
         env = dict(os.environ)
         env["JOBPILOT_RUN_ID"] = run_id
         from core import secrets
-        key = secrets.get("GEMINI_API_KEY")
+        key = secrets.get(self.user_id, "GEMINI_API_KEY")
         if key:
             env.setdefault("GEMINI_API_KEY", key)
 
@@ -95,6 +103,7 @@ class GeminiEngine(RunEngine):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=SUBPROCESS_STREAM_LIMIT,
             )
         except OSError as exc:
             msg = f"could not start {self.cli}: {exc}"

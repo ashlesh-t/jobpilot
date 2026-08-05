@@ -19,12 +19,16 @@ screen on communication. This phase adds that.
 - Run fully autonomously. This phase is optional — if research fails, leave the ranking
   as it is and finish cleanly.
 
-The orchestrator appends a RUN CONTEXT block with the exact absolute paths for this run.
+The orchestrator appends a RUN CONTEXT block with the exact absolute paths for this
+run, including `instance_cache_dir` and `user_cache_dir` — use those, never the
+`~/.claude/job-hunt-ai/cache/` path directly, since this instance may have more than
+one account.
 
 ## Step 1 — Company intel
 
-Read `~/.claude/job-hunt-ai/cache/company_intel.json` first. For the top ~8 jobs with
-`score >= 55`, look up the lowercased company name.
+Read `<instance_cache_dir>/company_intel.json` first — company interview intel is
+public research, shared across every account on this instance, not personal history.
+For the top ~8 jobs with `score >= 55`, look up the lowercased company name.
 
 For at most **5 cache misses per run**, run one WebSearch each:
 
@@ -72,8 +76,9 @@ block as all-`unknown` — **never ask the user**, this phase runs unattended.
 
 ## Step 3 — learning_adj
 
-Read `~/.claude/job-hunt-ai/cache/learning.json`. **Skip this step entirely** if the file
-is missing or `outcome_count < 5` — a handful of outcomes is noise, not signal.
+Read `<user_cache_dir>/learning.json` — this account's own outcome-learned weights,
+never another account's. **Skip this step entirely** if the file is missing or
+`outcome_count < 5` — a handful of outcomes is noise, not signal.
 
 ```
 relevant     = matched_skills ∪ {archetype, source_board}   # only keys present in the file

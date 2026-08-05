@@ -3,20 +3,22 @@
 Credential rule, enforced here: a secret's value is **never** included in a list
 response. `GET /api/secrets` returns presence plus a mask; the plaintext is only ever
 returned by the explicit `POST /api/secrets/{key}/reveal`, which the UI puts behind a
-confirmation. Values are written through the OS keyring and never touch the database.
+confirmation. Values are encrypted at rest per-account (core/secrets.py, core/crypto.py)
+— never the OS keyring, never plaintext in the database.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core import backends, secrets as secrets_lib  # noqa: E402
 from core.repo import profiles as profiles_repo  # noqa: E402
 from core.repo import resumes as resumes_repo  # noqa: E402
@@ -49,86 +51,86 @@ class BackendChoice(BaseModel):
 # Profile
 # --------------------------------------------------------------------------- #
 @router.get("/profile")
-async def get_profile():
+async def get_profile(user: dict = Depends(get_current_user)):
     """The candidate profile. Returns the empty skeleton rather than 404 so the form
     always has a shape to render."""
-    profile = profiles_repo.current()
+    profile = profiles_repo.current(user["id"])
     return {
-        "profile": profile or profiles_repo.get_or_empty(),
+        "profile": profile or profiles_repo.get_or_empty(user["id"]),
         "exists": profile is not None,
         "verified": bool(profile and profile.get("profile_verified")),
     }
 
 
 @router.put("/profile")
-async def put_profile(req: ProfilePatch):
-    saved = profiles_repo.save(req.data, verified=req.verified)
+async def put_profile(req: ProfilePatch, user: dict = Depends(get_current_user)):
+    saved = profiles_repo.save(user["id"], req.data, verified=req.verified)
     return {"profile": saved, "verified": saved.get("profile_verified", False)}
 
 
 @router.post("/profile/verify")
-async def verify_profile(confirm: bool = True):
+async def verify_profile(confirm: bool = True, user: dict = Depends(get_current_user)):
     """Confirming the profile is a deliberate act — scoring quality depends on it."""
-    return {"profile": profiles_repo.set_verified(confirm)}
+    return {"profile": profiles_repo.set_verified(user["id"], confirm)}
 
 
 # --------------------------------------------------------------------------- #
 # Preferences
 # --------------------------------------------------------------------------- #
 @router.get("/preferences")
-async def get_preferences():
+async def get_preferences(user: dict = Depends(get_current_user)):
     return {
-        "preferences": settings_repo.preferences(),
-        "setup_complete": settings_repo.is_setup_complete(),
+        "preferences": settings_repo.preferences(user["id"]),
+        "setup_complete": settings_repo.is_setup_complete(user["id"]),
     }
 
 
 @router.put("/preferences")
-async def put_preferences(req: PreferencesPatch):
-    return {"preferences": settings_repo.update_preferences(req.preferences)}
+async def put_preferences(req: PreferencesPatch, user: dict = Depends(get_current_user)):
+    return {"preferences": settings_repo.update_preferences(user["id"], req.preferences)}
 
 
 # --------------------------------------------------------------------------- #
 # Credentials
 # --------------------------------------------------------------------------- #
 @router.get("/secrets")
-async def list_secrets():
+async def list_secrets(user: dict = Depends(get_current_user)):
     """Presence and a mask for every credential. Never a plaintext value."""
-    return {"secrets": secrets_lib.status()}
+    return {"secrets": secrets_lib.status(user["id"])}
 
 
 @router.put("/secrets/{key}")
-async def put_secret(key: str, req: SecretValue):
+async def put_secret(key: str, req: SecretValue, user: dict = Depends(get_current_user)):
     if key not in secrets_lib.KNOWN_KEYS:
         raise HTTPException(status_code=400, detail=f"unknown credential {key!r}")
     if not req.value.strip():
         raise HTTPException(status_code=400, detail="value cannot be empty")
-    backend = secrets_lib.set(key, req.value.strip())
-    return {"key": key, "stored_in": backend, "masked": secrets_lib.mask(req.value.strip())}
+    secrets_lib.set(user["id"], key, req.value.strip())
+    return {"key": key, "stored_in": "database", "masked": secrets_lib.mask(req.value.strip())}
 
 
 @router.post("/secrets/{key}/reveal")
-async def reveal_secret(key: str):
+async def reveal_secret(key: str, user: dict = Depends(get_current_user)):
     """The single path that returns a plaintext credential. The UI confirms first."""
     if key not in secrets_lib.KNOWN_KEYS:
         raise HTTPException(status_code=400, detail=f"unknown credential {key!r}")
-    value = secrets_lib.reveal(key)
+    value = secrets_lib.reveal(user["id"], key)
     if not value:
         raise HTTPException(status_code=404, detail="that credential is not set")
     return {"key": key, "value": value}
 
 
 @router.post("/secrets/{key}/test")
-async def test_secret(key: str):
+async def test_secret(key: str, user: dict = Depends(get_current_user)):
     """Verify one credential against its real service."""
     if key not in secrets_lib.KNOWN_KEYS:
         raise HTTPException(status_code=400, detail=f"unknown credential {key!r}")
-    ok, detail = _test_credential(key)
+    ok, detail = _test_credential(user["id"], key)
     return {"key": key, "ok": ok, "detail": detail}
 
 
-def _test_credential(key: str) -> tuple[bool, str]:
-    value = secrets_lib.get(key)
+def _test_credential(user_id: int, key: str) -> tuple[bool, str]:
+    value = secrets_lib.get(user_id, key)
     if not value:
         return False, "not set"
 
@@ -164,7 +166,7 @@ def _test_credential(key: str) -> tuple[bool, str]:
     if key == "TELEGRAM_CHAT_ID":
         # A chat ID only means anything paired with the bot token, so test the pair by
         # actually sending something — a syntactic check would pass a wrong-but-numeric id.
-        token = secrets_lib.get("TELEGRAM_BOT_TOKEN")
+        token = secrets_lib.get(user_id, "TELEGRAM_BOT_TOKEN")
         if not token:
             return False, "set the bot token first"
         try:
@@ -195,27 +197,108 @@ def _test_credential(key: str) -> tuple[bool, str]:
     if key == "GEMINI_API_KEY":
         return True, "stored (not verified — Gemini support is experimental)"
 
-    if key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
-        return True, "stored (verified when you authenticate the channel scraper)"
+    if key in ("ADZUNA_APP_ID", "ADZUNA_APP_KEY"):
+        # Needs the pair together, like TELEGRAM_CHAT_ID needs its bot token.
+        other_key = "ADZUNA_APP_KEY" if key == "ADZUNA_APP_ID" else "ADZUNA_APP_ID"
+        other = secrets_lib.get(user_id, other_key)
+        if not other:
+            return False, f"set {other_key} too — Adzuna needs both"
+        app_id = value if key == "ADZUNA_APP_ID" else other
+        app_key = value if key == "ADZUNA_APP_KEY" else other
+        try:
+            import requests
+            r = requests.get(
+                "https://api.adzuna.com/v1/api/jobs/gb/search/1",
+                params={"app_id": app_id, "app_key": app_key, "results_per_page": 1,
+                        "content-type": "application/json"},
+                timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not reach Adzuna: {exc}"
+        if r.status_code == 200:
+            return True, "credentials valid"
+        if r.status_code in (401, 403):
+            return False, "Adzuna rejected that app_id/app_key pair"
+        return False, f"Adzuna returned HTTP {r.status_code}"
 
     return True, "stored"
+
+
+# --------------------------------------------------------------------------- #
+# QR codes — scan-to-open for a setup URL, same intent as jobpilot/tui/theme.py::qr()
+# but rendered for a browser instead of a terminal.
+# --------------------------------------------------------------------------- #
+@router.get("/qr")
+async def qr_code(data: str, user: dict = Depends(get_current_user)):
+    """SVG QR code of `data` (a URL) — no Pillow dependency (unlike the qrcode
+    package's default PIL image factory), so this doesn't need a new dependency."""
+    import qrcode
+    import qrcode.image.svg
+    from fastapi.responses import Response
+
+    if not data or len(data) > 2000:
+        raise HTTPException(status_code=400, detail="data must be a non-empty URL under 2000 chars")
+    img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, border=1)
+    from io import BytesIO
+    buf = BytesIO()
+    img.save(buf)
+    return Response(content=buf.getvalue(), media_type="image/svg+xml")
+
+
+# --------------------------------------------------------------------------- #
+# Telegram chat-id auto-capture — single-shot poll the wizard calls every ~2s while
+# showing the bot's QR code, mirroring the old CLI's _poll_telegram_chat_id loop
+# (jobpilot/tui/steps.py, pre-multi-user) but driven client-side instead of one long
+# server-side block, which fits a stateless HTTP request better.
+# --------------------------------------------------------------------------- #
+@router.post("/secrets/TELEGRAM_BOT_TOKEN/link-chat")
+async def link_telegram_chat(user: dict = Depends(get_current_user)):
+    token = secrets_lib.get(user["id"], "TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise HTTPException(status_code=400, detail="set the bot token first")
+
+    chat_id = _poll_telegram_chat_id(token)
+    if chat_id is None:
+        return {"found": False}
+
+    secrets_lib.set(user["id"], "TELEGRAM_CHAT_ID", chat_id)
+    return {"found": True, "chat_id": chat_id}
+
+
+def _poll_telegram_chat_id(token: str) -> str | None:
+    try:
+        import requests
+        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                         params={"timeout": 0, "limit": 10}, timeout=10)
+        result = r.json().get("result") or []
+    except Exception:  # noqa: BLE001
+        return None
+    for update in reversed(result):
+        for key in ("message", "edited_message", "channel_post", "my_chat_member"):
+            chat = (update.get(key) or {}).get("chat")
+            if chat and chat.get("id") is not None:
+                return str(chat["id"])
+    return None
 
 
 # --------------------------------------------------------------------------- #
 # Backends
 # --------------------------------------------------------------------------- #
 @router.get("/backends")
-async def list_backends(deep: bool = False):
-    """Available AI backends. `deep=true` actually verifies authentication."""
+async def list_backends(deep: bool = False, user: dict = Depends(get_current_user)):
+    """Available AI backends. `deep=true` actually verifies authentication.
+
+    The backend itself is an instance-level choice (which agent CLI is installed on
+    this machine), not per-account — only the route is auth-gated.
+    """
     return {
-        "backends": backends.probe_all(deep=deep),
+        "backends": backends.probe_all(user["id"], deep=deep),
         "selected": backends.selected(),
         "environment": backends.environment(),
     }
 
 
 @router.put("/backends")
-async def choose_backend(req: BackendChoice):
+async def choose_backend(req: BackendChoice, user: dict = Depends(get_current_user)):
     try:
         return {"engine": backends.select(req.backend)}
     except ValueError as exc:
@@ -226,16 +309,16 @@ async def choose_backend(req: BackendChoice):
 # Setup status — what the Job Hunt and Scheduler pages gate on
 # --------------------------------------------------------------------------- #
 @router.get("/setup/status")
-async def setup_status():
+async def setup_status(user: dict = Depends(get_current_user)):
     from core.db import is_sqlite, ping
 
-    profile = profiles_repo.current()
-    resume = resumes_repo.active()
-    prefs = settings_repo.preferences()
+    profile = profiles_repo.current(user["id"])
+    resume = resumes_repo.active(user["id"])
+    prefs = settings_repo.preferences(user["id"])
     db_ok, db_detail = ping()
 
     try:
-        backend = backends.probe(backends.selected())
+        backend = backends.probe(backends.selected(), user["id"])
         backend_ready, backend_detail = backend.found, backend.detail
         backend_label = backend.label
     except Exception as exc:  # noqa: BLE001
@@ -286,5 +369,5 @@ async def setup_status():
         "ready": not blocking,
         "blocking": blocking,
         "checks": checks,
-        "setup_complete": settings_repo.is_setup_complete(),
+        "setup_complete": settings_repo.is_setup_complete(user["id"]),
     }

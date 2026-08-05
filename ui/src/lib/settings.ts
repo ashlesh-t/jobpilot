@@ -213,6 +213,25 @@ export function useSelectBackend() {
   })
 }
 
+/** Single-shot poll for an incoming Telegram chat — the wizard calls this every ~2s
+ *  while showing the bot's QR code. On a hit, the server has already saved
+ *  TELEGRAM_CHAT_ID, so we just need to invalidate what read it. */
+export function useLinkTelegramChat() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ found: boolean; chat_id?: string }>(
+        '/api/secrets/TELEGRAM_BOT_TOKEN/link-chat',
+      ),
+    onSuccess: (data) => {
+      if (data.found) {
+        qc.invalidateQueries({ queryKey: settingsKeys.secrets })
+        qc.invalidateQueries({ queryKey: settingsKeys.setup })
+      }
+    },
+  })
+}
+
 export function useSetupStatus() {
   return useQuery({
     queryKey: settingsKeys.setup,

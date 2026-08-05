@@ -8,6 +8,9 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { ResumeManager } from '@/components/resumes/ResumeManager'
+import { BackendStep } from '@/components/setup/BackendStep'
+import { DeliveryStep } from '@/components/setup/DeliveryStep'
+import { SourcesStep } from '@/components/setup/SourcesStep'
 import { ProfileForm } from '@/components/settings/ProfileForm'
 import { TagInput } from '@/components/settings/ProfileForm'
 import { HelpTip } from '@/components/ui/Help'
@@ -26,6 +29,9 @@ const STEPS = [
   { id: 'you', label: 'You' },
   { id: 'resume', label: 'Resume' },
   { id: 'profile', label: 'Profile' },
+  { id: 'backend', label: 'AI backend' },
+  { id: 'sources', label: 'Job sources' },
+  { id: 'delivery', label: 'Delivery' },
   { id: 'search', label: 'What to look for' },
   { id: 'done', label: 'Done' },
 ] as const
@@ -101,11 +107,18 @@ export function SetupGate({ children }: { children: React.ReactNode }) {
 /* -------------------------------------------------------------------------- */
 /* The wizard                                                                  */
 /* -------------------------------------------------------------------------- */
+const BLOCKER_TO_STEP: Record<string, (typeof STEPS)[number]['id']> = {
+  resume: 'resume',
+  profile: 'profile',
+  backend: 'backend',
+  preferences: 'search',
+  notifications: 'delivery',
+}
+
 function stepForBlocker(blocker?: string): number {
-  if (blocker === 'resume') return 1
-  if (blocker === 'profile') return 2
-  if (blocker === 'preferences') return 3
-  return 0
+  const id = BLOCKER_TO_STEP[blocker ?? '']
+  const idx = STEPS.findIndex((s) => s.id === id)
+  return idx >= 0 ? idx : 0
 }
 
 export function SetupWizard({
@@ -151,15 +164,17 @@ export function SetupWizard({
     }
   }
 
+  const current = STEPS[step]
+
   const next = async () => {
-    if (step === 0) {
+    if (current.id === 'you') {
       if (!name.trim()) {
         toast.error('Your name goes on every tailored resume — it can’t be blank.')
         return
       }
       if (!(await save({ name: name.trim(), email: email.trim() }))) return
     }
-    if (step === 3) {
+    if (current.id === 'search') {
       if (!locations.length || !roles.length) {
         toast.error('Add at least one location and one role.')
         return
@@ -168,11 +183,11 @@ export function SetupWizard({
       if (ctc) patch.target_ctc_min_lpa = Number(ctc)
       if (!(await save(patch))) return
     }
+    // backend / sources / delivery are self-saving (each field persists on its own
+    // Save click) and optional, so Continue just advances — same as leaving them blank.
     setStep((s) => Math.min(STEPS.length - 1, s + 1))
     status.refetch()
   }
-
-  const current = STEPS[step]
 
   return (
     <Dialog
@@ -289,6 +304,12 @@ export function SetupWizard({
           )}
         </div>
       )}
+
+      {current.id === 'backend' && <BackendStep />}
+
+      {current.id === 'sources' && <SourcesStep />}
+
+      {current.id === 'delivery' && <DeliveryStep />}
 
       {current.id === 'search' && (
         <div className="space-y-5">

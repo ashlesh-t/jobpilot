@@ -26,8 +26,8 @@ def jobpilot_dir() -> Path:
     return Path(os.path.expanduser(raw))
 
 
-def prefs_path() -> Path:
-    return jobpilot_dir() / "options" / "preferences.json"
+def prefs_path(user_id: int) -> Path:
+    return jobpilot_dir() / "users" / str(user_id) / "options" / "preferences.json"
 
 
 def runs_dir() -> Path:
@@ -36,8 +36,8 @@ def runs_dir() -> Path:
     return d
 
 
-def profile_path() -> Path:
-    return jobpilot_dir() / "cache" / "profile.json"
+def profile_path(user_id: int) -> Path:
+    return jobpilot_dir() / "users" / str(user_id) / "cache" / "profile.json"
 
 
 def profile_review_done_path() -> Path:
@@ -45,9 +45,9 @@ def profile_review_done_path() -> Path:
     return jobpilot_dir() / "cache" / ".profile_review_done"
 
 
-def load_prefs() -> dict:
+def load_prefs(user_id: int) -> dict:
     try:
-        return json.loads(prefs_path().read_text())
+        return json.loads(prefs_path(user_id).read_text())
     except Exception:
         # Fall back to the repo example so the UI has sane defaults on a fresh install.
         try:
@@ -56,10 +56,10 @@ def load_prefs() -> dict:
             return {}
 
 
-def save_prefs(prefs: dict) -> None:
+def save_prefs(user_id: int, prefs: dict) -> None:
     """Merge-write preferences.json (read-before-write per repo rule)."""
     current = {}
-    p = prefs_path()
+    p = prefs_path(user_id)
     if p.exists():
         try:
             current = json.loads(p.read_text())
@@ -89,12 +89,12 @@ def find_available_port(host: str, preferred: int, max_tries: int = 20) -> int:
         return s.getsockname()[1]
 
 
-def engine_config() -> dict:
+def engine_config(user_id: int) -> dict:
     """The `engine` block from preferences, with defaults."""
-    prefs = load_prefs()
+    prefs = load_prefs(user_id)
     eng = prefs.get("engine") or {}
     return {
         "provider": eng.get("provider", "claude_code"),
         "model": eng.get("model", ""),
-        "permission_mode": eng.get("permission_mode", "acceptEdits"),
+        "permission_mode": eng.get("permission_mode", "bypassPermissions"),
     }

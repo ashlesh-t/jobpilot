@@ -17,10 +17,17 @@ class TelegramNotifier(Notifier):
     name = "telegram"
     label = "Telegram"
 
-    def available(self) -> tuple[bool, str]:
-        if not get_secret_optional("TELEGRAM_BOT_TOKEN"):
+    def available(self, user_id: int | None = None) -> tuple[bool, str]:
+        if user_id is not None:
+            from core import secrets
+            token = secrets.get(user_id, "TELEGRAM_BOT_TOKEN")
+            chat_id = secrets.get(user_id, "TELEGRAM_CHAT_ID")
+        else:
+            token = get_secret_optional("TELEGRAM_BOT_TOKEN")
+            chat_id = get_secret_optional("TELEGRAM_CHAT_ID")
+        if not token:
             return False, "TELEGRAM_BOT_TOKEN not set"
-        if not get_secret_optional("TELEGRAM_CHAT_ID"):
+        if not chat_id:
             return False, "TELEGRAM_CHAT_ID not set"
         return True, ""
 

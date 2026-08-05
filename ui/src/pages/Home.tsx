@@ -1,13 +1,20 @@
 /** Home — the dashboard. What JobPilot found, how it's going, and what needs attention. */
 import {
   ArrowRight,
+  Briefcase,
   CheckCircle2,
   CircleAlert,
+  Coins,
   Download,
+  MessageSquare,
   Play,
+  Sparkles,
   Stethoscope,
+  Target,
+  TrendingUp,
   XCircle,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -42,22 +49,27 @@ function StatTile({
   value,
   hint,
   helpId,
+  icon: Icon,
 }: {
   label: string
   value: string | number
   hint?: string
   helpId?: string
+  icon: LucideIcon
 }) {
   return (
-    <div className="card card-pad">
-      <div className="flex items-center gap-1.5">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
-        {helpId && <HelpTip id={helpId} />}
+    <div className="stat-tile">
+      <div className="stat-tile-icon">
+        <Icon className="h-5 w-5" />
       </div>
-      <p className="mt-2 text-2xl font-semibold tabular-nums tracking-tight text-ink">
-        {value}
-      </p>
-      {hint && <p className="mt-1 text-xs text-faint">{hint}</p>}
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="stat-tile-label uppercase tracking-wide">{label}</p>
+          {helpId && <HelpTip id={helpId} />}
+        </div>
+        <p className="stat-tile-value">{value}</p>
+        {hint && <p className="mt-0.5 truncate text-xs text-faint">{hint}</p>}
+      </div>
     </div>
   )
 }
@@ -69,9 +81,12 @@ function KpiRow() {
     return (
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="card card-pad">
-            <div className="skeleton h-3 w-20" />
-            <div className="skeleton mt-3 h-7 w-14" />
+          <div key={i} className="card flex items-center gap-4 p-4">
+            <div className="skeleton h-11 w-11 shrink-0 rounded-xl" />
+            <div className="min-w-0 flex-1">
+              <div className="skeleton h-3 w-20" />
+              <div className="skeleton mt-3 h-7 w-14" />
+            </div>
           </div>
         ))}
       </div>
@@ -89,25 +104,34 @@ function KpiRow() {
   return (
     <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
       <StatTile
+        icon={Briefcase}
         label="Open matches"
         value={data.fresh}
         hint={data.stale ? `${data.stale} closed and hidden` : 'All still open'}
         helpId="jobs.stale"
       />
       <StatTile
+        icon={Target}
         label="Strong matches"
         value={data.high_match}
         hint="Scoring 75 or above"
         helpId="score.match"
       />
-      <StatTile label="Average score" value={data.avg_score || '—'} hint="Across all scored jobs" />
       <StatTile
+        icon={TrendingUp}
+        label="Average score"
+        value={data.avg_score || '—'}
+        hint="Across all scored jobs"
+      />
+      <StatTile
+        icon={Sparkles}
         label="Applied"
         value={data.funnel.in_flight}
         hint={`${data.funnel.total} total, ${data.funnel.in_flight} still live`}
         helpId="applications.funnel"
       />
       <StatTile
+        icon={MessageSquare}
         label="Interviews"
         value={
           data.funnel.stages.find((s) => s.stage === 'interview')?.count ?? 0
@@ -115,6 +139,7 @@ function KpiRow() {
         hint="Reached interview or beyond"
       />
       <StatTile
+        icon={Coins}
         label="Cost this month"
         value={spend}
         hint={cost.usd > 0 ? 'Metered API usage' : 'Subscription — no per-token charge'}

@@ -32,6 +32,14 @@ CANONICAL_STAGES = (
     "salary", "report", "tailor", "notify", "done", "log",
 )
 
+# asyncio.create_subprocess_exec's StreamReader defaults to a 64 KiB line buffer
+# (asyncio.streams._DEFAULT_LIMIT). A `stream-json` line carrying one big tool result
+# (a fetched career page, a long JD, a large WebSearch dump) routinely exceeds that,
+# raising "Separator is found, but chunk is longer than limit" and killing the whole
+# phase. Every engine that reads a child process's stdout line-by-line should pass
+# this as `limit=` to create_subprocess_exec.
+SUBPROCESS_STREAM_LIMIT = 64 * 1024 * 1024  # 64 MiB
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")

@@ -38,6 +38,16 @@ class Phase:
     script: tuple[str, ...] = ()    # argv template for kind="python"
     skill: str = ""                 # slash command for kind="llm"
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: which tier of model this phase prefers by default — "fast" for search/extraction
+    #: work, "reasoning" for judgment calls. Resolved to a concrete model id per engine
+    #: by core.model_catalog. Never "max" (Opus) — that tier is opt-in only, never a
+    #: phase default. Irrelevant for kind="python".
+    model_tier: str = "reasoning"
+    #: when true, this phase always runs on its tier's default model for whichever
+    #: engine is active, ignoring any per-phase override the user configured — used for
+    #: salary research, which is simple lookup work where the fast tier is strictly
+    #: correct and a heavier model just costs more for the same answer.
+    model_locked: bool = False
 
 
 PHASES: tuple[Phase, ...] = (
@@ -91,6 +101,7 @@ PHASES: tuple[Phase, ...] = (
         skill="/job-phase-discover",
         optional=True,
         weight=2.0,
+        model_tier="fast",  # mostly WebFetch/WebSearch calls, light filtering
     ),
     Phase(
         key="relevance",
@@ -141,6 +152,11 @@ PHASES: tuple[Phase, ...] = (
         skill="/job-phase-salary",
         optional=True,
         weight=2.0,
+        model_tier="fast",
+        # A market-CTC lookup is simple search-and-read work — the fast tier answers it
+        # exactly as well as a heavier model for a fraction of the cost, so this one is
+        # not user-configurable.
+        model_locked=True,
     ),
     Phase(
         key="persist",
@@ -243,6 +259,8 @@ def to_dict(phase: Phase) -> dict:
         "always_attempt": phase.always_attempt,
         "weight": phase.weight,
         "position": position(phase.key),
+        "model_tier": phase.model_tier if phase.kind == "llm" else None,
+        "model_locked": phase.model_locked,
     }
 
 

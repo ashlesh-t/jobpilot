@@ -27,10 +27,12 @@ class ClaudeApiEngine(RunEngine):
     label = "Anthropic API (metered)"
     metered = True
 
-    def __init__(self, model: str | None = None, permission_mode: str = "acceptEdits"):
+    def __init__(self, user_id: int | None = None, model: str | None = None,
+                permission_mode: str = "bypassPermissions"):
         # Empty → let the Agent SDK pick its default model. Set an explicit id in
         # preferences.engine.model only if you want to pin one; passing an invalid
         # id would otherwise break every run.
+        self.user_id = user_id
         self.model = (model or "").strip()
         self.permission_mode = permission_mode
         self._usage = Usage(source="metered")
@@ -42,11 +44,8 @@ class ClaudeApiEngine(RunEngine):
             import claude_agent_sdk  # noqa: F401
         except Exception:
             return False, "claude-agent-sdk not installed (pip install claude-agent-sdk)"
-        try:
-            from jp_secrets import get_secret_optional  # noqa
-        except Exception:
-            return False, "secrets loader unavailable"
-        if not get_secret_optional("ANTHROPIC_API_KEY"):
+        from core import secrets
+        if not secrets.get(self.user_id, "ANTHROPIC_API_KEY"):
             return False, "ANTHROPIC_API_KEY not set"
         return True, ""
 
@@ -71,9 +70,9 @@ class ClaudeApiEngine(RunEngine):
 
         import os
         os.environ["JOBPILOT_RUN_ID"] = run_id
-        # Make the API key visible to the SDK from the secrets store.
-        from jp_secrets import get_secret_optional  # noqa
-        key = get_secret_optional("ANTHROPIC_API_KEY")
+        # Make the API key visible to the SDK from this user's secrets store.
+        from core import secrets
+        key = secrets.get(self.user_id, "ANTHROPIC_API_KEY")
         if key:
             os.environ.setdefault("ANTHROPIC_API_KEY", key)
 

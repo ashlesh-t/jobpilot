@@ -22,7 +22,14 @@ import shlex
 import shutil
 from pathlib import Path
 
-from .base import EventCB, RunEngine, RunEvent, RunResult, Usage
+from .base import (
+    EventCB,
+    RunEngine,
+    RunEvent,
+    RunResult,
+    SUBPROCESS_STREAM_LIMIT,
+    Usage,
+)
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_DIR / "skills" / "job-search" / "SKILL.md"
@@ -40,9 +47,12 @@ class GenericCliEngine(RunEngine):
 
     @staticmethod
     def _configured_template() -> str:
+        # The agent backend (which CLI, and its command template for generic_cli) is an
+        # instance-level choice, not per-account — see core.backends._load_engine_config,
+        # the same store core.backends.probe_generic_cli() reads to decide readiness.
         try:
-            from core.repo import settings as settings_repo
-            return settings_repo.engine_config().get("command_template", "") or ""
+            from core.backends import _load_engine_config
+            return _load_engine_config().get("command_template", "") or ""
         except Exception:
             return ""
 
@@ -102,6 +112,7 @@ class GenericCliEngine(RunEngine):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=SUBPROCESS_STREAM_LIMIT,
             )
         except OSError as exc:
             msg = f"could not start {cmd[0]}: {exc}"

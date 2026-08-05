@@ -1,12 +1,13 @@
 /** Header: where you are, what's running, what it's costing, and the theme toggle. */
 import clsx from 'clsx'
-import { Activity, Coins, Monitor, Moon, Sun } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Activity, Coins, LogOut, Monitor, Moon, Sun } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import { HelpTip } from '@/components/ui/Help'
 import { Spinner } from '@/components/ui/primitives'
 import { api } from '@/lib/api'
+import { useCurrentUser, useLogout } from '@/lib/auth'
 import { formatTokens, formatUsd } from '@/lib/format'
 import { useRuns } from '@/lib/hooks'
 import { useTheme } from '@/lib/theme'
@@ -41,12 +42,15 @@ export function TopBar({ title }: { title: string }) {
   const { choice, setChoice } = useTheme()
   const { data: runs } = useRuns()
   const { data: cost } = useCost()
+  const { data: user } = useCurrentUser()
+  const logout = useLogout()
+  const navigate = useNavigate()
   const active = runs?.active
 
   const Icon = THEME_ICON[choice]
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-4 border-b border-line bg-canvas/85 px-6 backdrop-blur">
+    <header className="glass sticky top-0 z-30 flex h-14 shrink-0 items-center gap-4 border-b px-6 shadow-[0_1px_0_0_rgb(var(--shadow-color)/0.04)]">
       <h1 className="truncate text-[15px] font-semibold tracking-tight text-ink">{title}</h1>
 
       <div className="ml-auto flex items-center gap-2">
@@ -97,6 +101,21 @@ export function TopBar({ title }: { title: string }) {
         >
           <Icon className="h-[18px] w-[18px]" />
         </button>
+
+        {user && (
+          <button
+            type="button"
+            className="btn-icon"
+            title={`Log out of ${user.username}`}
+            aria-label="Log out"
+            onClick={async () => {
+              await logout.mutateAsync()
+              navigate('/login', { replace: true })
+            }}
+          >
+            <LogOut className="h-[18px] w-[18px]" />
+          </button>
+        )}
       </div>
     </header>
   )

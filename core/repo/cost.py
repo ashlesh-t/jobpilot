@@ -9,14 +9,14 @@ from ..db import session_scope
 from ..models import CostEntry
 
 
-def record(*, engine: str, model: str = "", tokens_in: int = 0, tokens_out: int = 0,
+def record(user_id: int, *, engine: str, model: str = "", tokens_in: int = 0, tokens_out: int = 0,
            cache_read: int = 0, cache_write: int = 0, usd: float = 0.0,
            source: str = "metered", run_id: str | None = None, phase_key: str = "",
            kind: str = "run") -> dict:
     with session_scope() as s:
         entry = CostEntry(
-            run_id=run_id, phase_key=phase_key, kind=kind, engine=engine, model=model,
-            source=source, tokens_in=tokens_in, tokens_out=tokens_out,
+            user_id=user_id, run_id=run_id, phase_key=phase_key, kind=kind, engine=engine,
+            model=model, source=source, tokens_in=tokens_in, tokens_out=tokens_out,
             cache_read=cache_read, cache_write=cache_write, usd=round(usd, 6),
         )
         s.add(entry)
@@ -36,12 +36,12 @@ def _since(window: str) -> datetime | None:
     return None
 
 
-def summary(window: str = "month", run_id: str | None = None) -> dict:
+def summary(user_id: int, window: str = "month", run_id: str | None = None) -> dict:
     with session_scope() as s:
         stmt = select(func.coalesce(func.sum(CostEntry.usd), 0.0),
                       func.coalesce(func.sum(CostEntry.tokens_in), 0),
                       func.coalesce(func.sum(CostEntry.tokens_out), 0),
-                      func.count())
+                      func.count()).where(CostEntry.user_id == user_id)
         if run_id:
             stmt = stmt.where(CostEntry.run_id == run_id)
         since = _since(window)
@@ -49,7 +49,8 @@ def summary(window: str = "month", run_id: str | None = None) -> dict:
             stmt = stmt.where(CostEntry.ts >= since)
         usd, tin, tout, calls = s.execute(stmt).one()
 
-        by_kind_stmt = select(CostEntry.kind, func.sum(CostEntry.usd), func.count()).group_by(CostEntry.kind)
+        by_kind_stmt = select(CostEntry.kind, func.sum(CostEntry.usd), func.count()) \
+            .where(CostEntry.user_id == user_id).group_by(CostEntry.kind)
         if run_id:
             by_kind_stmt = by_kind_stmt.where(CostEntry.run_id == run_id)
         elif since is not None:
@@ -59,7 +60,7 @@ def summary(window: str = "month", run_id: str | None = None) -> dict:
         # A subscription run has real tokens but no marginal dollar cost — surface both
         # so the meter never implies a Pro/Max user is being billed per token.
         sub_stmt = select(func.coalesce(func.sum(CostEntry.tokens_in + CostEntry.tokens_out), 0)) \
-            .where(CostEntry.source == "subscription")
+            .where(CostEntry.user_id == user_id, CostEntry.source == "subscription")
         if run_id:
             sub_stmt = sub_stmt.where(CostEntry.run_id == run_id)
         elif since is not None:
@@ -78,22 +79,23 @@ def summary(window: str = "month", run_id: str | None = None) -> dict:
     }
 
 
-def daily(days: int = 30) -> list[dict]:
+def daily(user_id: int, days: int = 30) -> list[dict]:
     """Per-day spend for the dashboard sparkline."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
     with session_scope() as s:
         rows = s.execute(
             select(func.date(CostEntry.ts), func.sum(CostEntry.usd), func.count())
-            .where(CostEntry.ts >= since)
+            .where(CostEntry.user_id == user_id, CostEntry.ts >= since)
             .group_by(func.date(CostEntry.ts))
             .order_by(func.date(CostEntry.ts))).all()
     return [{"date": str(d), "usd": round(float(u or 0), 4), "calls": c} for d, u, c in rows]
 
 
-def for_run(run_id: str) -> list[dict]:
+def for_run(user_id: int, run_id: str) -> list[dict]:
     with session_scope() as s:
-        rows = s.scalars(select(CostEntry).where(CostEntry.run_id == run_id)
-                         .order_by(CostEntry.ts)).all()
+        rows = s.scalars(select(CostEntry).where(
+            CostEntry.user_id == user_id, CostEntry.run_id == run_id)
+            .order_by(CostEntry.ts)).all()
         return [{"phase_key": r.phase_key, "engine": r.engine, "model": r.model,
                  "source": r.source, "tokens_in": r.tokens_in, "tokens_out": r.tokens_out,
                  "usd": round(r.usd, 4), "ts": r.ts.isoformat()} for r in rows]

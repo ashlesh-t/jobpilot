@@ -6,6 +6,8 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -22,6 +24,7 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
@@ -192,6 +195,77 @@ def test_extraction_reports_an_unreadable_file(client, monkeypatch):
 
 def test_extract_unknown_resume_is_404(client):
     assert client.post("/api/resumes/999/extract").status_code == 404
+
+
+def test_extraction_prompt_asks_for_every_profile_field(client, monkeypatch):
+    """The agent can only fill fields the prompt names — a missing one is a silent gap.
+
+    interview_readiness in particular feeds bar_fit in scoring, so dropping it would
+    quietly change how jobs rank.
+    """
+    import engines
+    from engines.base import RunResult
+
+    seen: dict[str, str] = {}
+
+    class CapturingEngine:
+        def available(self):
+            return True, ""
+
+        async def run(self, program, run_id, on_event):
+            seen["program"] = program
+            return RunResult(ok=True, artifacts={"final_text": "{}"})
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(engines, "get_engine", lambda *a, **k: CapturingEngine())
+
+    resume = _upload(client).json()["resume"]
+    assert client.post(f"/api/resumes/{resume['id']}/extract").status_code == 200
+
+    from core.repo.profiles import SKELETON
+    program = seen["program"]
+    for key in SKELETON:
+        assert key in program, f"{key} is in the profile skeleton but not in the prompt"
+
+
+def test_extraction_reads_latex_without_the_markup(client, monkeypatch):
+    """`.tex` used to be handed to the agent raw, commands and all."""
+    import engines
+    from engines.base import RunResult
+
+    seen: dict[str, str] = {}
+
+    class CapturingEngine:
+        def available(self):
+            return True, ""
+
+        async def run(self, program, run_id, on_event):
+            seen["program"] = program
+            return RunResult(ok=True, artifacts={"final_text": "{}"})
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(engines, "get_engine", lambda *a, **k: CapturingEngine())
+
+    resume = _upload(
+        client, name="cv.tex",
+        body=b"\\documentclass{article}\n"
+             b"% a comment that should not survive\n"
+             b"\\begin{document}\n"
+             b"\\section{Skills} Python and Kubernetes\n"
+             b"\\end{document}\n",
+    ).json()["resume"]
+
+    body = client.post(f"/api/resumes/{resume['id']}/extract").json()
+    assert body["source"] == "agent"
+
+    program = seen["program"]
+    assert "Python and Kubernetes" in program
+    assert "documentclass" not in program
+    assert "a comment that should not survive" not in program
 
 
 # --------------------------------------------------------------------------- #

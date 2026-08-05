@@ -7,6 +7,8 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -23,11 +25,12 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
 
-def _seed(n: int = 3, **overrides):
+def _seed(client, n: int = 3, **overrides):
     from core.repo import jobs as jobs_repo
 
     payload = []
@@ -50,7 +53,7 @@ def _seed(n: int = 3, **overrides):
         }
         job.update(overrides)
         payload.append(job)
-    jobs_repo.upsert_scored(payload)
+    jobs_repo.upsert_scored(client.user_id, payload)
     return payload
 
 
@@ -58,7 +61,7 @@ def _seed(n: int = 3, **overrides):
 # Listing, sorting, filtering
 # --------------------------------------------------------------------------- #
 def test_jobs_list_is_paged_and_sorted(client):
-    _seed(3)
+    _seed(client, 3)
     body = client.get("/api/jobs?sort=score&order=desc").json()
     assert body["total"] == 3
     assert [j["score"] for j in body["items"]] == [80, 70, 60]
@@ -70,14 +73,14 @@ def test_jobs_list_is_paged_and_sorted(client):
 
 
 def test_sort_by_package_uses_researched_salary(client):
-    _seed(3)
+    _seed(client, 3)
     body = client.get("/api/jobs?sort=package&order=desc").json()
     # 16-20 LPA is the top band; jobs with no researched salary must sort last, not first.
     assert body["items"][0]["salary_max_lpa"] == 20.0
 
 
 def test_filters(client):
-    _seed(3)
+    _seed(client, 3)
     assert client.get("/api/jobs?min_score=70").json()["total"] == 2
     assert client.get("/api/jobs?sources=linkedin").json()["total"] == 1
     assert client.get("/api/jobs?search=globex").json()["total"] == 1
@@ -94,7 +97,7 @@ def test_stale_jobs_are_hidden_by_default(client):
     from core.db import session_scope
     from core.models import Job, utcnow
 
-    _seed(2)
+    _seed(client, 2)
     with session_scope() as s:
         s.get(Job, "job-0").last_seen = utcnow() - timedelta(days=90)
     client.post("/api/jobs/refresh-stale")
@@ -104,7 +107,7 @@ def test_stale_jobs_are_hidden_by_default(client):
 
 
 def test_facets_and_stats(client):
-    _seed(3)
+    _seed(client, 3)
     facets = client.get("/api/jobs/facets").json()
     assert set(facets["sources"]) == {"linkedin", "remoteok", "naukri"}
     assert "package" in facets["sortable"]
@@ -118,7 +121,7 @@ def test_facets_and_stats(client):
 
 
 def test_job_detail_includes_score_breakdown(client):
-    _seed(1)
+    _seed(client, 1)
     job = client.get("/api/jobs/job-0").json()
     assert job["matched_skills"] == ["Go", "Docker"]
     assert job["missing_skills"] == ["Kafka"]
@@ -130,7 +133,7 @@ def test_job_detail_includes_score_breakdown(client):
 # Applications
 # --------------------------------------------------------------------------- #
 def test_apply_undo_and_status_flow(client):
-    _seed(1)
+    _seed(client, 1)
 
     applied = client.post("/api/jobs/job-0/apply", json={"note": "referred"}).json()
     assert applied["status"] == "applied"
@@ -151,7 +154,7 @@ def test_apply_undo_and_status_flow(client):
 
 
 def test_apply_rejects_unknown_job_and_bad_status(client):
-    _seed(1)
+    _seed(client, 1)
     assert client.post("/api/jobs/ghost/apply", json={}).status_code == 404
     client.post("/api/jobs/job-0/apply", json={})
     bad = client.put("/api/jobs/job-0/application", json={"status": "hired"})
@@ -159,7 +162,7 @@ def test_apply_rejects_unknown_job_and_bad_status(client):
 
 
 def test_undo_without_an_application_is_404(client):
-    _seed(1)
+    _seed(client, 1)
     assert client.delete("/api/jobs/job-0/apply").status_code == 404
 
 
@@ -167,7 +170,7 @@ def test_undo_without_an_application_is_404(client):
 # Export
 # --------------------------------------------------------------------------- #
 def test_csv_export_respects_the_current_filters(client):
-    _seed(3)
+    _seed(client, 3)
     res = client.get("/api/jobs/export?format=csv&min_score=70")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/csv")
@@ -187,7 +190,7 @@ def test_export_columns_match_the_emailed_report(client):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
     from report_generator import COLUMNS
 
-    _seed(1)
+    _seed(client, 1)
     res = client.get("/api/jobs/export?format=csv")
     header = next(csv.reader(io.StringIO(res.content.decode("utf-8-sig"))))
     report_headers = [h for h, _k, _w in COLUMNS]
@@ -195,7 +198,7 @@ def test_export_columns_match_the_emailed_report(client):
 
 
 def test_xlsx_export(client):
-    _seed(2)
+    _seed(client, 2)
     res = client.get("/api/jobs/export?format=xlsx")
     assert res.status_code == 200
     assert res.content[:2] == b"PK"        # a real zip-based workbook
@@ -204,7 +207,7 @@ def test_xlsx_export(client):
 
 
 def test_export_includes_application_state(client):
-    _seed(1)
+    _seed(client, 1)
     client.post("/api/jobs/job-0/apply", json={})
     res = client.get("/api/jobs/export?format=csv")
     reader = list(csv.reader(io.StringIO(res.content.decode("utf-8-sig"))))
@@ -220,12 +223,13 @@ def test_scan_listing_and_export(client):
     from core.repo import runs as runs_repo
 
     rid = runs_repo.new_run_id()
-    runs_repo.create(rid, mode="native", engine="claude_code", phase_keys=["scrape"])
-    scan_id = runs_repo.scan_id_for_run(rid)
+    runs_repo.create(client.user_id, rid, mode="native", engine="claude_code", phase_keys=["scrape"])
+    scan_id = runs_repo.scan_id_for_run(client.user_id, rid)
     jobs_repo.upsert_scored(
+        client.user_id,
         [{"job_id": "s1", "company": "Acme", "role": "SDE", "score": 80}],
         scan_id=scan_id)
-    runs_repo.update_scan(rid, jobs_scored=1)
+    runs_repo.update_scan(client.user_id, rid, jobs_scored=1)
 
     scans = client.get("/api/scans").json()["scans"]
     assert scans[0]["id"] == scan_id

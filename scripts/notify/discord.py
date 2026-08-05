@@ -26,8 +26,12 @@ class DiscordNotifier(Notifier):
     def _webhook(self) -> str | None:
         return get_secret_optional("DISCORD_WEBHOOK_URL")
 
-    def available(self) -> tuple[bool, str]:
-        url = self._webhook()
+    def available(self, user_id: int | None = None) -> tuple[bool, str]:
+        if user_id is not None:
+            from core import secrets
+            url = secrets.get(user_id, "DISCORD_WEBHOOK_URL")
+        else:
+            url = self._webhook()
         if not url:
             return False, "DISCORD_WEBHOOK_URL not set"
         if "discord.com/api/webhooks/" not in url and "discordapp.com/api/webhooks/" not in url:

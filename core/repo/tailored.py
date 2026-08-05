@@ -15,7 +15,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..db import session_scope
-from ..models import Job, TailoredResume
+from ..models import Job, JobUserScore, TailoredResume
 from ..paths import tailored_dir
 
 _SLUG = re.compile(r"[^A-Za-z0-9]+")
@@ -34,21 +34,21 @@ def resume_basename(full_name: str) -> str:
     return "_".join(p.capitalize() for p in parts[:3]) + "_Resume"
 
 
-def folder_for(job_id: str, company: str) -> Path:
-    return tailored_dir() / folder_name(job_id, company)
+def folder_for(user_id: int, job_id: str, company: str) -> Path:
+    return tailored_dir(user_id) / folder_name(job_id, company)
 
 
 def _iso(dt):
     return dt.isoformat() if dt else None
 
 
-def to_dict(t: TailoredResume, job: Job | None = None) -> dict:
+def to_dict(t: TailoredResume, job: Job | None = None, score: JobUserScore | None = None) -> dict:
     pdf = Path(t.pdf_path) if t.pdf_path else None
     return {
         "id": t.id,
         "job_id": t.job_id,
         "folder_name": t.folder_name,
-        "folder_path": str(tailored_dir() / t.folder_name),
+        "folder_path": str(tailored_dir(t.user_id) / t.folder_name),
         "pdf_path": t.pdf_path,
         "tex_path": t.tex_path,
         "docx_path": t.docx_path,
@@ -64,12 +64,12 @@ def to_dict(t: TailoredResume, job: Job | None = None) -> dict:
         "created_at": _iso(t.created_at),
         "company": job.company if job else "",
         "role": job.role if job else "",
-        "score": job.score if job else 0.0,
+        "score": score.score if score else 0.0,
         "application_url": job.application_url if job else "",
     }
 
 
-def upsert(job_id: str, *, company: str = "", pdf_path: str = "", tex_path: str = "",
+def upsert(user_id: int, job_id: str, *, company: str = "", pdf_path: str = "", tex_path: str = "",
            docx_path: str = "", ats_before: float | None = None,
            ats_after: float | None = None, engine: str = "", cost_usd: float = 0.0,
            status: str = "done", error: str = "", meta: dict | None = None,
@@ -77,9 +77,10 @@ def upsert(job_id: str, *, company: str = "", pdf_path: str = "", tex_path: str 
     with session_scope() as s:
         job = s.get(Job, job_id)
         name = folder_name(job_id, company or (job.company if job else ""))
-        row = s.scalar(select(TailoredResume).where(TailoredResume.folder_name == name))
+        row = s.scalar(select(TailoredResume).where(
+            TailoredResume.user_id == user_id, TailoredResume.folder_name == name))
         if row is None:
-            row = TailoredResume(job_id=job_id, folder_name=name)
+            row = TailoredResume(user_id=user_id, job_id=job_id, folder_name=name)
             s.add(row)
         if pdf_path:
             row.pdf_path = pdf_path
@@ -100,47 +101,53 @@ def upsert(job_id: str, *, company: str = "", pdf_path: str = "", tex_path: str 
         if meta is not None:
             row.meta = meta
         s.flush()
-        return to_dict(row, job)
+        return to_dict(row, job, s.get(JobUserScore, (user_id, job_id)))
 
 
-def get(tailored_id: int) -> dict | None:
+def get(user_id: int, tailored_id: int) -> dict | None:
     with session_scope() as s:
         row = s.get(TailoredResume, tailored_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return None
-        return to_dict(row, s.get(Job, row.job_id))
+        return to_dict(row, s.get(Job, row.job_id), s.get(JobUserScore, (user_id, row.job_id)))
 
 
-def for_job(job_id: str) -> list[dict]:
+def for_job(user_id: int, job_id: str) -> list[dict]:
     with session_scope() as s:
-        rows = s.scalars(select(TailoredResume).where(TailoredResume.job_id == job_id)
-                         .order_by(TailoredResume.created_at.desc())).all()
+        rows = s.scalars(select(TailoredResume).where(
+            TailoredResume.user_id == user_id, TailoredResume.job_id == job_id)
+            .order_by(TailoredResume.created_at.desc())).all()
         job = s.get(Job, job_id)
-        return [to_dict(r, job) for r in rows]
+        score = s.get(JobUserScore, (user_id, job_id))
+        return [to_dict(r, job, score) for r in rows]
 
 
-def list_all(limit: int = 500) -> list[dict]:
+def list_all(user_id: int, limit: int = 500) -> list[dict]:
     with session_scope() as s:
         rows = s.execute(
-            select(TailoredResume, Job)
+            select(TailoredResume, Job, JobUserScore)
             .outerjoin(Job, Job.job_id == TailoredResume.job_id)
+            .outerjoin(JobUserScore, (JobUserScore.job_id == TailoredResume.job_id)
+                       & (JobUserScore.user_id == user_id))
+            .where(TailoredResume.user_id == user_id)
             .order_by(TailoredResume.created_at.desc()).limit(limit)).all()
-        return [to_dict(t, j) for t, j in rows]
+        return [to_dict(t, j, sc) for t, j, sc in rows]
 
 
-def count() -> int:
+def count(user_id: int) -> int:
     from sqlalchemy import func
     with session_scope() as s:
-        return s.scalar(select(func.count()).select_from(TailoredResume)) or 0
+        return s.scalar(select(func.count()).select_from(TailoredResume)
+                        .where(TailoredResume.user_id == user_id)) or 0
 
 
-def remove(tailored_id: int, *, delete_files: bool = True) -> bool:
+def remove(user_id: int, tailored_id: int, *, delete_files: bool = True) -> bool:
     import shutil
     with session_scope() as s:
         row = s.get(TailoredResume, tailored_id)
-        if row is None:
+        if row is None or row.user_id != user_id:
             return False
-        folder = tailored_dir() / row.folder_name
+        folder = tailored_dir(row.user_id) / row.folder_name
         s.delete(row)
         s.flush()
         if delete_files and folder.exists():

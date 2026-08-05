@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import signup
+
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
@@ -20,28 +22,29 @@ def client(monkeypatch, tmp_path):
 
     import app as app_module
     with TestClient(app_module.app) as c:
+        c.user_id = signup(c)["id"]
         yield c
     db.dispose()
 
 
-def _seed():
+def _seed(user_id):
     from core.repo import applications as applications_repo
     from core.repo import jobs as jobs_repo
     from core.repo import profiles as profiles_repo
     from core.repo import settings as settings_repo
 
-    profiles_repo.save({"name": "Ada Lovelace", "skills": ["Go", "Docker"],
+    profiles_repo.save(user_id, {"name": "Ada Lovelace", "skills": ["Go", "Docker"],
                         "experience_years": 2}, verified=True)
-    settings_repo.update_preferences({"locations": ["Bengaluru"], "role_types": ["Backend"],
+    settings_repo.update_preferences(user_id, {"locations": ["Bengaluru"], "role_types": ["Backend"],
                                       "target_ctc_min_lpa": 18})
-    jobs_repo.upsert_scored([{
+    jobs_repo.upsert_scored(user_id, [{
         "job_id": "swissre-1", "company": "Swiss Re", "role": "Golang Engineer",
         "location": "Bengaluru", "score": 78, "keyword_score": 80, "semantic_score": 75,
         "matched_skills": ["Go", "Docker"], "missing_skills": ["Kafka"],
         "market_salary": "18-24 LPA", "archetype": "gcc-enterprise",
         "prep_focus": "Deep-dive your resume projects.",
     }])
-    applications_repo.mark_applied("swissre-1")
+    applications_repo.mark_applied(user_id, "swissre-1")
 
 
 class FakeEngine:
@@ -80,7 +83,7 @@ def fake_engine(monkeypatch):
 # Context
 # --------------------------------------------------------------------------- #
 def test_context_carries_the_users_real_data(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     client.post("/api/chat", json={"message": "Why did Swiss Re score 78?"})
 
     prompt = FakeEngine.last_prompt
@@ -93,7 +96,7 @@ def test_context_carries_the_users_real_data(client, fake_engine):
 
 
 def test_the_open_job_is_highlighted_in_the_prompt(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     client.post("/api/chat", json={"message": "Explain this one",
                                    "job_id": "swissre-1"})
     prompt = FakeEngine.last_prompt
@@ -104,7 +107,7 @@ def test_the_open_job_is_highlighted_in_the_prompt(client, fake_engine):
 
 def test_prompt_explains_the_scoring_model(client, fake_engine):
     """The assistant must be able to explain score vs effective_score correctly."""
-    _seed()
+    _seed(client.user_id)
     client.post("/api/chat", json={"message": "hi"})
     prompt = FakeEngine.last_prompt
     assert "effective_score" in prompt
@@ -115,7 +118,7 @@ def test_prompt_explains_the_scoring_model(client, fake_engine):
 # Conversation
 # --------------------------------------------------------------------------- #
 def test_history_round_trip_and_clear(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     assert client.get("/api/chat").json()["messages"] == []
 
     body = client.post("/api/chat", json={"message": "Why did Swiss Re score 78?"}).json()
@@ -129,14 +132,14 @@ def test_history_round_trip_and_clear(client, fake_engine):
 
 
 def test_earlier_turns_are_carried_forward(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     client.post("/api/chat", json={"message": "First question"})
     client.post("/api/chat", json={"message": "And a follow-up"})
     assert "First question" in FakeEngine.last_prompt
 
 
 def test_conversations_are_separate(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     client.post("/api/chat", json={"message": "one", "conversation_id": "a"})
     client.post("/api/chat", json={"message": "two", "conversation_id": "b"})
     assert len(client.get("/api/chat?conversation_id=a").json()["messages"]) == 2
@@ -154,7 +157,7 @@ def test_each_answer_is_billed_to_the_cost_ledger(client, fake_engine):
     from engines.base import Usage
     from core.repo import cost as cost_repo
 
-    _seed()
+    _seed(client.user_id)
     fake_engine["engine"] = FakeEngine(
         usage=Usage(tokens_in=2000, tokens_out=400, model="claude-opus-5",
                     source="metered"))
@@ -162,13 +165,13 @@ def test_each_answer_is_billed_to_the_cost_ledger(client, fake_engine):
     body = client.post("/api/chat", json={"message": "hello"}).json()
     assert body["usd"] > 0
 
-    summary = cost_repo.summary(window="month")
+    summary = cost_repo.summary(client.user_id, window="month")
     assert summary["usd"] > 0
     assert any(k["kind"] == "chat" for k in summary["by_kind"])
 
 
 def test_backend_failure_is_reported_not_swallowed(client, fake_engine):
-    _seed()
+    _seed(client.user_id)
     fake_engine["engine"] = FakeEngine(ok=False)
     r = client.post("/api/chat", json={"message": "hello"})
     assert r.status_code == 502

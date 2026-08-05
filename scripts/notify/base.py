@@ -12,8 +12,12 @@ class Notifier(abc.ABC):
     label: str = "Base"
 
     @abc.abstractmethod
-    def available(self) -> tuple[bool, str]:
-        """Return (configured_and_usable, reason_if_not)."""
+    def available(self, user_id: int | None = None) -> tuple[bool, str]:
+        """Return (configured_and_usable, reason_if_not).
+
+        `user_id` set reads that account's own secrets directly (server/doctor.py's
+        in-process path); unset falls back to the env-scoped `JOBPILOT_USER_ID`
+        resolution used by the subprocess delivery path (scripts/notify_run.py)."""
         raise NotImplementedError
 
     @abc.abstractmethod

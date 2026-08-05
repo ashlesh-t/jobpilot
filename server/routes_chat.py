@@ -14,13 +14,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
+from auth import get_current_user  # noqa: E402
 from core.db import session_scope  # noqa: E402
 from core.models import ChatMessage  # noqa: E402
 from core.repo import applications as applications_repo  # noqa: E402
@@ -63,11 +64,11 @@ You cannot perform actions — if they want something done, tell them which page
 """
 
 
-def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
+def build_context(user_id: int, job_id: str | None = None, run_id: str | None = None) -> str:
     """Assemble the live picture the assistant reasons over."""
     lines: list[str] = [f"Today: {datetime.now(timezone.utc):%Y-%m-%d}"]
 
-    profile = profiles_repo.current()
+    profile = profiles_repo.current(user_id)
     if profile:
         lines.append(
             f"\nPROFILE: {profile.get('name') or 'unnamed'}, "
@@ -78,7 +79,7 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
     else:
         lines.append("\nPROFILE: not built yet.")
 
-    prefs = settings_repo.preferences()
+    prefs = settings_repo.preferences(user_id)
     lines.append(
         f"PREFERENCES: locations {prefs.get('locations') or '[]'}, "
         f"roles {prefs.get('role_types') or '[]'}, "
@@ -86,13 +87,13 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
         f"tailoring threshold {prefs.get('score_threshold')}."
     )
 
-    stats = jobs_repo.stats()
+    stats = jobs_repo.stats(user_id)
     lines.append(
         f"\nJOBS: {stats['total']} recorded ({stats['fresh']} still open), "
         f"average score {stats['avg_score']}, {stats['high_match']} scoring 75+."
     )
 
-    top = jobs_repo.query(page_size=8, sort="effective_score")["items"]
+    top = jobs_repo.query(user_id, page_size=8, sort="effective_score")["items"]
     if top:
         lines.append("\nTOP MATCHES:")
         for job in top:
@@ -105,12 +106,12 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
                 + (f"; applied ({job['application_status']})" if job['application_status'] else "")
             )
 
-    funnel = applications_repo.funnel()
+    funnel = applications_repo.funnel(user_id)
     if funnel["total"]:
         stages = ", ".join(f"{s['stage']} {s['count']}" for s in funnel["stages"])
         lines.append(f"\nAPPLICATIONS: {funnel['total']} total — {stages}.")
 
-    history = runs_repo.history(limit=3)
+    history = runs_repo.history(user_id, limit=3)
     if history:
         lines.append("\nRECENT RUNS:")
         for run in history:
@@ -122,7 +123,7 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
 
     # A job or run the user has open is almost certainly what they're asking about.
     if job_id:
-        job = jobs_repo.get(job_id)
+        job = jobs_repo.get(user_id, job_id)
         if job:
             lines.append(
                 f"\nTHE JOB THEY ARE LOOKING AT: {job['role']} at {job['company']}. "
@@ -135,7 +136,7 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
                 f"Gaps: {job['gap_signals'] or 'none recorded'}."
             )
     if run_id:
-        run = runs_repo.get(run_id)
+        run = runs_repo.get(user_id, run_id)
         if run:
             phases = ", ".join(f"{p['key']}={p['status']}" for p in run["phases"])
             lines.append(
@@ -144,7 +145,7 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
                 + (f" Error: {run['error']}" if run["error"] else "")
             )
 
-    spend = cost_repo.summary(window="month")
+    spend = cost_repo.summary(user_id, window="month")
     if spend["usd"] or spend["subscription_tokens"]:
         lines.append(
             f"\nCOST (30 days): ${spend['usd']:.2f} metered, "
@@ -153,13 +154,13 @@ def build_context(job_id: str | None = None, run_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _history(conversation_id: str) -> list[dict]:
+def _history(user_id: int, conversation_id: str) -> list[dict]:
     from sqlalchemy import select
 
     with session_scope() as s:
         rows = s.scalars(
             select(ChatMessage)
-            .where(ChatMessage.conversation_id == conversation_id)
+            .where(ChatMessage.user_id == user_id, ChatMessage.conversation_id == conversation_id)
             .order_by(ChatMessage.created_at.desc())
             .limit(MAX_HISTORY)
         ).all()
@@ -169,28 +170,31 @@ def _history(conversation_id: str) -> list[dict]:
     ]
 
 
-def _store(conversation_id: str, role: str, content: str, context: dict | None = None) -> None:
+def _store(user_id: int, conversation_id: str, role: str, content: str,
+           context: dict | None = None) -> None:
     with session_scope() as s:
-        s.add(ChatMessage(conversation_id=conversation_id, role=role,
+        s.add(ChatMessage(user_id=user_id, conversation_id=conversation_id, role=role,
                           content=content, context=context or {}))
 
 
 @router.get("")
-async def get_history(conversation_id: str = "default"):
-    return {"messages": _history(conversation_id)}
+async def get_history(conversation_id: str = "default", user: dict = Depends(get_current_user)):
+    return {"messages": _history(user["id"], conversation_id)}
 
 
 @router.delete("")
-async def clear_history(conversation_id: str = "default"):
+async def clear_history(conversation_id: str = "default", user: dict = Depends(get_current_user)):
     from sqlalchemy import delete
 
     with session_scope() as s:
-        s.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
+        s.execute(delete(ChatMessage).where(
+            ChatMessage.user_id == user["id"], ChatMessage.conversation_id == conversation_id))
     return {"ok": True, "messages": []}
 
 
 @router.post("")
-async def ask(req: ChatRequest):
+async def ask(req: ChatRequest, user: dict = Depends(get_current_user)):
+    user_id = user["id"]
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="say something first")
@@ -198,9 +202,9 @@ async def ask(req: ChatRequest):
     import engines
     from core import pricing
 
-    engine_name = settings_repo.engine_config()["provider"]
+    engine_name = settings_repo.engine_config(user_id)["provider"]
     try:
-        engine = engines.get_engine(engine_name)
+        engine = engines.get_engine(engine_name, user_id=user_id)
         ok, reason = engine.available()
         if not ok:
             raise HTTPException(
@@ -211,12 +215,12 @@ async def ask(req: ChatRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"Could not start the backend: {exc}")
 
-    _store(req.conversation_id, "user", message)
+    _store(user_id, req.conversation_id, "user", message)
 
-    history = _history(req.conversation_id)[:-1]
+    history = _history(user_id, req.conversation_id)[:-1]
     transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history[-6:])
     prompt = (
-        f"{SYSTEM_PROMPT}\n\nCONTEXT:\n{build_context(req.job_id, req.run_id)}\n\n"
+        f"{SYSTEM_PROMPT}\n\nCONTEXT:\n{build_context(user_id, req.job_id, req.run_id)}\n\n"
         + (f"EARLIER IN THIS CONVERSATION:\n{transcript}\n\n" if transcript else "")
         + f"THEIR QUESTION:\n{message}"
     )
@@ -235,14 +239,15 @@ async def ask(req: ChatRequest):
 
     usd = 0.0
     if result.usage:
-        usd, source = pricing.price_usage(result.usage, engine=engine_name)
+        usd, source = pricing.price_usage(result.usage, user_id, engine=engine_name)
         cost_repo.record(
+            user_id,
             engine=engine_name, model=getattr(result.usage, "model", "") or "",
             tokens_in=result.usage.tokens_in, tokens_out=result.usage.tokens_out,
             usd=usd, source=source, kind="chat",
         )
 
-    _store(req.conversation_id, "assistant", answer,
+    _store(user_id, req.conversation_id, "assistant", answer,
            {"job_id": req.job_id, "run_id": req.run_id, "usd": usd})
 
-    return {"answer": answer, "usd": usd, "messages": _history(req.conversation_id)}
+    return {"answer": answer, "usd": usd, "messages": _history(user_id, req.conversation_id)}

@@ -584,6 +584,22 @@ def build_keywords(prefs: dict) -> str:
     return keywords.strip()
 
 
+def _location_list(prefs: dict) -> list:
+    """Ordered list of location name strings to scrape for.
+
+    Some preferences.json written by an older setup flow store a canonical alias dict
+    under "locations" (city -> {aliases, weight, priority_rank}) — the shape filter.py's
+    separate locations.json cache uses — instead of the flat list the current UI writes.
+    Indexing that dict with a slice crashes the whole scrape phase, so only a real list
+    is accepted here; anything else falls through to the next candidate.
+    """
+    for key in ("location_priority", "locations"):
+        val = prefs.get(key)
+        if isinstance(val, list) and val:
+            return val
+    return ["Bengaluru"]
+
+
 # --------------------------------------------------------------------------- #
 # Native scrapers (free)
 # --------------------------------------------------------------------------- #
@@ -598,7 +614,7 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
     disabled_native = set((actors or {}).get("disabled_native_sources", []))
 
     keywords = build_keywords(prefs)
-    locations = prefs.get("location_priority") or prefs.get("locations") or ["Bengaluru"]
+    locations = _location_list(prefs)
     results: list = []
 
     def safe(label, fn):
@@ -616,6 +632,17 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
 
     # Per-source cap — prevents any single source from flooding the pipeline.
     per_source_cap = int(prefs.get("per_source_cap", 20))
+
+    # ATS direct APIs (Greenhouse/Lever/Ashby/Workable) — company-driven, not
+    # keyword-driven, so it's registered unconditionally; config/target_companies.json's
+    # per-company `focus` field does the actual filtering.
+    if "ats_boards" not in disabled_native:
+        try:
+            from scrapers import ats_boards  # noqa
+            results += safe("ats_boards",
+                            lambda: ats_boards.fetch(keywords, max_results=100, focus=focus))
+        except ImportError:
+            pass
 
     # India boards (native): Internshala. Run for primary + secondary city.
     if focus in ("india", "both"):
@@ -642,9 +669,11 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
                 pass
 
     # Remote JSON boards — relevant whenever remote is acceptable or focus isn't India-only.
+    # None of these are India/US-exclusive — they're global boards filtered by region_ok,
+    # not a separate US source set.
     remote_ok = prefs.get("remote_ok", True)
-    if focus in ("global", "both") or remote_ok:
-        cap = 30 if focus == "global" else (18 if focus == "both" else 12)
+    if focus in ("global", "both", "us") or remote_ok:
+        cap = 30 if focus in ("global", "us") else (18 if focus == "both" else 12)
         results += safe("remoteok", lambda: remoteok.fetch(keywords, max_results=cap, focus=focus))
         results += safe("remotive", lambda: remotive.fetch(keywords, max_results=cap, focus=focus))
         results += safe("weworkremotely",
@@ -671,6 +700,54 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
             except ImportError:
                 pass
 
+        # SimplifyJobs (GitHub-published new-grad/internship listings) — free, no auth.
+        if "simplify_jobs" not in disabled_native:
+            try:
+                from scrapers import simplify_jobs  # noqa
+                results += safe("simplify_jobs",
+                                lambda: simplify_jobs.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
+
+        # Himalayas — free public JSON API, no auth.
+        if "himalayas" not in disabled_native:
+            try:
+                from scrapers import himalayas  # noqa
+                results += safe("himalayas",
+                                lambda: himalayas.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
+
+        # WorkingNomads — free public JSON API, no auth.
+        if "workingnomads" not in disabled_native:
+            try:
+                from scrapers import workingnomads  # noqa
+                results += safe("workingnomads",
+                                lambda: workingnomads.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
+
+        # Jobspresso — free public RSS feed, no auth.
+        if "jobspresso" not in disabled_native:
+            try:
+                from scrapers import jobspresso  # noqa
+                results += safe("jobspresso",
+                                lambda: jobspresso.fetch(keywords, max_results=cap, focus=focus))
+            except ImportError:
+                pass
+
+    # Adzuna — official free API (india/us/gb coverage), no-ops silently without keys.
+    # Not gated on the remote-boards block above: it covers india/us/global alike via
+    # its own country param, and the free tier (1000 calls/month) means one call per
+    # run regardless of focus, not per-location.
+    if "adzuna" not in disabled_native:
+        try:
+            from scrapers import adzuna  # noqa
+            results += safe("adzuna",
+                            lambda: adzuna.fetch(keywords, max_results=25, focus=focus))
+        except ImportError:
+            pass
+
     # Hacker News — Who Is Hiring. Configurable via hn_max_results (default 100).
     hn_cap = int(prefs.get("hn_max_results", 100))
     hn = safe("hackernews", fetch_hn_whoishiring)
@@ -694,9 +771,10 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
         except ImportError:
             pass  # scraper not installed yet — skip silently
 
-    # Telegram job channels — only if session file exists (opt-in after --auth).
-    session_path = jobpilot_dir() / "cache" / "telegram.session"
-    if session_path.exists():
+    # Telegram job channels — public t.me/s/ web preview, no auth/session needed.
+    # telegram_channels.fetch() itself checks config/telegram_channels.json's
+    # "enabled" flag and channel list; nothing to gate on here.
+    if "telegram_channels" not in disabled_native:
         try:
             from scrapers import telegram_channels  # noqa
             results += safe(
@@ -704,7 +782,7 @@ def run_native_scrapers(focus: str, prefs: dict, actors: dict | None = None) -> 
                 lambda: telegram_channels.fetch(keywords, max_results=60, focus=focus),
             )
         except ImportError:
-            pass  # telethon not installed yet — skip silently
+            pass
 
     return results
 
@@ -722,7 +800,7 @@ def run_apify_layer(focus: str, prefs: dict, actors: dict, token_holder: dict,
     if lessons is None:
         lessons = {}
     keywords = build_keywords(prefs)
-    locations = prefs.get("location_priority") or prefs.get("locations") or ["Bengaluru"]
+    locations = _location_list(prefs)
     primary_location = locations[0]
     secondary_locations = [loc for loc in locations[1:] if loc.lower() != "remote"]
     boards = actors.get("boards", ["linkedin", "glassdoor", "indeed"])

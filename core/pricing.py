@@ -46,10 +46,10 @@ FALLBACK = Price(5.0, 25.0, "unknown model (billed at Opus rates)")
 NON_CLAUDE_DEFAULT = Price(0.0, 0.0, "not priced")
 
 
-def _overrides() -> dict[str, dict]:
+def _overrides(user_id: int) -> dict[str, dict]:
     try:
         from .repo import settings as settings_repo
-        raw = settings_repo.get("pricing_overrides") or {}
+        raw = settings_repo.get(user_id, "pricing_overrides") or {}
         return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -71,9 +71,9 @@ def normalize(model: str) -> str:
     return model
 
 
-def price_for(model: str) -> Price:
+def price_for(model: str, user_id: int) -> Price:
     key = normalize(model)
-    override = _overrides().get(key)
+    override = _overrides(user_id).get(key)
     if isinstance(override, dict):
         try:
             return Price(float(override["input_per_mtok"]),
@@ -88,10 +88,10 @@ def price_for(model: str) -> Price:
     return NON_CLAUDE_DEFAULT
 
 
-def estimate(*, model: str, tokens_in: int = 0, tokens_out: int = 0,
+def estimate(*, model: str, user_id: int, tokens_in: int = 0, tokens_out: int = 0,
              cache_read: int = 0, cache_write: int = 0) -> float:
     """USD for one call. Cache reads/writes are priced off the input rate."""
-    p = price_for(model)
+    p = price_for(model, user_id)
     if p.input_per_mtok == 0 and p.output_per_mtok == 0:
         return 0.0
     per_token_in = p.input_per_mtok / 1_000_000
@@ -105,7 +105,7 @@ def estimate(*, model: str, tokens_in: int = 0, tokens_out: int = 0,
     return round(total, 6)
 
 
-def price_usage(usage, *, engine: str = "") -> tuple[float, str]:
+def price_usage(usage, user_id: int, *, engine: str = "") -> tuple[float, str]:
     """Cost + accounting source for an `engines.base.Usage`.
 
     A Claude Code subscription run reports real tokens with no marginal dollar cost, so
@@ -122,6 +122,7 @@ def price_usage(usage, *, engine: str = "") -> tuple[float, str]:
 
     usd = estimate(
         model=getattr(usage, "model", "") or "",
+        user_id=user_id,
         tokens_in=getattr(usage, "tokens_in", 0) or 0,
         tokens_out=getattr(usage, "tokens_out", 0) or 0,
         cache_read=getattr(usage, "cache_read", 0) or 0,
@@ -130,12 +131,12 @@ def price_usage(usage, *, engine: str = "") -> tuple[float, str]:
     return usd, ("metered" if source == "metered" else "estimated")
 
 
-def table() -> list[dict]:
+def table(user_id: int) -> list[dict]:
     """The editable rate table the Settings page renders."""
-    overrides = _overrides()
+    overrides = _overrides(user_id)
     rows = []
     for key, p in PRICES.items():
-        effective = price_for(key)
+        effective = price_for(key, user_id)
         rows.append({
             "model": key,
             "label": p.label,

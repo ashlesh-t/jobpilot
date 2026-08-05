@@ -5,8 +5,6 @@ requests>=2.31
 python-docx>=1.1
 PyPDF2>=3.0
 openpyxl>=3.1
-# Telegram channel scraper
-telethon>=1.36
 # URL security pipeline
 tldextract>=5.1
 httpx>=0.27

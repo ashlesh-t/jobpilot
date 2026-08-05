@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from ..db import session_scope
 from ..models import Setting
-from ..paths import ensure_dirs, prefs_path
+from ..paths import ensure_user_dirs, prefs_path
 
 REPO_DIR = Path(__file__).resolve().parents[2]
 EXAMPLE_PREFS = REPO_DIR / "config" / "preferences.example.json"
@@ -57,7 +57,7 @@ DEFAULTS: dict[str, Any] = {
     "hn_max_results": 100,
     "per_source_cap": 20,
     "schedule_slots_ist": [],
-    "engine": {"provider": "claude_code", "model": "", "permission_mode": "acceptEdits"},
+    "engine": {"provider": "claude_code", "model": "", "permission_mode": "bypassPermissions"},
     "notify_channels": ["telegram"],
     "stale_after_days": 21,
     "setup_complete": False,
@@ -74,9 +74,9 @@ def _example_defaults() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Raw key/value access
 # --------------------------------------------------------------------------- #
-def get(key: str, default: Any = None) -> Any:
+def get(user_id: int, key: str, default: Any = None) -> Any:
     with session_scope() as s:
-        row = s.get(Setting, key)
+        row = s.get(Setting, (user_id, key))
         if row is None:
             if default is not None:
                 return default
@@ -84,37 +84,38 @@ def get(key: str, default: Any = None) -> Any:
         return row.value
 
 
-def set(key: str, value: Any, *, export: bool = True) -> None:  # noqa: A001
+def set(user_id: int, key: str, value: Any, *, export: bool = True) -> None:  # noqa: A001
     with session_scope() as s:
-        row = s.get(Setting, key)
+        row = s.get(Setting, (user_id, key))
         if row is None:
-            s.add(Setting(key=key, value=value))
+            s.add(Setting(user_id=user_id, key=key, value=value))
         else:
             row.value = value
     if export and key in PREFERENCE_KEYS:
-        export_preferences()
+        export_preferences(user_id)
 
 
-def set_many(values: dict[str, Any], *, export: bool = True) -> None:
+def set_many(user_id: int, values: dict[str, Any], *, export: bool = True) -> None:
     with session_scope() as s:
         for key, value in values.items():
-            row = s.get(Setting, key)
+            row = s.get(Setting, (user_id, key))
             if row is None:
-                s.add(Setting(key=key, value=value))
+                s.add(Setting(user_id=user_id, key=key, value=value))
             else:
                 row.value = value
     if export and any(k in PREFERENCE_KEYS for k in values):
-        export_preferences()
+        export_preferences(user_id)
 
 
-def all() -> dict[str, Any]:  # noqa: A001
+def all(user_id: int) -> dict[str, Any]:  # noqa: A001
     with session_scope() as s:
-        return {r.key: r.value for r in s.scalars(select(Setting)).all()}
+        return {r.key: r.value for r in s.scalars(
+            select(Setting).where(Setting.user_id == user_id)).all()}
 
 
-def delete(key: str) -> None:
+def delete(user_id: int, key: str) -> None:
     with session_scope() as s:
-        row = s.get(Setting, key)
+        row = s.get(Setting, (user_id, key))
         if row is not None:
             s.delete(row)
 
@@ -122,57 +123,111 @@ def delete(key: str) -> None:
 # --------------------------------------------------------------------------- #
 # Preferences facade
 # --------------------------------------------------------------------------- #
-def preferences() -> dict[str, Any]:
+def preferences(user_id: int) -> dict[str, Any]:
     """Full preferences dict: example defaults < built-in defaults < stored values."""
     merged: dict[str, Any] = {}
     merged.update(_example_defaults())
     merged.update(DEFAULTS)
-    stored = all()
+    stored = all(user_id)
     for key in PREFERENCE_KEYS:
         if key in stored:
             merged[key] = stored[key]
     return {k: merged[k] for k in PREFERENCE_KEYS if k in merged}
 
 
-def update_preferences(patch: dict[str, Any]) -> dict[str, Any]:
+def update_preferences(user_id: int, patch: dict[str, Any]) -> dict[str, Any]:
     """Merge-write only the recognized preference keys, then re-export the JSON file."""
     clean = {k: v for k, v in patch.items() if k in PREFERENCE_KEYS}
     if clean:
-        set_many(clean)
-    return preferences()
+        set_many(user_id, clean)
+    return preferences(user_id)
 
 
-def export_preferences() -> Path:
+def export_preferences(user_id: int) -> Path:
     """Write options/preferences.json for the Layer A scripts (read-before-write)."""
-    ensure_dirs()
-    path = prefs_path()
+    ensure_user_dirs(user_id)
+    path = prefs_path(user_id)
     current: dict[str, Any] = {}
     if path.exists():
         try:
             current = json.loads(path.read_text())
         except Exception:
             current = {}
-    current.update(preferences())
+    current.update(preferences(user_id))
     path.write_text(json.dumps(current, indent=2, ensure_ascii=False))
     return path
 
 
-def is_setup_complete() -> bool:
-    return bool(get("setup_complete", False))
+def is_setup_complete(user_id: int) -> bool:
+    return bool(get(user_id, "setup_complete", False))
 
 
-def mark_setup_complete(value: bool = True) -> None:
-    set("setup_complete", value, export=False)
+def mark_setup_complete(user_id: int, value: bool = True) -> None:
+    set(user_id, "setup_complete", value, export=False)
 
 
-def engine_config() -> dict[str, Any]:
+def engine_config(user_id: int) -> dict[str, Any]:
     """The engine block, with defaults filled in."""
-    eng = get("engine") or {}
+    eng = get(user_id, "engine") or {}
     if not isinstance(eng, dict):
         eng = {}
     return {
         "provider": eng.get("provider", "claude_code"),
         "model": eng.get("model", ""),
-        "permission_mode": eng.get("permission_mode", "acceptEdits"),
+        "permission_mode": eng.get("permission_mode", "bypassPermissions"),
         "command_template": eng.get("command_template", ""),
     }
+
+
+def pipeline_phase_config(user_id: int) -> dict[str, dict]:
+    """Every phase's {enabled, model}, defaults filled in from the phase registry.
+
+    `enabled` only matters for optional phases — the run selection always forces
+    required ones on regardless of what's stored (see `enabled_phase_keys`).
+    `model` is None unless the user picked one; the orchestrator then falls back to the
+    phase's tier default for whichever engine is active (see core.model_catalog).
+    """
+    from orchestrator import phases as P
+
+    stored = get(user_id, "pipeline_phase_config", {}) or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    out: dict[str, dict] = {}
+    for phase in P.PHASES:
+        entry = stored.get(phase.key)
+        entry = entry if isinstance(entry, dict) else {}
+        out[phase.key] = {
+            "enabled": bool(entry.get("enabled", True)),
+            "model": entry.get("model") if phase.kind == "llm" else None,
+        }
+    return out
+
+
+def set_pipeline_phase_config(user_id: int, config: dict[str, dict]) -> dict[str, dict]:
+    """Validate and persist the pipeline editor's choices."""
+    from orchestrator import phases as P
+
+    valid_keys = {p.key for p in P.PHASES}
+    unknown = config.keys() - valid_keys  # `set` is shadowed by this module's own set()
+    if unknown:
+        raise ValueError(f"unknown phase(s): {', '.join(sorted(unknown))}")
+
+    cleaned: dict[str, dict] = {}
+    for key, entry in config.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{key}: expected an object with enabled/model")
+        cleaned[key] = {
+            "enabled": bool(entry.get("enabled", True)),
+            "model": (entry.get("model") or None),
+        }
+    set(user_id, "pipeline_phase_config", cleaned, export=False)
+    return pipeline_phase_config(user_id)
+
+
+def enabled_phase_keys(user_id: int) -> list[str]:
+    """The phase keys a run should include: every required phase, plus whichever
+    optional ones the pipeline editor left enabled."""
+    from orchestrator import phases as P
+
+    cfg = pipeline_phase_config(user_id)
+    return [p.key for p in P.PHASES if not p.optional or cfg[p.key]["enabled"]]

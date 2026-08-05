@@ -6,16 +6,19 @@
 import clsx from 'clsx'
 import {
   ChevronRight,
+  CircleAlert,
   Download,
   ExternalLink,
   Play,
   RotateCcw,
   Square,
   StepForward,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 
+import { PipelineCanvas } from '@/components/hunt/PipelineCanvas'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ResumeManager } from '@/components/resumes/ResumeManager'
 import { SetupGate } from '@/components/setup/SetupGate'
@@ -33,6 +36,7 @@ import { helpFor } from '@/content/help'
 import { ApiError } from '@/lib/api'
 import { formatDuration, formatTokens, formatUsd, relativeTime } from '@/lib/format'
 import {
+  useLocalStorage,
   usePhaseCatalog,
   useRun,
   useRunControl,
@@ -41,6 +45,60 @@ import {
   useStartRun,
 } from '@/lib/hooks'
 import type { RunEvent, RunPhase } from '@/lib/hooks'
+
+/* -------------------------------------------------------------------------- */
+/* MyInfo reminder                                                            */
+/* -------------------------------------------------------------------------- */
+function MyInfoReminder() {
+  const [dismissedForGood, setDismissedForGood] = useLocalStorage(
+    'jobhunt.myinfo_reminder_dismissed',
+    false,
+  )
+  const [closedThisSession, setClosedThisSession] = useState(false)
+  const [dontShowAgain, setDontShowAgain] = useState(false)
+
+  if (dismissedForGood || closedThisSession) return null
+
+  const dismiss = () => {
+    if (dontShowAgain) setDismissedForGood(true)
+    setClosedThisSession(true)
+  }
+
+  return (
+    <Card className="mb-5 border-warn/40">
+      <div className="flex flex-wrap items-start gap-3">
+        <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-warn" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-ink">
+            Before you start a hunt, make sure{' '}
+            <Link to="/me" className="font-medium text-accent hover:underline">
+              MyInfo
+            </Link>{' '}
+            is accurate and up to date — every score is only as good as the profile behind
+            it.
+          </p>
+          <label className="mt-2 flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5"
+              checked={dontShowAgain}
+              onChange={(e) => setDontShowAgain(e.target.checked)}
+            />
+            Don't show this again
+          </label>
+        </div>
+        <button
+          type="button"
+          className="btn-icon shrink-0"
+          aria-label="Dismiss"
+          onClick={dismiss}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </Card>
+  )
+}
 
 const MODES = [
   { value: 'auto', label: 'Auto', hint: 'Alternates paid and free sources' },
@@ -57,9 +115,15 @@ function StartPanel({ busy }: { busy: boolean }) {
   const toast = useToast()
   const navigate = useNavigate()
 
+  // The pipeline saved from the editor (server-side — see /pipeline). Null means
+  // nothing has been customized, so every phase runs.
+  const [selection, setSelection] = useState<string[] | null>(null)
+
   const onStart = async () => {
     try {
-      const result = await start.mutateAsync({ mode })
+      const result = await start.mutateAsync(
+        selection ? { mode, only: selection } : { mode },
+      )
       navigate(`/hunt/${result.run_id}`)
     } catch (error) {
       toast.error(
@@ -111,6 +175,10 @@ function StartPanel({ busy }: { busy: boolean }) {
             A run is already in progress — stop it first, or watch it below.
           </p>
         )}
+      </div>
+
+      <div className="mt-4 border-t border-line pt-4">
+        <PipelineCanvas onSelectionChange={setSelection} />
       </div>
     </Card>
   )
@@ -224,6 +292,60 @@ function PhaseCard({
         </div>
       )}
     </li>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Why "Top matches" is empty — a broken/skipped phase reads very differently */
+/* from a clean run that just didn't find a fit.                              */
+/* -------------------------------------------------------------------------- */
+function TopMatchesEmptyState({
+  runStatus,
+  phases,
+  labels,
+}: {
+  runStatus: string
+  phases: RunPhase[]
+  labels: Map<string, { label: string; help: string }>
+}) {
+  const broken = phases.filter((p) => p.error)
+
+  if (broken.length) {
+    return (
+      <div className="rounded-lg bg-danger/10 px-3 py-2.5">
+        <p className="text-sm text-danger">
+          {broken.length === 1 ? 'A step' : `${broken.length} steps`} hit a problem, so
+          scoring never ran to completion:
+        </p>
+        <ul className="mt-1.5 space-y-0.5">
+          {broken.map((p) => (
+            <li key={p.key} className="text-xs text-danger/90">
+              <span className="font-medium">{labels.get(p.key)?.label ?? p.key}</span>
+              {' — '}
+              {p.error}
+            </li>
+          ))}
+        </ul>
+        <p className="mt-1.5 text-xs text-muted">
+          Expand the step below for the full log, then re-run it once fixed.
+        </p>
+      </div>
+    )
+  }
+
+  if (['done', 'cancelled'].includes(runStatus)) {
+    return (
+      <p className="text-sm text-muted">
+        This run finished cleanly — nothing matched your bar this time. Try widening
+        locations or roles in preferences.
+      </p>
+    )
+  }
+
+  return (
+    <p className="text-sm text-muted">
+      Nothing scored yet — matches appear once the scoring step finishes.
+    </p>
   )
 }
 
@@ -368,9 +490,11 @@ function RunView({ runId }: { runId: string }) {
 
         <Card title="Top matches" subtitle="Best results from this run">
           {!data.top_jobs?.length ? (
-            <p className="text-sm text-muted">
-              Nothing scored yet — matches appear once the scoring step finishes.
-            </p>
+            <TopMatchesEmptyState
+              runStatus={data.status}
+              phases={data.phases}
+              labels={labels}
+            />
           ) : (
             <ul className="space-y-3">
               {data.top_jobs.slice(0, 8).map((job) => (
@@ -437,19 +561,17 @@ export function JobHuntPage() {
       </PageHeader>
 
       <SetupGate>
+        <MyInfoReminder />
         <div className="mb-5">
           <StartPanel busy={Boolean(active)} />
         </div>
       </SetupGate>
 
-      <details className="mb-5 rounded-xl border border-line bg-surface">
-        <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-ink">
-          Resumes
-        </summary>
-        <div className="border-t border-line p-5">
-          <ResumeManager />
-        </div>
-      </details>
+      {/* Always visible: which resume a run will use is not something to hide behind a
+          disclosure triangle. */}
+      <div className="mb-5">
+        <ResumeManager />
+      </div>
 
       {runs.data && (runs.data.history.length > 1 || runId) && (
         <div className="mb-5 flex flex-wrap items-center gap-2">

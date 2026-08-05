@@ -23,15 +23,7 @@ from sqlalchemy import select
 
 from .db import session_scope
 from .models import Job, Profile, Run, RunStatus, ScheduleSlot, UrlSecurityCache, UserFeedback
-from .paths import (
-    cache_dir,
-    jobpilot_dir,
-    legacy_sqlite_path,
-    migrated_marker,
-    prefs_path,
-    profile_path,
-    resumes_dir,
-)
+from .paths import cache_dir, jobpilot_dir, legacy_sqlite_path, migrated_marker
 from .repo import jobs as jobs_repo
 from .repo import resumes as resumes_repo
 from .repo import schedule as schedule_repo
@@ -68,8 +60,18 @@ def _parse_ts(value: Any) -> datetime | None:
     return None
 
 
+def _v1_prefs_path() -> Path:
+    """v1 kept one shared preferences.json directly under the data dir — not the new
+    per-account `options/preferences.json`."""
+    return jobpilot_dir() / "options" / "preferences.json"
+
+
+def _v1_profile_path() -> Path:
+    return jobpilot_dir() / "cache" / "profile.json"
+
+
 def has_v1_state() -> bool:
-    return any(p.exists() for p in (prefs_path(), profile_path(), legacy_sqlite_path()))
+    return any(p.exists() for p in (_v1_prefs_path(), _v1_profile_path(), legacy_sqlite_path()))
 
 
 def already_migrated() -> bool:
@@ -79,8 +81,8 @@ def already_migrated() -> bool:
 # --------------------------------------------------------------------------- #
 # Individual importers — each returns a count and appends to `errors`
 # --------------------------------------------------------------------------- #
-def _import_preferences(errors: list[str]) -> int:
-    data = _read_json(prefs_path())
+def _import_preferences(user_id: int, errors: list[str]) -> int:
+    data = _read_json(_v1_prefs_path())
     if not isinstance(data, dict):
         return 0
     known = {k: v for k, v in data.items() if k in settings_repo.PREFERENCE_KEYS}
@@ -89,22 +91,23 @@ def _import_preferences(errors: list[str]) -> int:
     leftover = {k: v for k, v in data.items() if k not in settings_repo.PREFERENCE_KEYS}
     try:
         if known:
-            settings_repo.set_many(known)
+            settings_repo.set_many(user_id, known)
         if leftover:
-            settings_repo.set("legacy_preferences", leftover, export=False)
+            settings_repo.set(user_id, "legacy_preferences", leftover, export=False)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"preferences: {exc}")
         return 0
     return len(known)
 
 
-def _import_schedule_slots(errors: list[str]) -> int:
-    slots = settings_repo.get("schedule_slots_ist") or []
+def _import_schedule_slots(user_id: int, errors: list[str]) -> int:
+    slots = settings_repo.get(user_id, "schedule_slots_ist") or []
     if not isinstance(slots, list):
         return 0
     created = 0
     with session_scope() as s:
-        existing = {r.name for r in s.scalars(select(ScheduleSlot)).all()}
+        existing = {r.name for r in s.scalars(
+            select(ScheduleSlot).where(ScheduleSlot.user_id == user_id)).all()}
     for i, slot in enumerate(slots):
         try:
             if isinstance(slot, str):
@@ -115,48 +118,49 @@ def _import_schedule_slots(errors: list[str]) -> int:
                 continue
             if name in existing or not time:
                 continue
-            schedule_repo.create(name=name, time=time)
+            schedule_repo.create(user_id, name=name, time=time)
             created += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"schedule slot {slot!r}: {exc}")
     return created
 
 
-def _import_profile(errors: list[str]) -> int:
-    data = _read_json(profile_path())
+def _import_profile(user_id: int, errors: list[str]) -> int:
+    data = _read_json(_v1_profile_path())
     if not isinstance(data, dict):
         return 0
     try:
         with session_scope() as s:
-            if s.scalar(select(Profile)) is not None:
+            if s.scalar(select(Profile).where(Profile.user_id == user_id)) is not None:
                 return 0                       # v2 already has a profile — don't clobber it
         verified = bool(data.get("profile_verified"))
         resume_hash = str(data.get("hash") or "")
         payload = {k: v for k, v in data.items() if k not in ("profile_verified", "hash")}
         from .repo import profiles as profiles_repo
-        profiles_repo.save(payload, verified=verified, resume_hash=resume_hash)
+        profiles_repo.save(user_id, payload, verified=verified, resume_hash=resume_hash)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"profile: {exc}")
         return 0
     return 1
 
 
-def _import_json_caches(errors: list[str]) -> int:
+def _import_json_caches(user_id: int, errors: list[str]) -> int:
     count = 0
     for filename, key in JSON_CACHES.items():
         data = _read_json(cache_dir() / filename)
         if data is None:
             continue
         try:
-            settings_repo.set(key, data, export=False)
+            settings_repo.set(user_id, key, data, export=False)
             count += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{filename}: {exc}")
     return count
 
 
-def _import_resumes(errors: list[str]) -> int:
-    root = resumes_dir()
+def _import_resumes(user_id: int, errors: list[str]) -> int:
+    # v1 kept one shared `<jobpilot_dir>/resumes/` — not the new per-account tree.
+    root = jobpilot_dir() / "resumes"
     if not root.exists():
         return 0
     count = 0
@@ -165,14 +169,14 @@ def _import_resumes(errors: list[str]) -> int:
             continue
         try:
             # base.pdf was v1's single active resume, so it becomes the v2 active one.
-            resumes_repo.add(path, folder="imported", filename=path.name,
+            resumes_repo.add(user_id, path, folder="imported", filename=path.name,
                              label=path.stem, make_active=path.stem == "base")
             count += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"resume {path.name}: {exc}")
-    if count and resumes_repo.active() is None:
-        first = resumes_repo.list_all()[0]
-        resumes_repo.set_active(first["id"])
+    if count and resumes_repo.active(user_id) is None:
+        first = resumes_repo.list_all(user_id)[0]
+        resumes_repo.set_active(user_id, first["id"])
     return count
 
 
@@ -183,7 +187,7 @@ def _legacy_rows(conn: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
         return []
 
 
-def _import_legacy_db(errors: list[str]) -> dict[str, int]:
+def _import_legacy_db(user_id: int, errors: list[str]) -> dict[str, int]:
     counts = {"jobs": 0, "feedback": 0, "url_cache": 0}
     path = legacy_sqlite_path()
     if not path.exists():
@@ -224,7 +228,7 @@ def _import_legacy_db(errors: list[str]) -> dict[str, int]:
                 "archetype": sc.get("archetype", ""),
             })
         if payload:
-            result = jobs_repo.upsert_scored(payload)
+            result = jobs_repo.upsert_scored(user_id, payload)
             counts["jobs"] = result["inserted"] + result["updated"]
 
         # Restore first_seen/last_seen and tailoring paths, which upsert_scored stamps
@@ -241,9 +245,10 @@ def _import_legacy_db(errors: list[str]) -> dict[str, int]:
                     job.last_seen = last
 
             for row in _legacy_rows(conn, "user_feedback"):
-                if s.get(UserFeedback, row["job_id"]) is not None:
+                if s.get(UserFeedback, (user_id, row["job_id"])) is not None:
                     continue
                 s.add(UserFeedback(
+                    user_id=user_id,
                     job_id=row["job_id"],
                     status=row["status"] or "",
                     notes=row["notes"] or "",
@@ -274,7 +279,7 @@ def _import_legacy_db(errors: list[str]) -> dict[str, int]:
     return counts
 
 
-def _import_run_history(errors: list[str]) -> int:
+def _import_run_history(user_id: int, errors: list[str]) -> int:
     runs_json = cache_dir() / "runs"
     if not runs_json.exists():
         return 0
@@ -293,6 +298,7 @@ def _import_run_history(errors: list[str]) -> int:
             try:
                 s.add(Run(
                     id=run_id,
+                    user_id=user_id,
                     status=status,
                     mode=data.get("mode", "auto"),
                     engine=data.get("engine", ""),
@@ -311,8 +317,13 @@ def _import_run_history(errors: list[str]) -> int:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-def migrate(*, force: bool = False) -> dict:
-    """Import everything. Returns a report dict; writes the marker on success."""
+def migrate(user_id: int, *, force: bool = False) -> dict:
+    """Import everything, owned by `user_id`. Returns a report dict; writes the marker
+    on success.
+
+    v1 predates accounts entirely, so every imported row needs an owner — this is
+    always the account `jobpilot setup` just created or claimed for this instance.
+    """
     report: dict[str, Any] = {
         "ran": False, "skipped_reason": "", "data_dir": str(jobpilot_dir()),
         "counts": {}, "errors": [],
@@ -326,13 +337,13 @@ def migrate(*, force: bool = False) -> dict:
 
     errors: list[str] = report["errors"]
     counts = report["counts"]
-    counts["preferences"] = _import_preferences(errors)
-    counts["schedule_slots"] = _import_schedule_slots(errors)
-    counts["profile"] = _import_profile(errors)
-    counts["json_caches"] = _import_json_caches(errors)
-    counts["resumes"] = _import_resumes(errors)
-    counts.update(_import_legacy_db(errors))
-    counts["runs"] = _import_run_history(errors)
+    counts["preferences"] = _import_preferences(user_id, errors)
+    counts["schedule_slots"] = _import_schedule_slots(user_id, errors)
+    counts["profile"] = _import_profile(user_id, errors)
+    counts["json_caches"] = _import_json_caches(user_id, errors)
+    counts["resumes"] = _import_resumes(user_id, errors)
+    counts.update(_import_legacy_db(user_id, errors))
+    counts["runs"] = _import_run_history(user_id, errors)
 
     report["ran"] = True
     try:
@@ -353,11 +364,12 @@ def main(argv: list[str] | None = None) -> int:
     from .db import init_db
 
     ap = argparse.ArgumentParser(description="Import JobPilot v1 state into the v2 database")
+    ap.add_argument("user_id", type=int, help="account id that should own the imported data")
     ap.add_argument("--force", action="store_true", help="re-run even if already migrated")
     args = ap.parse_args(argv)
 
     init_db()
-    report = migrate(force=args.force)
+    report = migrate(args.user_id, force=args.force)
     if not report["ran"]:
         print(f"skipped: {report['skipped_reason']}")
         return 0

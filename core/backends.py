@@ -19,8 +19,11 @@ import platform
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from . import secrets
+
+REPO_DIR = Path(__file__).resolve().parent.parent
 
 CLAUDE_INSTALL_URL = "https://claude.com/download"
 CLAUDE_NPM = "npm install -g @anthropic-ai/claude-code"
@@ -53,9 +56,11 @@ class BackendInfo:
         return d
 
 
-def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess | None:
+def _run(cmd: list[str], timeout: int = 15,
+         cwd: str | None = None) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              cwd=cwd)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -90,7 +95,7 @@ def _claude_auth_probe(cli: str, timeout: int = 60) -> tuple[bool, str]:
     return True, "authenticated"
 
 
-def probe_claude_code(*, deep: bool = False, cli: str = "claude") -> BackendInfo:
+def probe_claude_code(user_id: int, *, deep: bool = False, cli: str = "claude") -> BackendInfo:
     info = BackendInfo(
         id="claude_code",
         label="Claude Code CLI (Pro/Max subscription)",
@@ -106,7 +111,18 @@ def probe_claude_code(*, deep: bool = False, cli: str = "claude") -> BackendInfo
     info.found = True
     info.extras["path"] = exe
 
-    proc = _run([cli, "--version"], timeout=15)
+    # If this process's own install directory has been removed (reinstalled/upgraded
+    # while still running), spawning any child fails with a confusing, runtime-specific
+    # error rather than a clear one — catch it here instead of guessing at "broken".
+    if not REPO_DIR.exists():
+        info.detail = (
+            f"this service's own install directory is gone ({REPO_DIR}) — it was "
+            "probably reinstalled/upgraded while still running. Restart it: "
+            "`jobpilot stop && jobpilot start`"
+        )
+        return info
+
+    proc = _run([cli, "--version"], timeout=15, cwd=str(REPO_DIR))
     if proc is None or proc.returncode != 0:
         info.detail = f"`{cli} --version` failed — the install may be broken"
         return info
@@ -172,7 +188,7 @@ def _anthropic_key_probe(key: str, timeout: int = 20) -> tuple[bool, str]:
     return False, f"HTTP {resp.status_code}: {resp.text[:160]}"
 
 
-def probe_claude_api(*, deep: bool = False) -> BackendInfo:
+def probe_claude_api(user_id: int, *, deep: bool = False) -> BackendInfo:
     info = BackendInfo(
         id="claude_api",
         label="Anthropic API key (metered)",
@@ -188,7 +204,7 @@ def probe_claude_api(*, deep: bool = False) -> BackendInfo:
         info.detail = "claude-agent-sdk not installed"
         return info
 
-    key = secrets.get("ANTHROPIC_API_KEY")
+    key = secrets.get(user_id, "ANTHROPIC_API_KEY")
     if not key:
         info.detail = "no ANTHROPIC_API_KEY configured"
         return info
@@ -212,7 +228,7 @@ def probe_claude_api(*, deep: bool = False) -> BackendInfo:
 GEMINI_CLIS = ("gemini", "antigravity")
 
 
-def probe_gemini(*, deep: bool = False) -> BackendInfo:
+def probe_gemini(user_id: int, *, deep: bool = False) -> BackendInfo:
     info = BackendInfo(
         id="gemini",
         label="Google Gemini / Antigravity",
@@ -233,7 +249,7 @@ def probe_gemini(*, deep: bool = False) -> BackendInfo:
                 info.version = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
             break
 
-    key = secrets.get("GEMINI_API_KEY")
+    key = secrets.get(user_id, "GEMINI_API_KEY")
     if key:
         info.found = True
         info.extras["key_masked"] = secrets.mask(key)
@@ -252,9 +268,7 @@ def probe_gemini(*, deep: bool = False) -> BackendInfo:
 # --------------------------------------------------------------------------- #
 # generic CLI adapter
 # --------------------------------------------------------------------------- #
-def probe_generic_cli(*, deep: bool = False) -> BackendInfo:
-    from .repo import settings as settings_repo
-
+def probe_generic_cli(user_id: int, *, deep: bool = False) -> BackendInfo:
     info = BackendInfo(
         id="generic_cli",
         label="Custom agent CLI",
@@ -265,7 +279,7 @@ def probe_generic_cli(*, deep: bool = False) -> BackendInfo:
                      "`mytool run --prompt {prompt}`",
         auth_hint="Authenticate with your tool's own login command.",
     )
-    template = (settings_repo.engine_config().get("command_template") or "").strip()
+    template = (_load_engine_config().get("command_template") or "").strip()
     if not template:
         info.detail = "no command template configured"
         return info
@@ -295,41 +309,151 @@ PROBES = {
 PRIORITY = ["claude_code", "claude_api", "gemini", "generic_cli"]
 
 
-def probe(backend_id: str, *, deep: bool = False) -> BackendInfo:
+def probe(backend_id: str, user_id: int, *, deep: bool = False) -> BackendInfo:
     fn = PROBES.get(backend_id)
     if fn is None:
         raise ValueError(f"unknown backend {backend_id!r}; expected one of {list(PROBES)}")
-    return fn(deep=deep)
+    return fn(user_id, deep=deep)
 
 
-def probe_all(*, deep: bool = False) -> list[dict]:
+def probe_all(user_id: int, *, deep: bool = False) -> list[dict]:
     """Every backend, in preference order. `deep=True` verifies authentication."""
-    return [probe(bid, deep=deep).as_dict() for bid in PRIORITY]
+    return [probe(bid, user_id, deep=deep).as_dict() for bid in PRIORITY]
 
 
-def best_available(*, deep: bool = False) -> str | None:
+def best_available(user_id: int, *, deep: bool = False) -> str | None:
     """The highest-priority ready backend, or None if the user must configure one."""
-    for info in probe_all(deep=deep):
+    for info in probe_all(user_id, deep=deep):
         if info["ready"]:
             return info["id"]
     return None
 
 
+def _engine_config_path() -> Path:
+    """Where the machine-wide agent-backend choice is stored.
+
+    Unlike `preferences.json`/`profile.json`, which agent CLI JobPilot runs is an
+    instance-level fact (which agent is installed and authenticated on this machine),
+    not a per-account preference — every account on this instance shares one backend.
+    That is why this lives in its own instance-wide file instead of the per-user
+    `settings` table (see the `/api/backends` route in server/routes_settings.py, which
+    already treats it this way).
+    """
+    from .paths import cache_dir
+    return cache_dir() / "engine.json"
+
+
+def _load_engine_config() -> dict:
+    path = _engine_config_path()
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def _save_engine_config(cfg: dict) -> None:
+    path = _engine_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, indent=2))
+
+
 def selected() -> str:
-    from .repo import settings as settings_repo
-    return settings_repo.engine_config()["provider"]
+    return _load_engine_config().get("provider", "claude_code")
 
 
 def select(backend_id: str) -> dict:
-    """Persist the chosen backend into the engine config."""
-    from .repo import settings as settings_repo
-
+    """Persist the chosen backend into the instance-wide engine config."""
     if backend_id not in PROBES:
         raise ValueError(f"unknown backend {backend_id!r}")
-    cfg = settings_repo.engine_config()
+    cfg = _load_engine_config()
     cfg["provider"] = backend_id
-    settings_repo.set("engine", cfg)
+    _save_engine_config(cfg)
     return cfg
+
+
+# --------------------------------------------------------------------------- #
+# tectonic — the LaTeX engine that turns a tailored .tex into a PDF
+# --------------------------------------------------------------------------- #
+TECTONIC_DROP_URL = "https://drop-sh.fullyjustified.net"
+TECTONIC_SITE_URL = "https://tectonic-typesetting.github.io/en-US/install.html"
+
+
+def tectonic_install_hints() -> list[str]:
+    """Package-manager commands for this machine, best guess first."""
+    system = platform.system()
+    if system == "Darwin":
+        return ["brew install tectonic"]
+    if system == "Windows":
+        return ["scoop install tectonic", "cargo install tectonic"]
+    hints = []
+    for binary, command in (("pacman", "sudo pacman -S tectonic"),
+                            ("apt", "sudo apt install tectonic"),
+                            ("dnf", "sudo dnf install tectonic"),
+                            ("zypper", "sudo zypper install tectonic")):
+        if shutil.which(binary):
+            hints.append(command)
+    hints.append("cargo install tectonic")
+    return hints
+
+
+def _local_bin() -> str:
+    return os.path.join(os.path.expanduser("~"), ".local", "bin")
+
+
+def install_tectonic() -> tuple[bool, str]:
+    """Best-effort install of the tectonic binary into ~/.local/bin.
+
+    Uses tectonic's official drop-in installer, which places a self-contained binary in
+    the working directory — no root, no system package manager, no LaTeX distribution.
+    Returns (ok, message) and never raises, mirroring `install_claude_code`.
+    """
+    if shutil.which("tectonic"):
+        return True, "already installed"
+
+    hints = "  or  ".join(tectonic_install_hints())
+
+    if platform.system() == "Windows":
+        return False, f"Install it with:  {hints}   ({TECTONIC_SITE_URL})"
+
+    target = _local_bin()
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as exc:
+        return False, f"could not create {target}: {exc}"
+
+    # Fetch the installer and run it from a file rather than piping a URL into a shell,
+    # so what executes is on disk and inspectable if this ever goes wrong.
+    try:
+        import httpx
+        script = httpx.get(TECTONIC_DROP_URL, timeout=30,
+                           follow_redirects=True).raise_for_status().text
+    except Exception as exc:  # noqa: BLE001
+        return False, (f"could not download the installer ({exc}). "
+                       f"Install it with:  {hints}")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = os.path.join(tmp, "install-tectonic.sh")
+        with open(script_path, "w") as fh:
+            fh.write(script)
+        proc = _run(["sh", script_path], timeout=600, cwd=target)
+
+    if proc is None:
+        return False, f"the installer timed out. Install it with:  {hints}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[-300:]
+        return False, f"{detail or 'the installer failed'}. Install it with:  {hints}"
+
+    if shutil.which("tectonic"):
+        return True, f"installed to {target}"
+    if os.path.exists(os.path.join(target, "tectonic")):
+        return False, (f"downloaded to {target}, but that directory is not on your PATH. "
+                       f'Add it — e.g. export PATH="$HOME/.local/bin:$PATH" in your '
+                       "shell profile — then restart JobPilot.")
+    return False, f"the installer reported success but no binary appeared in {target}"
 
 
 def environment() -> dict:

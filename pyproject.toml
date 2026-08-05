@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jobpilot-ai"
-version = "2.0.0"
+version = "2.1.0"
 description = "Your job hunt, automated and running on your own machine: scrape, score, tailor and track — with a local web app, a scheduler, and no cloud."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,7 +28,6 @@ dependencies = [
   "python-docx>=1.1",
   "PyPDF2>=3.0",
   "openpyxl>=3.1",
-  "telethon>=1.36",
   "tldextract>=5.1",
   "httpx>=0.27",
   "python-whois>=0.9",
@@ -44,6 +43,9 @@ dependencies = [
   "sqlalchemy>=2.0",
   "alembic>=1.13",
   "psycopg[binary]>=3.1",
+  # auth: per-user login + encrypted per-user secrets
+  "bcrypt>=4.1",
+  "cryptography>=42.0",
   # setup TUI
   "rich>=13.7",
   "questionary>=2.0",
@@ -79,6 +81,8 @@ packages = ["jobpilot"]
 # Built React UI. `npm --prefix ui run build` must run before `hatch build`; CI
 # asserts ui_dist/index.html made it into the wheel.
 "ui/dist" = "jobpilot/bundle/ui_dist"
+# Release notes — read by `jobpilot upgrade` and the About page's "What's new".
+"CHANGELOG.md" = "jobpilot/bundle/CHANGELOG.md"
 "requirements.txt" = "jobpilot/bundle/requirements.txt"
 "requirements-server.txt" = "jobpilot/bundle/requirements-server.txt"
 

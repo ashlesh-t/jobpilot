@@ -80,11 +80,15 @@ class Scheduler:
             self._started = False
 
     def reconfigure(self) -> None:
-        """Rebuild every timer from the schedule_slots rows."""
+        """Rebuild every timer from the schedule_slots rows, across every account.
+
+        Each account's slots fire that account's own run — the job id and args carry
+        `user_id` alongside `slot_id` so `_fire` knows whose run to start.
+        """
         from core.repo import schedule as schedule_repo
 
         self._sched.remove_all_jobs()
-        for slot in schedule_repo.list_all(enabled_only=True):
+        for slot in schedule_repo.list_all_enabled_across_users():
             try:
                 hour, minute = (int(x) for x in slot["time"].split(":"))
             except (ValueError, AttributeError):
@@ -93,8 +97,8 @@ class Scheduler:
                 _fire,
                 CronTrigger(hour=hour, minute=minute, day_of_week=slot["days"] or "*",
                             timezone=_tz(slot["timezone"])),
-                id=f"slot-{slot['id']}",
-                args=[slot["id"]],
+                id=f"slot-{slot['user_id']}-{slot['id']}",
+                args=[slot["user_id"], slot["id"]],
                 replace_existing=True,
                 # Covers a slot that fires while the process is busy or briefly paused;
                 # a machine that was *off* is handled by catch-up instead.
@@ -112,59 +116,76 @@ class Scheduler:
         self._catchup_task = loop.create_task(self._run_catchup())
 
     async def _run_catchup(self) -> None:
-        """Serve slots missed while the machine was off, once each."""
+        """Serve slots missed while the machine was off, once each — per account.
+
+        `catchup_grace_hours` is a per-account setting (each user can turn catch-up off
+        or tune its window independently), so the sweep is per-account too: find which
+        accounts have any enabled slot, then check each against its own grace window.
+        """
         from core.repo import schedule as schedule_repo
         from core.repo import settings as settings_repo
 
         await asyncio.sleep(5)  # let the service finish coming up first
-        try:
-            grace = int(settings_repo.get("catchup_grace_hours", CATCHUP_GRACE_HOURS)
-                        or CATCHUP_GRACE_HOURS)
-        except (TypeError, ValueError):
-            grace = CATCHUP_GRACE_HOURS
-        if grace <= 0:
-            return  # catch-up disabled
 
         try:
-            due = schedule_repo.missed_since_downtime(grace_hours=grace)
+            user_ids = sorted({slot["user_id"]
+                               for slot in schedule_repo.list_all_enabled_across_users()})
         except Exception:  # noqa: BLE001
             return
-        if not due:
-            return
 
-        # At most one catch-up run per startup — firing several back to back would
-        # queue runs the user never asked for.
-        slot = due[0]
-        occurrence = slot.get("occurrence")
-        print(f"[scheduler] catching up '{slot['name']}' (was due {occurrence})")
-        schedule_repo.record_fire(
-            slot["id"],
-            outcome="catchup",
-            when=_parse(occurrence),
-        )
-        await _start(slot, trigger="catchup")
+        for user_id in user_ids:
+            try:
+                grace = int(settings_repo.get(user_id, "catchup_grace_hours",
+                                              CATCHUP_GRACE_HOURS) or CATCHUP_GRACE_HOURS)
+            except (TypeError, ValueError):
+                grace = CATCHUP_GRACE_HOURS
+            if grace <= 0:
+                continue  # catch-up disabled for this account
+
+            try:
+                due = schedule_repo.missed_since_downtime(user_id, grace_hours=grace)
+            except Exception:  # noqa: BLE001
+                continue
+            if not due:
+                continue
+
+            # At most one catch-up run per account per startup — firing several back
+            # to back would queue runs the user never asked for.
+            slot = due[0]
+            occurrence = slot.get("occurrence")
+            print(f"[scheduler] catching up '{slot['name']}' for user {user_id} "
+                  f"(was due {occurrence})")
+            schedule_repo.record_fire(
+                user_id, slot["id"],
+                outcome="catchup",
+                when=_parse(occurrence),
+            )
+            await _start(user_id, slot, trigger="catchup")
 
     # ------------------------------------------------------------------ #
     # Introspection
     # ------------------------------------------------------------------ #
-    def jobs(self) -> list[dict]:
+    def jobs(self, user_id: int) -> list[dict]:
         return [
             {
                 "id": job.id,
-                "slot_id": job.args[0] if job.args else None,
+                "slot_id": job.args[1] if job.args and len(job.args) > 1 else None,
                 "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
             }
             for job in self._sched.get_jobs()
+            if job.args and job.args[0] == user_id
         ]
 
-    def next_runs(self, count: int = 7) -> list[dict]:
-        """The next few firings across all slots, for the timeline preview."""
+    def next_runs(self, user_id: int, count: int = 7) -> list[dict]:
+        """The next few firings across this account's slots, for the timeline preview."""
         from core.repo import schedule as schedule_repo
 
-        slots = {s["id"]: s for s in schedule_repo.list_all()}
+        slots = {s["id"]: s for s in schedule_repo.list_all(user_id)}
         upcoming = []
         for job in self._sched.get_jobs():
-            slot_id = job.args[0] if job.args else None
+            if not job.args or job.args[0] != user_id:
+                continue
+            slot_id = job.args[1] if len(job.args) > 1 else None
             slot = slots.get(slot_id)
             trigger = job.trigger
             when = job.next_run_time
@@ -198,44 +219,47 @@ def _parse(value: str | None) -> datetime | None:
 # --------------------------------------------------------------------------- #
 # Firing
 # --------------------------------------------------------------------------- #
-async def _fire(slot_id: int) -> None:
+async def _fire(user_id: int, slot_id: int) -> None:
     from core.repo import schedule as schedule_repo
 
-    slot = schedule_repo.get(slot_id)
+    slot = schedule_repo.get(user_id, slot_id)
     if slot is None or not slot["enabled"]:
         return
-    schedule_repo.record_fire(slot_id, outcome="started")
-    await _start(slot, trigger="schedule")
+    schedule_repo.record_fire(user_id, slot_id, outcome="started")
+    await _start(user_id, slot, trigger="schedule")
 
 
-async def _start(slot: dict, *, trigger: str) -> None:
-    """Start a run for one slot, waiting out a missing network rather than failing."""
+async def _start(user_id: int, slot: dict, *, trigger: str) -> None:
+    """Start a run for one account's slot, waiting out a missing network rather than
+    failing."""
     from core.repo import schedule as schedule_repo
 
     for attempt, delay in enumerate((0, *RETRY_LADDER_SECONDS)):
         if delay:
             await asyncio.sleep(delay)
         if not await asyncio.to_thread(has_network):
-            schedule_repo.set_outcome(slot["id"], "waiting for network")
+            schedule_repo.set_outcome(user_id, slot["id"], "waiting for network")
             print(f"[scheduler] no network for '{slot['name']}' — retry {attempt + 1}")
             continue
         try:
             run = await manager.start_run(
+                user_id,
                 mode=slot.get("mode", "auto"),
                 trigger=trigger,
                 slot_name=slot["name"],
             )
         except RunBusyError:
-            # A run is already going; stacking another would just queue duplicate work.
-            schedule_repo.set_outcome(slot["id"], "skipped — already running")
+            # A run is already going for this account; stacking another would just
+            # queue duplicate work.
+            schedule_repo.set_outcome(user_id, slot["id"], "skipped — already running")
             return
         except Exception as exc:  # noqa: BLE001
-            schedule_repo.set_outcome(slot["id"], f"failed: {exc}"[:120])
+            schedule_repo.set_outcome(user_id, slot["id"], f"failed: {exc}"[:120])
             return
-        schedule_repo.record_fire(slot["id"], run_id=run["id"], outcome="started")
+        schedule_repo.record_fire(user_id, slot["id"], run_id=run["id"], outcome="started")
         return
 
-    schedule_repo.set_outcome(slot["id"], "gave up — no network")
+    schedule_repo.set_outcome(user_id, slot["id"], "gave up — no network")
 
 
 scheduler = Scheduler()

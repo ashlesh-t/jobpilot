@@ -97,6 +97,8 @@ export const help: Record<string, string> = {
     'Group resumes however you like — by role, by year, by company type. Only the active one is used.',
   'resume.tailor':
     'Rewrites your active resume to emphasise what this specific job asks for. It never invents experience, dates or employers.',
+  'referral.draft':
+    'A tailored referral-request message, drafted from your profile and this job’s description. It only ever gets saved here as a draft — nothing is sent automatically. Copy it, edit it, and send it yourself.',
   'resume.overleaf':
     'The LaTeX source next to the PDF. Paste it into Overleaf if you want to adjust the wording or layout yourself.',
   'resume.review':
@@ -131,7 +133,7 @@ export const help: Record<string, string> = {
 
   /* -- secrets / connections ---------------------------------------------- */
   'secrets.storage':
-    'Stored in your operating system keyring, never in the database and never in a file JobPilot syncs anywhere.',
+    "Encrypted at rest and stored under your account only — other accounts on this instance can't see or use it.",
   'secrets.reveal':
     'Shows the full value once. Nothing is written to logs.',
   'secrets.anthropic':
@@ -141,7 +143,7 @@ export const help: Record<string, string> = {
   'secrets.apify_slots':
     'Extra Apify accounts. JobPilot switches to the next one automatically when the first runs out of credit.',
   'secrets.telegram_bot':
-    'The bot that sends your digests. Create it by messaging @BotFather in Telegram.',
+    'The bot that sends your digests. Create it by messaging @BotFather in Telegram, then paste the whole token it gives you — digits, colon and letters together, like 123456789:AAH… Not just the numbers, and none of the words around it.',
   'secrets.telegram_chat':
     'Which chat the bot messages. Captured automatically the first time you message your bot.',
   'secrets.discord':

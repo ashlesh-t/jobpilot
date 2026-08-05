@@ -25,18 +25,33 @@ deserves the research, and `effective_score` has location weighting baked into i
 
 ## How
 
-1. **AmbitionBox actor** via the Apify MCP if it's available:
-   `call-actor "thirdwatch/ambitionbox-scraper"` with
-   `{ "companies": ["<company>"], "roles": ["<role-slug>"], "includeCompanyReviews": false }`
-2. **Fallback** — `WebSearch`:
-   `"<company> <role> salary India LPA" site:ambitionbox.com OR glassdoor.co.in`
+This phase always runs on the fast model tier (Haiku-class) — a market-CTC lookup is
+simple search-and-read work, not judgment, and a heavier model answers it no better for
+a much higher cost. The orchestrator enforces this; it isn't something to second-guess
+in the run.
+
+Run one `WebSearch` per job, using the job's own `exp_req_years` (fall back to the
+profile's `experience_years` if the job doesn't state one):
+
+```
+Average CTC <company> <role>, <years> years of experience
+```
+
+Example: `Average CTC Swiss Re Software Engineer, 2 years of experience`
+
+Read the result snippets (AmbitionBox, Glassdoor, Levels.fyi, Naukri and similar salary
+aggregators show up directly in these searches — no separate actor call needed) and
+extract the range they report. If the first search returns nothing usable, one retry
+with the role's seniority dropped (e.g. "Software Engineer" instead of "Senior Software
+Engineer II") is fine; don't keep querying past that.
 
 ## What to write
 
 - `market_salary` — the observed range, e.g. `"8–14 LPA"`
-- `your_demand` — `round_to_0.5( max(target_ctc_min_lpa, market_75th_pct * score / 100) )`,
-  never below `target_ctc_min_lpa` from preferences
-- `salary_source` — one of `AmbitionBox` / `Glassdoor` / `web-estimated` / `not-found`
+- `your_demand` — round to the nearest 0.5 LPA: the top of the observed range if
+  `score >= 80`, the midpoint if `65 <= score < 80`, the low end otherwise — but never
+  below `target_ctc_min_lpa` from preferences, regardless of what the range says
+- `salary_source` — one of `web-search` / `not-found`
 
 **Never invent a number.** Leave the field blank and set `salary_source: "not-found"` when
 you're unsure. A blank cell is honest; a fabricated range walks the user into a negotiation
