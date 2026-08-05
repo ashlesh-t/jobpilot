@@ -1,5 +1,91 @@
 # Changelog
 
+## v3.0.0 — 2026-08-05
+
+### Release title: "Everyone Gets Their Own" (major)
+
+JobPilot moves from a single-user tool to a shared instance with real accounts. Every
+job search, resume, API key, and pipeline run now belongs to whoever's logged in — plus
+everything else that landed since 2.1.0: direct ATS scrapers, an Adzuna source, a rebuilt
+Telegram scraper, US market support, and draft-only referral messages.
+
+### Multi-user accounts
+
+The headline change, and a breaking one: `jobpilot setup` no longer configures a single
+person's job search. It bootstraps the database and creates (or, on an existing install,
+lets you claim) the first account; everyone else signs up in the browser.
+
+- **Everything is per-account**: preferences, resume, profile, scored jobs, applications,
+  tailored resumes, contacts, referrals, chat history, schedule, and cost tracking. Job
+  listings themselves stay shared and deduped once across every account — re-scraping
+  the same posting per person would be wasteful — but the *score* against your resume is
+  always yours alone.
+- **API keys and tokens are per-account too**, encrypted in the database — not the OS
+  keyring, which is machine-wide and doesn't map to individual logins on a shared
+  instance. Two accounts can hold completely different Apify, Telegram, or Anthropic
+  credentials.
+- **Sessions**: server-side, HttpOnly cookie — no token sits in browser storage where a
+  script could read it.
+- **Pipeline runs are isolated per account**: each person gets their own run lock, so two
+  accounts can run `/job-search` at the same time without blocking each other, with
+  separate artifact, resume, and report directories.
+- **Upgrading an existing single-user install loses nothing.** The migration backfills a
+  locked account holding every pre-existing job, run, and preference; the next
+  `jobpilot setup` (run in a terminal) prompts you to claim it with a real username and
+  password.
+- **The AI backend choice stays instance-wide** — one agent CLI per install, shared by
+  every account — since a Claude Code subscription login is inherently machine-level.
+  Only the metered API-key backends (`claude_api`, `gemini`) are genuinely per-account.
+
+### The web setup wizard grew up
+
+`jobpilot setup`'s old terminal-only steps for picking a backend, adding Apify/Adzuna,
+and connecting Telegram/Discord are now in the browser, where they belong on a
+multi-account instance — same guided copy, same QR codes, same live verification:
+
+- **AI backend** — detects what's installed, lets you choose, and walks you through
+  adding a key for the metered backends. Installing the Claude Code CLI itself still
+  happens via `jobpilot setup` in a terminal, not a web button.
+- **Job sources** — Apify and Adzuna, with the same step-by-step instructions and QR
+  codes the terminal wizard had, each verified live before it's saved.
+- **Delivery** — Telegram gets the auto-link flow: scan a QR, hit Start in the app, and
+  your chat ID is captured automatically, no copy-pasting a numeric ID out of an API
+  response. Discord's webhook is validated and saved the same way as before.
+
+### Fixed
+
+- **The health check was lying.** It reported Apify, Adzuna, Telegram and Discord as
+  configured for every account — even a brand-new one — because several checks still
+  read the old machine-wide credential store instead of the logged-in account's own. A
+  fresh account now correctly shows nothing as set until that account sets it.
+- The Keys & Tokens page still said credentials were "stored in your operating system
+  keyring" — true before this release, not after. Updated the copy everywhere it appeared.
+
+### Direct ATS scrapers, Adzuna, and a rebuilt Telegram source
+
+- **Native scrapers for Greenhouse, Lever, Ashby, and Workable** hit target companies'
+  ATS APIs directly, skipping the slower LLM-driven career-page discovery for the
+  companies where a direct API is available.
+- **Adzuna** joins as an optional free native source, credentials verified live.
+- **The Telegram channel scraper was rebuilt** onto public `t.me/s/<channel>` preview
+  pages — no more Telethon session login, just add a channel and it's validated live.
+- **US job-market focus**, alongside the existing India and global modes.
+- **Four more free job boards**: SimplifyJobs, Himalayas, WorkingNomads, and Jobspresso.
+
+### Draft-only referrals
+
+Import an HR/recruiter contacts spreadsheet, and JobPilot drafts a referral-request
+message matched to a job and contact by company name. It only ever drafts — nothing in
+this codebase sends a referral message anywhere; you copy, edit, and send it yourself.
+
+### Visual polish
+
+A richer look across the whole app — gradient accents, deeper shadows, spring-eased
+hover and press animations, frosted glass on sticky chrome — built on the same
+accessible color system and dark mode as before, not a replacement of it.
+
+---
+
 ## v2.1.0 — 2026-08-02
 
 ### Release title: "Rough Edges" (minor)
